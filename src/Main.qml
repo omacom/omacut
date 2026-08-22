@@ -33,6 +33,13 @@ ApplicationWindow {
         && (trimBar.startSec > 0 || trimBar.endSec < backend.duration)
         && (trimBar.startSec !== exportedStartSec || trimBar.endSec !== exportedEndSec)
 
+    // Keep preview audio attached to whichever output the system currently
+    // considers its default. MediaDevices updates defaultAudioOutput when the
+    // user switches between headphones, speakers, monitor audio, etc.
+    MediaDevices {
+        id: mediaDevices
+    }
+
     Material.theme: Material.Dark
     Material.accent: win.accent
     color: "#0e0e10"
@@ -333,6 +340,7 @@ ApplicationWindow {
     Component {
         id: audioOutputComponent
         AudioOutput {
+            device: mediaDevices.defaultAudioOutput
             muted: player.priming
         }
     }
