@@ -1,9 +1,13 @@
 #include <QtTest>
 
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QMimeData>
 #include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -86,7 +90,11 @@ public:
     QString themeAccent() const { return QStringLiteral("#FFD60A"); }
     QString themeAccentForeground() const { return QStringLiteral("black"); }
 
-    Q_INVOKABLE bool load(const QUrl &) { return false; }
+    Q_INVOKABLE bool load(const QUrl &url) {
+        ++loadCount;
+        lastLoadUrl = url;
+        return false;
+    }
     Q_INVOKABLE void openVideoDialog() { ++openCount; }
     Q_INVOKABLE void exportDialog(double start, double end) {
         ++exportCount;
@@ -104,6 +112,8 @@ public:
     void announceInfo() { emit infoChanged(); }
     void announceExportDone() { emit exportDone(QStringLiteral("/tmp/exported.mp4")); }
 
+    int loadCount = 0;
+    QUrl lastLoadUrl;
     int openCount = 0;
     int exportCount = 0;
     double lastStart = 0;
@@ -163,6 +173,9 @@ public:
     QQuickItem *trimBar() const {
         return m_window ? m_window->findChild<QQuickItem *>(QStringLiteral("trimBar")) : nullptr;
     }
+    QQuickItem *dropArea() const {
+        return m_window ? m_window->findChild<QQuickItem *>(QStringLiteral("dropArea")) : nullptr;
+    }
 
 private:
     QQmlApplicationEngine m_engine;
@@ -189,6 +202,7 @@ private slots:
     void exportStartFailureClearsBusy();
     void failedExportPreservesExistingFile();
     void qmlDoesNotCreateAudioOutputWithoutVideo();
+    void qmlDropLoadsVideo();
     void qmlShortcutsTriggerBackendActions();
     void qmlArrowKeysMoveThePlayhead();
     void qmlSpaceChordsSetTheTrimEdges();
@@ -601,6 +615,42 @@ void BackendTests::qmlDoesNotCreateAudioOutputWithoutVideo() {
     QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
     QVERIFY(harness.window()->property("audioOutputReady").isValid());
     QCOMPARE(harness.window()->property("audioOutputReady").toBool(), false);
+}
+
+void BackendTests::qmlDropLoadsVideo() {
+    ShortcutBackend backend(QUrl(), 0.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QQuickItem *dropArea = harness.dropArea();
+    QVERIFY(dropArea);
+    QVERIFY(dropArea->isEnabled());
+
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+
+    const QUrl url = videoUrl();
+    QMimeData mimeData;
+    mimeData.setUrls({url, QUrl::fromLocalFile(QStringLiteral("/tmp/ignored.txt"))});
+
+    const QPoint pos(window->width() / 2, window->height() / 2);
+
+    QDragEnterEvent enterEvent(pos, Qt::CopyAction, &mimeData, Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(QCoreApplication::sendEvent(window, &enterEvent));
+    QVERIFY(enterEvent.isAccepted());
+    QTRY_COMPARE_WITH_TIMEOUT(dropArea->property("containsDrag").toBool(), true, 3000);
+
+    QDragMoveEvent moveEvent(pos, Qt::CopyAction, &mimeData, Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(QCoreApplication::sendEvent(window, &moveEvent));
+    QVERIFY(moveEvent.isAccepted());
+
+    QDropEvent dropEvent(pos, Qt::CopyAction, &mimeData, Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(QCoreApplication::sendEvent(window, &dropEvent));
+    QVERIFY(dropEvent.isAccepted());
+
+    QTRY_COMPARE_WITH_TIMEOUT(backend.loadCount, 1, 3000);
+    QCOMPARE(backend.lastLoadUrl, url);
 }
 
 void BackendTests::qmlShortcutsTriggerBackendActions() {

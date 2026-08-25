@@ -48,6 +48,11 @@ ApplicationWindow {
     function openVideo() {
         backend.openVideoDialog();
     }
+    function openDroppedUrls(urls) {
+        if (!urls || urls.length === 0)
+            return;
+        backend.load(urls[0]);
+    }
     function exportVideo() {
         if (!win.hasVideo || backend.duration <= 0 || backend.busy)
             return;
@@ -474,44 +479,82 @@ ApplicationWindow {
             radius: win.hasVideo ? 12 : 0
             color: "black"
             clip: true
+            border.width: dropArea.containsDrag ? 3 : 0
+            border.color: win.accent
 
-            VideoOutput {
-                id: videoOut
+            // DropArea is the parent of the preview contents so a drop on the
+            // button or the empty area still walks up to this target.
+            DropArea {
+                id: dropArea
+                objectName: "dropArea"
                 anchors.fill: parent
-            }
-            Connections {
-                target: videoOut.videoSink
-                function onVideoFrameChanged(frame) {
-                    player.finishPriming();
+                enabled: !win.quitConfirmVisible && !win.helpVisible && !backend.busy
+
+                onEntered: (drag) => {
+                    if (drag.hasUrls)
+                        drag.accept(Qt.CopyAction);
                 }
-            }
+                onPositionChanged: (drag) => {
+                    if (drag.hasUrls)
+                        drag.accept(Qt.CopyAction);
+                }
+                onDropped: (drop) => {
+                    if (!drop.hasUrls || drop.urls.length === 0)
+                        return;
+                    drop.acceptProposedAction();
+                    openDroppedUrls(drop.urls);
+                }
 
-            MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: openVideo()
-            }
+                VideoOutput {
+                    id: videoOut
+                    anchors.fill: parent
+                }
+                Connections {
+                    target: videoOut.videoSink
+                    function onVideoFrameChanged(frame) {
+                        player.finishPriming();
+                    }
+                }
 
-            Button {
-                id: openVideoButton
-                anchors.centerIn: parent
-                visible: !win.hasVideo
-                text: "Open a video"
-                highlighted: true
-                focusPolicy: Qt.NoFocus
-                font.pixelSize: 18
-                Material.foreground: win.accentForeground
-                HoverHandler {
+                MouseArea {
+                    anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
+                    onClicked: openVideo()
                 }
-                contentItem: Label {
-                    text: openVideoButton.text
-                    font: openVideoButton.font
-                    color: win.accentForeground
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+
+                Column {
+                    anchors.centerIn: parent
+                    visible: !win.hasVideo
+                    spacing: 10
+
+                    Button {
+                        id: openVideoButton
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: dropArea.containsDrag ? "Drop a video" : "Open a video"
+                        highlighted: true
+                        focusPolicy: Qt.NoFocus
+                        font.pixelSize: 18
+                        Material.foreground: win.accentForeground
+                        HoverHandler {
+                            cursorShape: Qt.PointingHandCursor
+                        }
+                        contentItem: Label {
+                            text: openVideoButton.text
+                            font: openVideoButton.font
+                            color: win.accentForeground
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: openVideo()
+                    }
+
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "or drop a file here"
+                        color: dropArea.containsDrag ? win.accent : "#7a7a80"
+                        font.pixelSize: 13
+                    }
                 }
-                onClicked: openVideo()
             }
         }
 
