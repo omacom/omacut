@@ -10,6 +10,8 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QRect>
+#include <QRectF>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -29,16 +31,18 @@ public:
     double lastStart = 0;
     double lastEnd = 0;
     QList<int> lastScaleHeights;
+    QRectF lastCrop;
 
     void openVideo() override { ++openCount; }
 
     void exportVideo(const QUrl &suggestedUrl, double start, double end,
-                     const QList<int> &scaleHeights) override {
+                     const QList<int> &scaleHeights, const QRectF &crop = {}) override {
         ++exportCount;
         lastSuggestedUrl = suggestedUrl;
         lastStart = start;
         lastEnd = end;
         lastScaleHeights = scaleHeights;
+        lastCrop = crop;
     }
 };
 
@@ -64,6 +68,8 @@ class ShortcutBackend : public QObject {
     Q_OBJECT
     Q_PROPERTY(QUrl source READ source NOTIFY infoChanged)
     Q_PROPERTY(double duration READ duration NOTIFY infoChanged)
+    Q_PROPERTY(int videoWidth READ videoWidth NOTIFY infoChanged)
+    Q_PROPERTY(int videoHeight READ videoHeight NOTIFY infoChanged)
     Q_PROPERTY(int thumbCount READ thumbCount NOTIFY thumbsChanged)
     Q_PROPERTY(int thumbReadyCount READ thumbReadyCount NOTIFY thumbsChanged)
     Q_PROPERTY(int thumbRevision READ thumbRevision NOTIFY thumbsChanged)
@@ -78,6 +84,8 @@ public:
 
     QUrl source() const { return m_source; }
     double duration() const { return m_duration; }
+    int videoWidth() const { return 1920; }
+    int videoHeight() const { return 1080; }
     int thumbCount() const { return 0; }
     int thumbReadyCount() const { return 0; }
     int thumbRevision() const { return 0; }
@@ -88,13 +96,14 @@ public:
 
     Q_INVOKABLE bool load(const QUrl &) { return false; }
     Q_INVOKABLE void openVideoDialog() { ++openCount; }
-    Q_INVOKABLE void exportDialog(double start, double end) {
+    Q_INVOKABLE void exportDialog(double start, double end, const QRectF &crop = {}) {
         ++exportCount;
         lastStart = start;
         lastEnd = end;
+        lastCrop = crop;
     }
     Q_INVOKABLE QUrl suggestedExportUrl() const { return {}; }
-    Q_INVOKABLE void exportClip(const QUrl &, double, double) {}
+    Q_INVOKABLE void exportClip(const QUrl &, double, double, int = 0, const QRectF & = {}) {}
     Q_INVOKABLE void requestThumbs(double start, double end) {
         ++thumbRequestCount;
         lastThumbStart = start;
@@ -108,6 +117,7 @@ public:
     int exportCount = 0;
     double lastStart = 0;
     double lastEnd = 0;
+    QRectF lastCrop;
     int thumbRequestCount = 0;
     double lastThumbStart = 0;
     double lastThumbEnd = 0;
@@ -163,6 +173,9 @@ public:
     QQuickItem *trimBar() const {
         return m_window ? m_window->findChild<QQuickItem *>(QStringLiteral("trimBar")) : nullptr;
     }
+    QQuickItem *cropOverlay() const {
+        return m_window ? m_window->findChild<QQuickItem *>(QStringLiteral("cropOverlay")) : nullptr;
+    }
 
 private:
     QQmlApplicationEngine m_engine;
@@ -196,7 +209,19 @@ private slots:
     void qmlQuitConfirmsUnexportedTrim();
     void trimArgsReencodeForPreciseCuts();
     void trimArgsScaleTheShorterSide();
+    void clampCropSnapsToEvenPixelsInsideTheFrame();
+    void trimArgsCropBeforeScale();
+    void exportDialogUsesCroppedSizeForQuality();
+    void exportClipCropsTheFrame();
     void exportHeightsNeverUpscale();
+    void qmlDragCreatesACrop();
+    void qmlDragInsideMovesTheCrop();
+    void qmlClickingDimClearsTheCrop();
+    void qmlCropPresetsAndLockedAspect();
+    void qmlShiftCornerScalesFromCenter();
+    void qmlCropPresetsAreQuietDuringQuitConfirm();
+    void qmlCropOnlyQuitConfirms();
+    void qmlEscapeClearsTheCrop();
     void themeAccentReadsOmarchyColors();
     void themeAccentForegroundKeepsContrast();
 
@@ -853,6 +878,287 @@ void BackendTests::qmlQuitConfirmsUnexportedTrim() {
     QCOMPARE(quitSpy.count(), 1);
 }
 
+static QPoint cropScenePos(QQuickItem *crop, qreal x, qreal y) {
+    return crop->mapToScene(QPointF(x, y)).toPoint();
+}
+
+static void showHarness(QmlHarness &harness) {
+    QQuickWindow *window = harness.window();
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+}
+
+void BackendTests::qmlDragCreatesACrop() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QTRY_VERIFY_WITH_TIMEOUT(harness.window()->property("audioOutputReady").toBool(), 3000);
+    backend.announceInfo();
+    showHarness(harness);
+
+    QQuickItem *crop = harness.cropOverlay();
+    QVERIFY(crop);
+    QTRY_VERIFY_WITH_TIMEOUT(crop->width() > 100 && crop->height() > 100, 3000);
+    QCOMPARE(crop->property("active").toBool(), false);
+
+    const QPoint start = cropScenePos(crop, 80, 60);
+    const QPoint end = cropScenePos(crop, 280, 220);
+    QTest::mousePress(harness.window(), Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(harness.window(), end);
+    QTest::mouseRelease(harness.window(), Qt::LeftButton, Qt::NoModifier, end);
+
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("active").toBool(), true, 3000);
+    QVERIFY(crop->property("cropW").toDouble() > 0.05);
+    QVERIFY(crop->property("cropH").toDouble() > 0.05);
+    QCOMPARE(crop->property("aspectMode").toString(), QString());
+}
+
+void BackendTests::qmlDragInsideMovesTheCrop() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QTRY_VERIFY_WITH_TIMEOUT(harness.window()->property("audioOutputReady").toBool(), 3000);
+    backend.announceInfo();
+    showHarness(harness);
+
+    QQuickItem *crop = harness.cropOverlay();
+    QVERIFY(crop);
+    QTRY_VERIFY_WITH_TIMEOUT(crop->width() > 100 && crop->height() > 100, 3000);
+
+    QTest::mousePress(harness.window(), Qt::LeftButton, Qt::NoModifier,
+                      cropScenePos(crop, 80, 60));
+    QTest::mouseMove(harness.window(), cropScenePos(crop, 280, 220));
+    QTest::mouseRelease(harness.window(), Qt::LeftButton, Qt::NoModifier,
+                        cropScenePos(crop, 280, 220));
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("active").toBool(), true, 3000);
+
+    const qreal oldX = crop->property("cropX").toDouble();
+    const qreal oldY = crop->property("cropY").toDouble();
+    const qreal oldW = crop->property("cropW").toDouble();
+    const qreal oldH = crop->property("cropH").toDouble();
+    const qreal cx = crop->property("boxX").toDouble() + crop->property("boxW").toDouble() / 2;
+    const qreal cy = crop->property("boxY").toDouble() + crop->property("boxH").toDouble() / 2;
+    QTest::mousePress(harness.window(), Qt::LeftButton, Qt::NoModifier,
+                      cropScenePos(crop, cx, cy));
+    QTest::mouseMove(harness.window(), cropScenePos(crop, cx + 80, cy + 50));
+    QTest::mouseRelease(harness.window(), Qt::LeftButton, Qt::NoModifier,
+                        cropScenePos(crop, cx + 80, cy + 50));
+
+    QTRY_VERIFY_WITH_TIMEOUT(crop->property("cropX").toDouble() > oldX + 0.01, 3000);
+    QVERIFY(crop->property("cropY").toDouble() > oldY + 0.01);
+    QVERIFY(qAbs(crop->property("cropW").toDouble() - oldW) < 1e-9);
+    QVERIFY(qAbs(crop->property("cropH").toDouble() - oldH) < 1e-9);
+}
+
+void BackendTests::qmlClickingDimClearsTheCrop() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QTRY_VERIFY_WITH_TIMEOUT(harness.window()->property("audioOutputReady").toBool(), 3000);
+    backend.announceInfo();
+    showHarness(harness);
+
+    QQuickItem *crop = harness.cropOverlay();
+    QVERIFY(crop);
+    QTRY_VERIFY_WITH_TIMEOUT(crop->width() > 100 && crop->height() > 100, 3000);
+
+    QTest::keyClick(harness.window(), Qt::Key_P);
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("active").toBool(), true, 3000);
+
+    // Portrait 9:16 on 1920x1080 is a centered strip; the left edge is dim.
+    QTest::mouseClick(harness.window(), Qt::LeftButton, Qt::NoModifier,
+                      cropScenePos(crop, 8, crop->height() / 2));
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("active").toBool(), false, 3000);
+    QCOMPARE(crop->property("aspectMode").toString(), QString());
+}
+
+void BackendTests::qmlCropPresetsAndLockedAspect() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QTRY_VERIFY_WITH_TIMEOUT(harness.window()->property("audioOutputReady").toBool(), 3000);
+    backend.announceInfo();
+    showHarness(harness);
+
+    QQuickItem *crop = harness.cropOverlay();
+    QVERIFY(crop);
+    QTRY_VERIFY_WITH_TIMEOUT(crop->width() > 100 && crop->height() > 100, 3000);
+
+    QTest::keyClick(harness.window(), Qt::Key_P);
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("aspectMode").toString(),
+                              QStringLiteral("portrait"), 3000);
+    QCOMPARE(crop->property("active").toBool(), true);
+    QCOMPARE(crop->property("cropY").toDouble(), 0.0);
+    QCOMPARE(crop->property("cropH").toDouble(), 1.0);
+    QCOMPARE(crop->property("cropW").toDouble(), 607.5 / 1920.0);
+    QCOMPARE(crop->property("cropX").toDouble(), (1920.0 - 607.5) / 2.0 / 1920.0);
+
+    QTest::keyClick(harness.window(), Qt::Key_L);
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("aspectMode").toString(),
+                              QStringLiteral("landscape"), 3000);
+    QCOMPARE(crop->property("cropX").toDouble(), 0.0);
+    QCOMPARE(crop->property("cropY").toDouble(), 0.0);
+    QCOMPARE(crop->property("cropW").toDouble(), 1.0);
+    QCOMPARE(crop->property("cropH").toDouble(), 1.0);
+
+    QTest::keyClick(harness.window(), Qt::Key_S);
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("aspectMode").toString(),
+                              QStringLiteral("square"), 3000);
+    QCOMPARE(crop->property("cropW").toDouble(), 1080.0 / 1920.0);
+    QCOMPARE(crop->property("cropH").toDouble(), 1.0);
+    QCOMPARE(crop->property("cropX").toDouble(), 420.0 / 1920.0);
+
+    QTest::keyClick(harness.window(), Qt::Key_P);
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("aspectMode").toString(),
+                              QStringLiteral("portrait"), 3000);
+
+    const qreal boxX = crop->property("boxX").toDouble();
+    const qreal boxY = crop->property("boxY").toDouble();
+    const qreal boxW = crop->property("boxW").toDouble();
+    const qreal boxH = crop->property("boxH").toDouble();
+    // A few pixels inside the SE corner so the press lands on the overlay.
+    const QPoint se = cropScenePos(crop, boxX + boxW - 6, boxY + boxH - 6);
+    const QPoint seIn = cropScenePos(crop, boxX + boxW - 50, boxY + boxH - 90);
+    QTest::mousePress(harness.window(), Qt::LeftButton, Qt::NoModifier, se);
+    QTest::mouseMove(harness.window(), seIn);
+    QTest::mouseRelease(harness.window(), Qt::LeftButton, Qt::NoModifier, seIn);
+
+    QTRY_VERIFY_WITH_TIMEOUT(crop->property("cropH").toDouble() < 0.999, 3000);
+    const qreal pixelW = crop->property("cropW").toDouble() * 1920.0;
+    const qreal pixelH = crop->property("cropH").toDouble() * 1080.0;
+    QVERIFY2(qAbs(pixelW / pixelH - 9.0 / 16.0) < 0.02,
+             qPrintable(QStringLiteral("aspect %1").arg(pixelW / pixelH)));
+}
+
+void BackendTests::qmlShiftCornerScalesFromCenter() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QTRY_VERIFY_WITH_TIMEOUT(harness.window()->property("audioOutputReady").toBool(), 3000);
+    backend.announceInfo();
+    showHarness(harness);
+
+    QQuickItem *crop = harness.cropOverlay();
+    QVERIFY(crop);
+    QTRY_VERIFY_WITH_TIMEOUT(crop->width() > 100 && crop->height() > 100, 3000);
+
+    QTest::keyClick(harness.window(), Qt::Key_P);
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("active").toBool(), true, 3000);
+
+    const qreal cx = crop->property("cropX").toDouble() + crop->property("cropW").toDouble() / 2;
+    const qreal cy = crop->property("cropY").toDouble() + crop->property("cropH").toDouble() / 2;
+    const qreal boxX = crop->property("boxX").toDouble();
+    const qreal boxY = crop->property("boxY").toDouble();
+    const qreal boxW = crop->property("boxW").toDouble();
+    const qreal boxH = crop->property("boxH").toDouble();
+    const QPoint se = cropScenePos(crop, boxX + boxW - 6, boxY + boxH - 6);
+    const QPoint seIn = cropScenePos(crop, boxX + boxW - 60, boxY + boxH - 110);
+    QTest::mousePress(harness.window(), Qt::LeftButton, Qt::ShiftModifier, se);
+    QTest::mouseMove(harness.window(), seIn);
+    QTest::mouseRelease(harness.window(), Qt::LeftButton, Qt::ShiftModifier, seIn);
+
+    QTRY_VERIFY_WITH_TIMEOUT(crop->property("cropH").toDouble() < 0.999, 3000);
+    const qreal newCx = crop->property("cropX").toDouble() + crop->property("cropW").toDouble() / 2;
+    const qreal newCy = crop->property("cropY").toDouble() + crop->property("cropH").toDouble() / 2;
+    QVERIFY2(qAbs(newCx - cx) < 0.02, qPrintable(QStringLiteral("cx %1 -> %2").arg(cx).arg(newCx)));
+    QVERIFY2(qAbs(newCy - cy) < 0.02, qPrintable(QStringLiteral("cy %1 -> %2").arg(cy).arg(newCy)));
+}
+
+void BackendTests::qmlCropPresetsAreQuietDuringQuitConfirm() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QTRY_VERIFY_WITH_TIMEOUT(harness.window()->property("audioOutputReady").toBool(), 3000);
+    backend.announceInfo();
+    showHarness(harness);
+
+    QQuickItem *crop = harness.cropOverlay();
+    QQuickItem *trimBar = harness.trimBar();
+    QVERIFY(crop);
+    QVERIFY(trimBar);
+
+    QTest::keyClick(harness.window(), Qt::Key_Right, Qt::ShiftModifier);
+    QTest::keyClick(harness.window(), Qt::Key_Space, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(trimBar->property("startSec").toDouble(), 5.0, 3000);
+
+    QTest::keyClick(harness.window(), Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(harness.window()->property("quitConfirmVisible").toBool(), true, 3000);
+    QCOMPARE(crop->property("active").toBool(), false);
+
+    QTest::keyClick(harness.window(), Qt::Key_P);
+    QTest::keyClick(harness.window(), Qt::Key_L);
+    QTest::keyClick(harness.window(), Qt::Key_S);
+    QCOMPARE(crop->property("active").toBool(), false);
+    QCOMPARE(crop->property("aspectMode").toString(), QString());
+}
+
+void BackendTests::qmlCropOnlyQuitConfirms() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QTRY_VERIFY_WITH_TIMEOUT(harness.window()->property("audioOutputReady").toBool(), 3000);
+    backend.announceInfo();
+    showHarness(harness);
+
+    QQuickItem *crop = harness.cropOverlay();
+    QVERIFY(crop);
+    QCOMPARE(harness.window()->property("cropDirty").toBool(), false);
+    QCOMPARE(harness.window()->property("trimDirty").toBool(), false);
+
+    QTest::keyClick(harness.window(), Qt::Key_P);
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("active").toBool(), true, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(harness.window()->property("cropDirty").toBool(), true, 3000);
+    QCOMPARE(harness.window()->property("trimDirty").toBool(), false);
+    QCOMPARE(harness.window()->property("unexportedWork").toBool(), true);
+
+    QTest::keyClick(harness.window(), Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(harness.window()->property("quitConfirmVisible").toBool(), true, 3000);
+}
+
+void BackendTests::qmlEscapeClearsTheCrop() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QTRY_VERIFY_WITH_TIMEOUT(harness.window()->property("audioOutputReady").toBool(), 3000);
+    backend.announceInfo();
+    showHarness(harness);
+
+    QQuickItem *crop = harness.cropOverlay();
+    QVERIFY(crop);
+
+    QTest::keyClick(harness.window(), Qt::Key_P);
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("active").toBool(), true, 3000);
+
+    // Help and quit still win: Esc closes those first.
+    QTest::keyClick(harness.window(), Qt::Key_Question);
+    QTRY_COMPARE_WITH_TIMEOUT(harness.window()->property("helpVisible").toBool(), true, 3000);
+    QTest::keyClick(harness.window(), Qt::Key_Escape);
+    QTRY_COMPARE_WITH_TIMEOUT(harness.window()->property("helpVisible").toBool(), false, 3000);
+    QCOMPARE(crop->property("active").toBool(), true);
+
+    QTest::keyClick(harness.window(), Qt::Key_Escape);
+    QTRY_COMPARE_WITH_TIMEOUT(crop->property("active").toBool(), false, 3000);
+    QCOMPARE(crop->property("aspectMode").toString(), QString());
+    QCOMPARE(harness.window()->property("cropDirty").toBool(), false);
+}
+
 void BackendTests::trimArgsReencodeForPreciseCuts() {
     const QStringList args = ffmpeg::trimArgs(QStringLiteral("in.mp4"),
                                               QStringLiteral("out.mp4"),
@@ -882,6 +1188,89 @@ void BackendTests::trimArgsScaleTheShorterSide() {
     QVERIFY(vfAt >= 0);
     QCOMPARE(args.value(vfAt + 1),
              QStringLiteral("scale='if(gt(iw,ih),-2,1080)':'if(gt(iw,ih),1080,-2)'"));
+}
+
+void BackendTests::clampCropSnapsToEvenPixelsInsideTheFrame() {
+    QCOMPARE(ffmpeg::clampCrop(QRect(), 1920, 1080), QRect());
+    QCOMPARE(ffmpeg::clampCrop(QRect(10, 10, 0, 10), 1920, 1080), QRect());
+    QCOMPARE(ffmpeg::clampCrop(QRect(10, 20, 100, 50), 1920, 1080), QRect(10, 20, 100, 50));
+    // Odd origins/sizes snap down to even, still inside the frame.
+    QCOMPARE(ffmpeg::clampCrop(QRect(3, 5, 15, 17), 1920, 1080), QRect(2, 4, 16, 18));
+    QCOMPARE(ffmpeg::clampCrop(QRect(-10, -4, 40, 20), 100, 80), QRect(0, 0, 30, 16));
+    QCOMPARE(ffmpeg::clampCrop(QRect(90, 70, 50, 50), 100, 80), QRect(90, 70, 10, 10));
+    QCOMPARE(ffmpeg::clampCrop(QRect(0, 0, 1, 1), 32, 32), QRect());
+}
+
+void BackendTests::trimArgsCropBeforeScale() {
+    const QStringList cropped = ffmpeg::trimArgs(QStringLiteral("in.mp4"),
+                                                 QStringLiteral("out.mp4"),
+                                                 0.0, 1.0, 0, QRect(10, 20, 640, 360));
+    const int cropVf = cropped.indexOf(QStringLiteral("-vf"));
+    QVERIFY(cropVf >= 0);
+    QCOMPARE(cropped.value(cropVf + 1), QStringLiteral("crop=640:360:10:20"));
+
+    const QStringList both = ffmpeg::trimArgs(QStringLiteral("in.mp4"),
+                                              QStringLiteral("out.mp4"),
+                                              0.0, 1.0, 720, QRect(10, 20, 640, 360));
+    const int bothVf = both.indexOf(QStringLiteral("-vf"));
+    QVERIFY(bothVf >= 0);
+    QCOMPARE(both.value(bothVf + 1),
+             QStringLiteral("crop=640:360:10:20,scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)'"));
+}
+
+void BackendTests::exportDialogUsesCroppedSizeForQuality() {
+    const QString hdPath = m_dir.filePath(QStringLiteral("hd.mp4"));
+    const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    QVERIFY(!ffmpeg.isEmpty());
+    QProcess proc;
+    proc.start(ffmpeg, {
+        QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"), QStringLiteral("error"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("testsrc=size=1920x1080:rate=1:duration=1"),
+        QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"),
+        QStringLiteral("-y"), hdPath,
+    });
+    QVERIFY(proc.waitForFinished(15000));
+    QCOMPARE(proc.exitCode(), 0);
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(hdPath)));
+    waitForBackgroundWork(backend);
+
+    backend.exportDialog(0.0, 1.0);
+    QCOMPARE(picker->lastScaleHeights, (QList<int>{720}));
+    QCOMPARE(picker->lastCrop, QRectF());
+
+    // A 600px-tall crop is at or below 720p, so Original is the only choice.
+    backend.exportDialog(0.0, 1.0, QRectF(0, 0, 800, 600));
+    QCOMPARE(picker->exportCount, 2);
+    QCOMPARE(picker->lastCrop, QRectF(0, 0, 800, 600));
+    QCOMPARE(picker->lastScaleHeights, QList<int>{});
+}
+
+void BackendTests::exportClipCropsTheFrame() {
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(videoUrl()));
+    waitForBackgroundWork(backend);
+
+    const QString outPath = m_dir.filePath(QStringLiteral("cropped.mp4"));
+    backend.exportClip(QUrl::fromLocalFile(outPath), 0.0, 1.0, 0, QRectF(8, 8, 16, 16));
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 20000);
+
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 1);
+    const ffmpeg::VideoInfo info = ffmpeg::probe(outPath);
+    QVERIFY(info.ok);
+    QCOMPARE(info.width, 16);
+    QCOMPARE(info.height, 16);
 }
 
 void BackendTests::exportHeightsNeverUpscale() {

@@ -25,13 +25,23 @@ ApplicationWindow {
 
     // What the last export wrote, so quitting only warns about unexported work.
     // A trim spanning the whole video is never dirty — that's just the source.
+    // Same for a full-frame (no) crop.
     property real exportedStartSec: -1
     property real exportedEndSec: -1
     property real pendingExportStartSec: 0
     property real pendingExportEndSec: 0
+    property rect exportedCrop: Qt.rect(0, 0, 0, 0)
+    property rect pendingExportCrop: Qt.rect(0, 0, 0, 0)
     readonly property bool trimDirty: hasVideo && backend.duration > 0
         && (trimBar.startSec > 0 || trimBar.endSec < backend.duration)
         && (trimBar.startSec !== exportedStartSec || trimBar.endSec !== exportedEndSec)
+    readonly property bool cropDirty: hasVideo && cropOverlay.active
+        && (exportedCrop.width <= 0
+            || exportedCrop.x !== cropOverlay.sourceRect.x
+            || exportedCrop.y !== cropOverlay.sourceRect.y
+            || exportedCrop.width !== cropOverlay.sourceRect.width
+            || exportedCrop.height !== cropOverlay.sourceRect.height)
+    readonly property bool unexportedWork: trimDirty || cropDirty
 
     Material.theme: Material.Dark
     Material.accent: win.accent
@@ -53,7 +63,8 @@ ApplicationWindow {
             return;
         pendingExportStartSec = trimBar.startSec;
         pendingExportEndSec = trimBar.endSec;
-        backend.exportDialog(trimBar.startSec, trimBar.endSec);
+        pendingExportCrop = cropOverlay.active ? cropOverlay.sourceRect : Qt.rect(0, 0, 0, 0);
+        backend.exportDialog(trimBar.startSec, trimBar.endSec, pendingExportCrop);
     }
     function ensureAudioOutput() {
         if (audioOutput === null && win.hasVideo)
@@ -117,7 +128,7 @@ ApplicationWindow {
     }
     property bool quitting: false
     function requestQuit() {
-        if (trimDirty) {
+        if (unexportedWork) {
             if (player.playbackState === MediaPlayer.PlayingState)
                 player.pause();
             quitConfirmVisible = true;
@@ -148,7 +159,7 @@ ApplicationWindow {
     onClosing: (close) => {
         if (win.quitting)
             return;
-        if (win.trimDirty) {
+        if (win.unexportedWork) {
             close.accepted = false;
             if (player.playbackState === MediaPlayer.PlayingState)
                 player.pause();
@@ -235,6 +246,27 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "P"
+        context: Qt.ApplicationShortcut
+        enabled: win.hasVideo && !win.quitConfirmVisible
+        onActivated: cropOverlay.applyPreset("portrait")
+    }
+
+    Shortcut {
+        sequence: "L"
+        context: Qt.ApplicationShortcut
+        enabled: win.hasVideo && !win.quitConfirmVisible
+        onActivated: cropOverlay.applyPreset("landscape")
+    }
+
+    Shortcut {
+        sequence: "S"
+        context: Qt.ApplicationShortcut
+        enabled: win.hasVideo && !win.quitConfirmVisible
+        onActivated: cropOverlay.applyPreset("square")
+    }
+
+    Shortcut {
         sequence: "Ctrl+S"
         context: Qt.ApplicationShortcut
         enabled: win.hasVideo && backend.duration > 0 && !backend.busy
@@ -277,6 +309,8 @@ ApplicationWindow {
                 win.quitConfirmVisible = false;
             else if (win.helpVisible)
                 win.helpVisible = false;
+            else if (cropOverlay.active || cropOverlay.drawing || cropOverlay.resizing)
+                cropOverlay.clear();
         }
     }
 
@@ -486,8 +520,23 @@ ApplicationWindow {
                 }
             }
 
+            CropOverlay {
+                id: cropOverlay
+                anchors.fill: videoOut
+                visible: win.hasVideo
+                enabled: win.hasVideo && !win.quitConfirmVisible
+                accent: win.accent
+                contentX: videoOut.contentRect.x
+                contentY: videoOut.contentRect.y
+                contentW: videoOut.contentRect.width
+                contentH: videoOut.contentRect.height
+                videoWidth: backend.videoWidth
+                videoHeight: backend.videoHeight
+            }
+
             MouseArea {
                 anchors.fill: parent
+                visible: !win.hasVideo
                 cursorShape: Qt.PointingHandCursor
                 onClicked: openVideo()
             }
@@ -650,6 +699,11 @@ ApplicationWindow {
                         { keys: "Ctrl Space", action: "Trim start to playhead" },
                         { keys: "Alt Space", action: "Trim end to playhead" },
                         { keys: "Z", action: "Zoom the selection" },
+                        { keys: "Drag video", action: "Crop" },
+                        { keys: "Drag inside", action: "Move crop" },
+                        { keys: "P / L / S", action: "Portrait / landscape / square crop" },
+                        { keys: "Shift+corner", action: "Scale crop from center" },
+                        { keys: "Esc", action: "Clear crop" },
                         { keys: "Ctrl O", action: "Open a video" },
                         { keys: "Ctrl S", action: "Export" },
                         { keys: "Q", action: "Quit" },
@@ -658,7 +712,7 @@ ApplicationWindow {
                     delegate: Row {
                         spacing: 18
                         Label {
-                            width: 110
+                            width: 130
                             horizontalAlignment: Text.AlignRight
                             text: modelData.keys
                             color: win.accent
@@ -708,14 +762,14 @@ ApplicationWindow {
                 spacing: 8
 
                 Label {
-                    text: "Unexported trim"
+                    text: "Unexported changes"
                     color: "white"
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
                 }
 
                 Label {
-                    text: "Your trim hasn't been exported. Quit anyway?"
+                    text: "Your changes haven't been exported. Quit anyway?"
                     color: "#d6d6da"
                     font.pixelSize: 13
                     bottomPadding: 12
@@ -777,10 +831,13 @@ ApplicationWindow {
             trimBar.playheadSec = 0;
             win.exportedStartSec = -1;
             win.exportedEndSec = -1;
+            win.exportedCrop = Qt.rect(0, 0, 0, 0);
+            cropOverlay.clear();
         }
         function onExportDone(path) {
             win.exportedStartSec = win.pendingExportStartSec;
             win.exportedEndSec = win.pendingExportEndSec;
+            win.exportedCrop = win.pendingExportCrop;
             win.showNotice("Saved " + path);
         }
         function onExportFailed(message) {

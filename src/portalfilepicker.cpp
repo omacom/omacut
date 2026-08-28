@@ -180,7 +180,7 @@ void PortalFilePicker::openVideo() {
 }
 
 void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, double end,
-                                   const QList<int> &scaleHeights) {
+                                   const QList<int> &scaleHeights, const QRectF &crop) {
     const QFileInfo target(suggestedUrl.toLocalFile());
 
     QVariantMap options;
@@ -208,6 +208,7 @@ void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, doubl
                     options, Action::Export)) {
         m_pendingExportStart = start;
         m_pendingExportEnd = end;
+        m_pendingCrop = crop;
     }
 }
 
@@ -290,6 +291,7 @@ void PortalFilePicker::handleResponse(uint response, const QVariantMap &results)
     const Action action = m_pendingAction;
     const double start = m_pendingExportStart;
     const double end = m_pendingExportEnd;
+    const QRectF crop = m_pendingCrop;
     clearPending();
 
     if (response != 0)
@@ -325,7 +327,7 @@ void PortalFilePicker::handleResponse(uint response, const QVariantMap &results)
         }
         arg.endArray();
     }
-    emit exportSelected(url, start, end, scaleHeight);
+    emit exportSelected(url, start, end, scaleHeight, crop);
 }
 
 void PortalFilePicker::clearPending() {
@@ -338,4 +340,5 @@ void PortalFilePicker::clearPending() {
 
     m_pendingPath.clear();
     m_pendingAction = Action::None;
+    m_pendingCrop = {};
 }

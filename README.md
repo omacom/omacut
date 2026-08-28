@@ -15,6 +15,8 @@ Built using **Qt Quick (QML)** UI with the Material style — the same Qt stack 
 - *Ctrl+Space*: Move the start of the trim to the playhead.
 - *Alt+Space*: Move the end of the trim to the playhead.
 - *Z*: Zoom into the trimmed selection for fine tuning (Z again zooms back out).
+- *Drag on the video*: Draw a crop. Drag inside the box to move it; corner handles resize it; Esc or click the dimmed outside to clear.
+- *P / L / S*: Portrait (9:16), landscape (16:9), or square crop, centered and as large as it can be. Corner drags then keep that aspect. Shift+drag a corner scales from the center.
 - *Ctrl+O*: Open a new file to trim.
 - *Ctrl+S*: Export the current trim.
 - *Q*: Quit (asks first if the trim hasn't been exported).
@@ -29,7 +31,7 @@ Install via the Omarchy Package Repository via the `omacut` package. It's instal
 - `xdg-desktop-portal` and a portal backend for the file picker
 - `ffmpeg` and `ffprobe` on your PATH (used at runtime)
 
-Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio.
+Exports are always written as MP4 files, regardless of the input video's container. A crop drawn on the preview is applied only at export, together with the trim. The export dialog offers Original/1080p/720p quality — never upscaling, judged on the cropped frame, and always preserving the aspect ratio.
 
 ## Build
 
