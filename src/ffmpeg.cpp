@@ -6,6 +6,8 @@
 #include <QProcess>
 #include <QStandardPaths>
 
+#include <QtGlobal>
+
 namespace ffmpeg {
 
 namespace {
@@ -123,8 +125,25 @@ QImage thumbnail(const QString &path, double time, int height,
     return img;
 }
 
+QRect clampCrop(const QRect &crop, int frameWidth, int frameHeight) {
+    if (frameWidth <= 0 || frameHeight <= 0 || crop.width() <= 0 || crop.height() <= 0)
+        return {};
+
+    int x = qBound(0, crop.x(), frameWidth - 1);
+    int y = qBound(0, crop.y(), frameHeight - 1);
+    int x2 = qBound(x + 1, crop.x() + crop.width(), frameWidth);
+    int y2 = qBound(y + 1, crop.y() + crop.height(), frameHeight);
+    x &= ~1;
+    y &= ~1;
+    int w = (x2 - x) & ~1;
+    int h = (y2 - y) & ~1;
+    if (w < 2 || h < 2)
+        return {};
+    return {x, y, w, h};
+}
+
 QStringList trimArgs(const QString &src, const QString &dst, double start, double end,
-                     int scaleHeight) {
+                     int scaleHeight, const QRect &crop) {
     // Machine-readable progress on stdout (errors stay on stderr), so the UI
     // can show how far along the encode is.
     QStringList args = {"-y", "-loglevel", "error", "-progress", "pipe:1"};
@@ -134,12 +153,20 @@ QStringList trimArgs(const QString &src, const QString &dst, double start, doubl
     args << "-ss" << QString::number(start, 'f', 3)
          << "-i" << src
          << "-t" << QString::number(qMax(end - start, 0.0), 'f', 3);
+
+    QStringList vf;
+    if (crop.width() > 0 && crop.height() > 0)
+        vf << QStringLiteral("crop=%1:%2:%3:%4")
+                  .arg(crop.width()).arg(crop.height()).arg(crop.x()).arg(crop.y());
     // Cap the shorter side, judged on the decoded (rotation-applied) frame, so
-    // portrait and landscape both keep their aspect ratio. -2 keeps the other
-    // side divisible by two, which libx264 requires.
+    // portrait and landscape both keep their aspect ratio. After a crop this
+    // is the cropped frame. -2 keeps the other side divisible by two, which
+    // libx264 requires.
     if (scaleHeight > 0)
-        args << "-vf"
-             << QString("scale='if(gt(iw,ih),-2,%1)':'if(gt(iw,ih),%1,-2)'").arg(scaleHeight);
+        vf << QString("scale='if(gt(iw,ih),-2,%1)':'if(gt(iw,ih),%1,-2)'").arg(scaleHeight);
+    if (!vf.isEmpty())
+        args << "-vf" << vf.join(QLatin1Char(','));
+
     args << "-c:v" << "libx264" << "-preset" << "veryfast"
          << "-crf" << "18" << "-c:a" << "aac"
          << "-movflags" << "+faststart"

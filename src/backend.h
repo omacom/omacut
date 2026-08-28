@@ -3,6 +3,7 @@
 #include <QFileSystemWatcher>
 #include <QImage>
 #include <QObject>
+#include <QRectF>
 #include <QString>
 #include <QTimer>
 #include <QUrl>
@@ -20,6 +21,8 @@ class Backend : public QObject {
     Q_OBJECT
     Q_PROPERTY(QUrl source READ source NOTIFY infoChanged)
     Q_PROPERTY(double duration READ duration NOTIFY infoChanged)
+    Q_PROPERTY(int videoWidth READ videoWidth NOTIFY infoChanged)
+    Q_PROPERTY(int videoHeight READ videoHeight NOTIFY infoChanged)
     Q_PROPERTY(int thumbCount READ thumbCount NOTIFY thumbsChanged)
     Q_PROPERTY(int thumbReadyCount READ thumbReadyCount NOTIFY thumbsChanged)
     Q_PROPERTY(int thumbRevision READ thumbRevision NOTIFY thumbsChanged)
@@ -36,6 +39,8 @@ public:
 
     QUrl source() const { return m_source; }
     double duration() const { return m_info.duration; }
+    int videoWidth() const { return m_info.width; }
+    int videoHeight() const { return m_info.height; }
     int thumbCount() const { return m_thumbCount; }
     int thumbReadyCount() const { return m_thumbReadyCount; }
     int thumbRevision() const { return m_thumbRevision; }
@@ -56,15 +61,17 @@ public:
 
     // Open native desktop file dialogs.
     Q_INVOKABLE void openVideoDialog();
-    Q_INVOKABLE void exportDialog(double start, double end);
+    // crop is source pixels; an empty/invalid rect means the full frame.
+    Q_INVOKABLE void exportDialog(double start, double end, const QRectF &crop = {});
 
     // Suggested "<name>_trimmed.mp4" target next to the source.
     Q_INVOKABLE QUrl suggestedExportUrl() const;
 
     // Write [start, end] (seconds) of the loaded video to dst. A non-zero
-    // scaleHeight downscales the shorter side to that size.
+    // scaleHeight downscales the shorter side to that size. crop is source
+    // pixels; empty means no crop.
     Q_INVOKABLE void exportClip(const QUrl &dst, double start, double end,
-                                int scaleHeight = 0);
+                                int scaleHeight = 0, const QRectF &crop = {});
 
     // The downscale heights worth offering for a source: only ones strictly
     // below the source's shorter side, so exports never upscale.

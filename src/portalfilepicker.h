@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QRectF>
 #include <QVariantMap>
 
 #include "filepicker.h"
@@ -12,7 +13,7 @@ public:
 
     void openVideo() override;
     void exportVideo(const QUrl &suggestedUrl, double start, double end,
-                     const QList<int> &scaleHeights) override;
+                     const QList<int> &scaleHeights, const QRectF &crop = {}) override;
 
 private slots:
     void handleResponse(uint response, const QVariantMap &results);
@@ -33,4 +34,5 @@ private:
     Action m_pendingAction = Action::None;
     double m_pendingExportStart = 0;
     double m_pendingExportEnd = 0;
+    QRectF m_pendingCrop;
 };

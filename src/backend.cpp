@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
+#include <QRect>
 #include <QTextStream>
 
 #include <cstdio>
@@ -43,6 +44,14 @@ bool replaceWithTemp(const QString &tmpPath, const QString &outPath) {
     const QByteArray tmpName = QFile::encodeName(tmpPath);
     const QByteArray outName = QFile::encodeName(outPath);
     return std::rename(tmpName.constData(), outName.constData()) == 0;
+}
+
+QRect pixelCropRect(const QRectF &crop, int frameWidth, int frameHeight) {
+    if (crop.width() <= 0 || crop.height() <= 0)
+        return {};
+    return ffmpeg::clampCrop(QRect(qRound(crop.x()), qRound(crop.y()),
+                                   qRound(crop.width()), qRound(crop.height())),
+                             frameWidth, frameHeight);
 }
 }
 
@@ -193,12 +202,15 @@ void Backend::openVideoDialog() {
     m_filePicker->openVideo();
 }
 
-void Backend::exportDialog(double start, double end) {
+void Backend::exportDialog(double start, double end, const QRectF &crop) {
     if (m_path.isEmpty() || !m_info.ok)
         return;
 
+    const QRect pixels = pixelCropRect(crop, m_info.width, m_info.height);
+    const int width = pixels.isValid() ? pixels.width() : m_info.width;
+    const int height = pixels.isValid() ? pixels.height() : m_info.height;
     m_filePicker->exportVideo(suggestedExportUrl(), start, end,
-                              exportHeights(m_info.width, m_info.height));
+                              exportHeights(width, height), crop);
 }
 
 QList<int> Backend::exportHeights(int width, int height) {
@@ -314,12 +326,19 @@ QUrl Backend::suggestedExportUrl() const {
     return QUrl::fromLocalFile(target);
 }
 
-void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHeight) {
+void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHeight,
+                         const QRectF &crop) {
     if (m_path.isEmpty() || !m_info.ok || m_busy)
         return;
 
     if (end - start <= 0.0) {
         emit exportFailed("The selected clip has no length.");
+        return;
+    }
+
+    const QRect pixels = pixelCropRect(crop, m_info.width, m_info.height);
+    if (crop.width() > 0 && crop.height() > 0 && !pixels.isValid()) {
+        emit exportFailed("The crop has no area.");
         return;
     }
 
@@ -347,7 +366,8 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
     // success, so failed/cancelled exports preserve any existing file.
     const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
     QFile::remove(tmpPath);
-    const QStringList args = ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight);
+    const QStringList args = ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight,
+                                              pixels);
 
     auto *proc = new QProcess(this);
     auto completed = std::make_shared<bool>(false);
