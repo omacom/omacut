@@ -917,6 +917,21 @@ void BackendTests::themeAccentReadsOmarchyColors() {
     writeColors("accent = '#aabbcc'\n");
     QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#aabbcc"));
 
+    // Themes annotate their palette, and the note is not part of the colour.
+    writeColors("accent = \"#4ECDC4\"          # secondary-400 -- the paired accent\n");
+    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#4ECDC4"));
+
+    writeColors("accent = '#aabbcc'  # single quoted, with a note\n");
+    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#aabbcc"));
+
+    // Unquoted, the colour's own '#' opens it and a later one opens a comment.
+    writeColors("accent = #4ECDC4 # secondary-400\n");
+    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#4ECDC4"));
+
+    // A named colour keeps working with a note after it.
+    writeColors("accent = teal # not a hex value at all\n");
+    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("teal"));
+
     // A value that isn't a color keeps the fallback rather than breaking bindings.
     writeColors("accent = \"not-a-color\"\n");
     QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), fallback);
