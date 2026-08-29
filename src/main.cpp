@@ -9,6 +9,7 @@
 
 #include "backend.h"
 #include "thumbprovider.h"
+#include "ytdlp.h"
 
 int main(int argc, char *argv[]) {
     QGuiApplication app(argc, argv);
@@ -36,10 +37,15 @@ int main(int argc, char *argv[]) {
     if (engine.rootObjects().isEmpty())
         return -1;
 
-    // Optionally open a file passed on the command line.
+    // Optionally open a file — or a link — passed on the command line.
     const QStringList args = app.arguments();
-    if (args.size() > 1)
-        backend.load(QUrl::fromLocalFile(args.at(1)));
+    if (args.size() > 1) {
+        const QString target = args.at(1);
+        if (ytdlp::isLink(target))
+            backend.openLink(target);
+        else
+            backend.load(QUrl::fromLocalFile(target));
+    }
 
     return app.exec();
 }

@@ -252,6 +252,13 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "Ctrl+V"
+        context: Qt.ApplicationShortcut
+        enabled: !win.quitConfirmVisible && !backend.busy
+        onActivated: backend.openClipboardLink()
+    }
+
+    Shortcut {
         sequence: "Q"
         context: Qt.ApplicationShortcut
         onActivated: {
@@ -513,6 +520,16 @@ ApplicationWindow {
                 }
                 onClicked: openVideo()
             }
+
+            Label {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: openVideoButton.bottom
+                anchors.topMargin: 16
+                visible: !win.hasVideo
+                text: "or press Ctrl+V to paste a video link"
+                color: "#7a7a80"
+                font.pixelSize: 13
+            }
         }
 
         // --- timeline ---
@@ -554,7 +571,7 @@ ApplicationWindow {
 
         // --- status line ---
         Item {
-            visible: win.hasVideo
+            visible: win.hasVideo || win.statusText !== ""
             Layout.fillWidth: true
             Layout.preferredHeight: 26
 
@@ -651,6 +668,7 @@ ApplicationWindow {
                         { keys: "Alt Space", action: "Trim end to playhead" },
                         { keys: "Z", action: "Zoom the selection" },
                         { keys: "Ctrl O", action: "Open a video" },
+                        { keys: "Ctrl V", action: "Paste a video link" },
                         { keys: "Ctrl S", action: "Export" },
                         { keys: "Q", action: "Quit" },
                         { keys: "?", action: "Show these shortcuts" }
