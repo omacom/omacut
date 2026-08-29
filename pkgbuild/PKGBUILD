@@ -9,6 +9,7 @@ url='https://github.com/omacom-io/omacut'
 license=('MIT')
 install='omacut.install'
 depends=('ffmpeg' 'qt6-base' 'qt6-declarative' 'qt6-multimedia' 'xdg-desktop-portal')
+optdepends=('yt-dlp: open videos straight from a link')
 makedepends=('gcc' 'make' 'qt6-base' 'qt6-declarative' 'qt6-multimedia')
 source=()
 sha256sums=()

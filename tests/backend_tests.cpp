@@ -18,6 +18,7 @@
 #include "filepicker.h"
 #include "thumbprovider.h"
 #include "thumbworker.h"
+#include "ytdlp.h"
 
 class FakeFilePicker : public FilePicker {
     Q_OBJECT
@@ -88,6 +89,7 @@ public:
 
     Q_INVOKABLE bool load(const QUrl &) { return false; }
     Q_INVOKABLE void openVideoDialog() { ++openCount; }
+    Q_INVOKABLE void openClipboardLink() { ++linkCount; }
     Q_INVOKABLE void exportDialog(double start, double end) {
         ++exportCount;
         lastStart = start;
@@ -105,6 +107,7 @@ public:
     void announceExportDone() { emit exportDone(QStringLiteral("/tmp/exported.mp4")); }
 
     int openCount = 0;
+    int linkCount = 0;
     int exportCount = 0;
     double lastStart = 0;
     double lastEnd = 0;
@@ -197,6 +200,11 @@ private slots:
     void trimArgsReencodeForPreciseCuts();
     void trimArgsScaleTheShorterSide();
     void exportHeightsNeverUpscale();
+    void linksAreToldApartFromOtherPastes();
+    void downloadArgsFetchOneCappedMp4();
+    void downloadProgressReadsByteCounts();
+    void downloadErrorsUseYtDlpsOwnMessage();
+    void downloadedSourcesExportOutsideTheCache();
     void themeAccentReadsOmarchyColors();
     void themeAccentForegroundKeepsContrast();
 
@@ -622,6 +630,9 @@ void BackendTests::qmlShortcutsTriggerBackendActions() {
     QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.openCount, 1, 3000);
 
+    QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.linkCount, 1, 3000);
+
     // ? toggles the hotkey overlay, and Escape closes it again.
     QTest::keyClick(window, Qt::Key_Question);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("helpVisible").toBool(), true, 3000);
@@ -892,6 +903,103 @@ void BackendTests::exportHeightsNeverUpscale() {
     // At or below a target there's nothing to gain, so it isn't offered.
     QCOMPARE(Backend::exportHeights(1280, 720), QList<int>{});
     QCOMPARE(Backend::exportHeights(0, 0), QList<int>{});
+}
+
+void BackendTests::linksAreToldApartFromOtherPastes() {
+    QVERIFY(ytdlp::isLink(QStringLiteral("https://www.youtube.com/watch?v=aqz-KE-bpKQ")));
+    QVERIFY(ytdlp::isLink(QStringLiteral("  http://example.com/v/1  ")));
+
+    // Whatever else happened to be on the clipboard isn't a download request.
+    QVERIFY(!ytdlp::isLink(QString()));
+    QVERIFY(!ytdlp::isLink(QStringLiteral("watch this: https://example.com/v/1")));
+    QVERIFY(!ytdlp::isLink(QStringLiteral("example.com")));
+    // Local files have their own way in, and it doesn't involve the network.
+    QVERIFY(!ytdlp::isLink(QStringLiteral("/home/me/clip.mp4")));
+    QVERIFY(!ytdlp::isLink(QStringLiteral("file:///home/me/clip.mp4")));
+}
+
+void BackendTests::downloadArgsFetchOneCappedMp4() {
+    const QString link = QStringLiteral("https://example.com/watch?v=abc&list=xyz");
+    const QStringList args = ytdlp::downloadArgs(link, QStringLiteral("/cache/downloads"),
+                                                 QStringLiteral("/cache/downloads/.omacut-filepath"),
+                                                 1080);
+
+    // A link to a video inside a playlist is one video, not the playlist.
+    QVERIFY(args.contains(QStringLiteral("--no-playlist")));
+
+    const int formatAt = args.indexOf(QStringLiteral("-f"));
+    QVERIFY(formatAt >= 0);
+    QVERIFY(args.value(formatAt + 1).contains(QStringLiteral("height<=1080")));
+
+    const int mergeAt = args.indexOf(QStringLiteral("--merge-output-format"));
+    QVERIFY(mergeAt >= 0);
+    QCOMPARE(args.value(mergeAt + 1), QStringLiteral("mp4"));
+
+    // h264 is preferred, not required, so an AV1-only source still downloads.
+    const int sortAt = args.indexOf(QStringLiteral("-S"));
+    QVERIFY(sortAt >= 0);
+    QVERIFY(args.value(sortAt + 1).contains(QStringLiteral("vcodec:h264")));
+
+    // The finished path has to come back out of yt-dlp, since yt-dlp is what
+    // names the file.
+    const int printAt = args.indexOf(QStringLiteral("--print-to-file"));
+    QVERIFY(printAt >= 0);
+    QCOMPARE(args.value(printAt + 1), QStringLiteral("after_move:filepath"));
+    QCOMPARE(args.value(printAt + 2), QStringLiteral("/cache/downloads/.omacut-filepath"));
+
+    const int dirAt = args.indexOf(QStringLiteral("-P"));
+    QVERIFY(dirAt >= 0);
+    QCOMPARE(args.value(dirAt + 1), QStringLiteral("/cache/downloads"));
+
+    // The link goes last, where a positional argument belongs.
+    QCOMPARE(args.last(), link);
+
+    // No cap means no height filter to fall foul of on a small source.
+    const QStringList uncapped = ytdlp::downloadArgs(link, QStringLiteral("/cache/downloads"),
+                                                     QStringLiteral("/cache/downloads/.path"), 0);
+    QVERIFY(!uncapped.value(uncapped.indexOf(QStringLiteral("-f")) + 1)
+                 .contains(QStringLiteral("height")));
+}
+
+void BackendTests::downloadProgressReadsByteCounts() {
+    QCOMPARE(ytdlp::percentFromProgress(QStringLiteral("omacut-progress 50 200 NA")), 25.0);
+
+    // Streams that only ever estimate their size still move the bar.
+    QCOMPARE(ytdlp::percentFromProgress(QStringLiteral("omacut-progress 50 NA 200")), 25.0);
+
+    // A size neither known nor estimated has no percentage to report.
+    QCOMPARE(ytdlp::percentFromProgress(QStringLiteral("omacut-progress 50 NA NA")), -1.0);
+
+    // yt-dlp's ordinary chatter shares the same stream.
+    QCOMPARE(ytdlp::percentFromProgress(QStringLiteral("[Merger] Merging formats into \"a.mp4\"")), -1.0);
+    QCOMPARE(ytdlp::percentFromProgress(QString()), -1.0);
+}
+
+void BackendTests::downloadErrorsUseYtDlpsOwnMessage() {
+    QCOMPARE(ytdlp::errorFrom(QStringLiteral("WARNING: falling back to the web client\n"
+                                             "ERROR: [youtube] abc: This video is unavailable")),
+             QStringLiteral("[youtube] abc: This video is unavailable"));
+
+    // Without an ERROR: line, the last thing yt-dlp said beats saying nothing.
+    QCOMPARE(ytdlp::errorFrom(QStringLiteral("could not resolve host\n")),
+             QStringLiteral("could not resolve host"));
+    QVERIFY(!ytdlp::errorFrom(QString()).isEmpty());
+}
+
+void BackendTests::downloadedSourcesExportOutsideTheCache() {
+    const QString videos = QStringLiteral("/home/me/Videos");
+
+    // A downloaded source is a cache entry, so its trim is suggested where the
+    // user actually keeps videos.
+    QCOMPARE(Backend::suggestedExportUrlFor(
+                 QStringLiteral("/home/me/.cache/omacut/downloads/A Talk [abc].mp4"), true, videos),
+             QUrl::fromLocalFile(QStringLiteral("/home/me/Videos/A Talk [abc]_trimmed.mp4")));
+
+    // A file the user opened themselves still exports right next to itself.
+    QCOMPARE(Backend::suggestedExportUrlFor(QStringLiteral("/home/me/clip.mkv"), false, videos),
+             QUrl::fromLocalFile(QStringLiteral("/home/me/clip_trimmed.mp4")));
+
+    QCOMPARE(Backend::suggestedExportUrlFor(QString(), true, videos), QUrl());
 }
 
 void BackendTests::themeAccentReadsOmarchyColors() {

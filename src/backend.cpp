@@ -1,10 +1,13 @@
 #include "backend.h"
 
+#include <QClipboard>
 #include <QColor>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QProcess>
+#include <QStandardPaths>
 #include <QTextStream>
 
 #include <cstdio>
@@ -14,10 +17,16 @@
 #include "portalfilepicker.h"
 #include "thumbprovider.h"
 #include "thumbworker.h"
+#include "ytdlp.h"
 
 namespace {
 constexpr int kThumbCount = 12;
 constexpr int kThumbRevealMs = 70;
+// Trimming is a length edit, not a mastering job, so a link is fetched at a
+// sane size rather than at whatever 4K the source happens to offer.
+constexpr int kMaxDownloadHeight = 1080;
+// How long a killed download gets to die before the app stops waiting on it.
+constexpr int kDownloadStopMs = 2000;
 const QString kDefaultAccent = QStringLiteral("#FFD60A");
 
 QString omarchyCurrentDir() {
@@ -37,6 +46,43 @@ QString mp4PathFor(const QString &path) {
         ? file.fileName()
         : file.completeBaseName();
     return file.dir().filePath(baseName + QStringLiteral(".mp4"));
+}
+
+// Downloads are re-fetchable, so they belong in the cache rather than in the
+// user's own folders.
+QString downloadDir() {
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (base.isEmpty())
+        return {};
+    const QString dir = base + QStringLiteral("/downloads");
+    return QDir().mkpath(dir) ? dir : QString();
+}
+
+// Somewhere the user will actually look for a finished clip.
+QString videosDir() {
+    for (const QStandardPaths::StandardLocation location : {QStandardPaths::MoviesLocation,
+                                                            QStandardPaths::DownloadLocation,
+                                                            QStandardPaths::HomeLocation}) {
+        const QString dir = QStandardPaths::writableLocation(location);
+        if (!dir.isEmpty() && QFileInfo(dir).isWritable())
+            return dir;
+    }
+    return QDir::homePath();
+}
+
+QString pathFromFile(const QString &pathFile) {
+    QFile file(pathFile);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return {};
+
+    QString last;
+    QTextStream in(&file);
+    while (!in.atEnd()) {
+        const QString line = in.readLine().trimmed();
+        if (!line.isEmpty())
+            last = line;
+    }
+    return last;
 }
 
 bool replaceWithTemp(const QString &tmpPath, const QString &outPath) {
@@ -71,6 +117,7 @@ Backend::Backend(ThumbProvider *provider, FilePicker *filePicker, QObject *paren
 }
 
 Backend::~Backend() {
+    stopDownload();
     stopThumbs();
 }
 
@@ -157,7 +204,14 @@ void Backend::watchTheme() {
 }
 
 bool Backend::load(const QUrl &url) {
-    const QString path = url.toLocalFile();
+    return loadPath(url.toLocalFile(), false);
+}
+
+bool Backend::loadPath(const QString &path, bool fromLink) {
+    // Opening a file by hand abandons whatever a link was still fetching.
+    if (!fromLink)
+        stopDownload();
+
     const ffmpeg::VideoInfo info = ffmpeg::probe(path);
     if (!info.ok) {
         emit loadError(info.error);
@@ -166,7 +220,8 @@ bool Backend::load(const QUrl &url) {
 
     m_info = info;
     m_path = path;
-    m_source = url;
+    m_source = QUrl::fromLocalFile(path);
+    m_sourceIsDownload = fromLink;
 
     // New video: drop the old filmstrip and bump the revision so QML reloads.
     stopThumbs();
@@ -189,6 +244,28 @@ bool Backend::load(const QUrl &url) {
     return true;
 }
 
+void Backend::openClipboardLink() {
+    const QString text = QGuiApplication::clipboard()->text().trimmed();
+    if (text.isEmpty()) {
+        emit loadError(QStringLiteral("The clipboard is empty. Copy a video link first."));
+        return;
+    }
+    openLink(text);
+}
+
+void Backend::openLink(const QString &text) {
+    const QString link = text.trimmed();
+    if (!ytdlp::isLink(link)) {
+        emit loadError(QStringLiteral("That isn't a video link."));
+        return;
+    }
+    // An export in flight owns the status line and the ffmpeg it's driving.
+    if (m_busy)
+        return;
+
+    startDownload(link);
+}
+
 void Backend::openVideoDialog() {
     m_filePicker->openVideo();
 }
@@ -209,6 +286,106 @@ QList<int> Backend::exportHeights(int width, int height) {
             heights << candidate;
     }
     return heights;
+}
+
+void Backend::startDownload(const QString &url) {
+    const QString tool = ytdlp::toolPath();
+    if (tool.isEmpty()) {
+        emit loadError(QStringLiteral("`yt-dlp` was not found on your PATH. "
+                                      "Install yt-dlp to open links."));
+        return;
+    }
+
+    const QString dir = downloadDir();
+    if (dir.isEmpty()) {
+        emit loadError(QStringLiteral("Could not create a folder to download into."));
+        return;
+    }
+
+    stopDownload();
+
+    // yt-dlp writes the finished file's path here. A leftover from an earlier
+    // fetch would otherwise be read back as this download's result.
+    const QString pathFile = dir + QStringLiteral("/.omacut-filepath");
+    QFile::remove(pathFile);
+
+    setBusy(true);
+    setStatus(QStringLiteral("Fetching..."));
+
+    auto *proc = new QProcess(this);
+    m_download = proc;
+    auto completed = std::make_shared<bool>(false);
+    auto progressBuf = std::make_shared<QByteArray>();
+
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc, progressBuf] {
+        progressBuf->append(proc->readAllStandardOutput());
+        int newline;
+        while ((newline = progressBuf->indexOf('\n')) >= 0) {
+            const QString line = QString::fromUtf8(progressBuf->left(newline)).trimmed();
+            progressBuf->remove(0, newline + 1);
+
+            const double percent = ytdlp::percentFromProgress(line);
+            if (percent >= 0.0)
+                setStatus(QStringLiteral("Downloading %1%").arg(qRound(percent)));
+            else if (line.startsWith(QLatin1String("[Merger]")))
+                setStatus(QStringLiteral("Merging..."));
+        }
+    });
+
+    connect(proc, &QProcess::finished, this,
+            [this, proc, pathFile, completed](int code, QProcess::ExitStatus exitStatus) {
+                if (*completed)
+                    return;
+                *completed = true;
+                const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                m_download = nullptr;
+                proc->deleteLater();
+                setBusy(false);
+                setStatus(QString());
+
+                if (exitStatus != QProcess::NormalExit || code != 0) {
+                    emit loadError(ytdlp::errorFrom(err));
+                    return;
+                }
+
+                const QString path = pathFromFile(pathFile);
+                if (path.isEmpty()) {
+                    emit loadError(QStringLiteral("yt-dlp did not report a downloaded file."));
+                    return;
+                }
+                loadPath(path, true);
+            });
+
+    connect(proc, &QProcess::errorOccurred, this,
+            [this, proc, completed](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart || *completed)
+                    return;
+                *completed = true;
+                const QString err = proc->errorString();
+                m_download = nullptr;
+                proc->deleteLater();
+                setBusy(false);
+                setStatus(QString());
+                emit loadError(err.isEmpty() ? QStringLiteral("Could not start yt-dlp.") : err);
+            });
+
+    proc->start(tool, ytdlp::downloadArgs(url, dir, pathFile, kMaxDownloadHeight));
+}
+
+void Backend::stopDownload() {
+    if (!m_download)
+        return;
+
+    QProcess *proc = m_download;
+    m_download = nullptr;
+    // Drop the handlers first: killing the child fires finished(), which would
+    // otherwise report the abandoned download as a failure.
+    proc->disconnect(this);
+    proc->kill();
+    proc->waitForFinished(kDownloadStopMs);
+    proc->deleteLater();
+    setBusy(false);
+    setStatus(QString());
 }
 
 void Backend::startThumbs() {
@@ -307,11 +484,16 @@ void Backend::requestThumbs(double start, double end) {
 }
 
 QUrl Backend::suggestedExportUrl() const {
-    if (m_path.isEmpty())
+    return suggestedExportUrlFor(m_path, m_sourceIsDownload, videosDir());
+}
+
+QUrl Backend::suggestedExportUrlFor(const QString &sourcePath, bool sourceIsDownload,
+                                    const QString &downloadsTarget) {
+    if (sourcePath.isEmpty())
         return {};
-    const QFileInfo src(m_path);
-    const QString target = src.dir().filePath(src.completeBaseName() + "_trimmed.mp4");
-    return QUrl::fromLocalFile(target);
+    const QFileInfo src(sourcePath);
+    const QDir dir = sourceIsDownload ? QDir(downloadsTarget) : src.dir();
+    return QUrl::fromLocalFile(dir.filePath(src.completeBaseName() + "_trimmed.mp4"));
 }
 
 void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHeight) {

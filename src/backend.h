@@ -10,6 +10,7 @@
 
 #include "ffmpeg.h"
 
+class QProcess;
 class ThumbProvider;
 class FilePicker;
 class ThumbWorker;
@@ -54,12 +55,23 @@ public:
     // Load a video (probes it, then kicks off thumbnail generation).
     Q_INVOKABLE bool load(const QUrl &url);
 
+    // Download a video from a link with yt-dlp and load it once it lands.
+    Q_INVOKABLE void openLink(const QString &text);
+    // The same, for whatever is on the clipboard — what Ctrl+V runs.
+    Q_INVOKABLE void openClipboardLink();
+
     // Open native desktop file dialogs.
     Q_INVOKABLE void openVideoDialog();
     Q_INVOKABLE void exportDialog(double start, double end);
 
     // Suggested "<name>_trimmed.mp4" target next to the source.
     Q_INVOKABLE QUrl suggestedExportUrl() const;
+
+    // Where that suggestion lands. A downloaded source sits in the cache, which
+    // is no place to leave an export, so those are suggested in downloadsTarget
+    // instead of beside the source.
+    static QUrl suggestedExportUrlFor(const QString &sourcePath, bool sourceIsDownload,
+                                      const QString &downloadsTarget);
 
     // Write [start, end] (seconds) of the loaded video to dst. A non-zero
     // scaleHeight downscales the shorter side to that size.
@@ -85,6 +97,9 @@ signals:
     void loadError(const QString &message);
 
 private:
+    bool loadPath(const QString &path, bool fromLink);
+    void startDownload(const QString &url);
+    void stopDownload();
     void setBusy(bool busy);
     void setStatus(const QString &status);
     void failExport(const QString &tmpPath, const QString &message);
@@ -98,9 +113,11 @@ private:
     ThumbProvider *m_provider;
     FilePicker *m_filePicker;
     ThumbWorker *m_thumbWorker = nullptr;
+    QProcess *m_download = nullptr;
     ffmpeg::VideoInfo m_info;
     QString m_path;
     QUrl m_source;
+    bool m_sourceIsDownload = false;
     double m_thumbStart = 0.0;
     double m_thumbLen = 0.0;
     QVector<QImage> m_fullThumbs;
