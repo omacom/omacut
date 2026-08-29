@@ -110,10 +110,20 @@ QString Backend::accentFromColorsFile(const QString &path, const QString &fallba
             continue;
 
         QString value = line.mid(equals + 1).trimmed();
-        if (value.size() >= 2
-                && ((value.front() == QLatin1Char('"') && value.back() == QLatin1Char('"'))
-                    || (value.front() == QLatin1Char('\'') && value.back() == QLatin1Char('\''))))
-            value = value.mid(1, value.size() - 2);
+
+        // A value can carry a trailing comment. Inside quotes the '#' belongs
+        // to the string; outside them it starts one -- except the leading '#'
+        // of a bare hex colour, which is the value itself.
+        if (value.startsWith(QLatin1Char('"')) || value.startsWith(QLatin1Char('\''))) {
+            const QChar quote = value.front();
+            const int closing = value.indexOf(quote, 1);
+            value = closing > 0 ? value.mid(1, closing - 1) : value.mid(1);
+        } else {
+            const int comment =
+                value.indexOf(QLatin1Char('#'), value.startsWith(QLatin1Char('#')) ? 1 : 0);
+            if (comment >= 0)
+                value = value.left(comment).trimmed();
+        }
 
         return QColor::fromString(value).isValid() ? value : fallback;
     }
