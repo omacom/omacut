@@ -56,15 +56,18 @@ public:
 
     // Open native desktop file dialogs.
     Q_INVOKABLE void openVideoDialog();
-    Q_INVOKABLE void exportDialog(double start, double end);
+    // defaultCopy preselects stream-copy mode in the export dialog.
+    Q_INVOKABLE void exportDialog(double start, double end, bool defaultCopy = false);
 
     // Suggested "<name>_trimmed.mp4" target next to the source.
     Q_INVOKABLE QUrl suggestedExportUrl() const;
 
     // Write [start, end] (seconds) of the loaded video to dst. A non-zero
-    // scaleHeight downscales the shorter side to that size.
+    // scaleHeight downscales the shorter side to that size. copy=true streams
+    // the video/audio through without re-encoding (near-instant, always the
+    // source's original size, but cuts snap to the nearest keyframe).
     Q_INVOKABLE void exportClip(const QUrl &dst, double start, double end,
-                                int scaleHeight = 0);
+                                int scaleHeight = 0, bool copy = false);
 
     // The downscale heights worth offering for a source: only ones strictly
     // below the source's shorter side, so exports never upscale.

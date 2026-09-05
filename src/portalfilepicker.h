@@ -12,7 +12,7 @@ public:
 
     void openVideo() override;
     void exportVideo(const QUrl &suggestedUrl, double start, double end,
-                     const QList<int> &scaleHeights) override;
+                     const QList<int> &scaleHeights, bool defaultCopy = false) override;
 
 private slots:
     void handleResponse(uint response, const QVariantMap &results);

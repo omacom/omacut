@@ -17,6 +17,7 @@ Built using **Qt Quick (QML)** UI with the Material style — the same Qt stack 
 - *Z*: Zoom into the trimmed selection for fine tuning (Z again zooms back out).
 - *Ctrl+O*: Open a new file to trim.
 - *Ctrl+S*: Export the current trim.
+- *Ctrl+Shift+S*: Export the current trim as a fast stream copy (no re-encode).
 - *Q*: Quit (asks first if the trim hasn't been exported).
 - *?*: Show the hotkeys in the app.
 
@@ -29,7 +30,7 @@ Install via the Omarchy Package Repository via the `omacut` package. It's instal
 - `xdg-desktop-portal` and a portal backend for the file picker
 - `ffmpeg` and `ffprobe` on your PATH (used at runtime)
 
-Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio.
+Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio. A **Mode** combo switches between *Re-encode* (default; frame-accurate cuts via libx264/aac) and *Copy* (remuxes the video/audio streams through without re-encoding — near-instant, always original size, but the cut snaps to the nearest keyframe).
 
 ## Build
 

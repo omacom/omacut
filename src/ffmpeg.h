@@ -31,8 +31,11 @@ QImage thumbnail(const QString &path, double time, int height = 90,
 // Cuts are frame-accurate and re-encoded with libx264/aac. A non-zero
 // scaleHeight downscales so the shorter side becomes scaleHeight (1080p of a
 // portrait video is 1080 wide), always preserving the aspect ratio.
+// With copy=true the video/audio streams are demuxed and remuxed instead of
+// re-encoded — much faster — at the cost of snapping the start to the nearest
+// keyframe and leaving the cut at the source's original size (no scaling).
 QStringList trimArgs(const QString &src, const QString &dst, double start, double end,
-                     int scaleHeight = 0);
+                     int scaleHeight = 0, bool copy = false);
 
 // Locate a tool on PATH; returns empty string if missing.
 QString toolPath(const QString &tool);

@@ -48,12 +48,21 @@ ApplicationWindow {
     function openVideo() {
         backend.openVideoDialog();
     }
+    // Ctrl+S re-encodes (frame-accurate); Ctrl+Shift+S preselects stream copy
+    // for a near-instant, keyframe-snapped cut. Either way the actual export
+    // still runs through the save dialog.
     function exportVideo() {
+        exportVideoMode(false);
+    }
+    function exportVideoCopy() {
+        exportVideoMode(true);
+    }
+    function exportVideoMode(copy) {
         if (!win.hasVideo || backend.duration <= 0 || backend.busy)
             return;
         pendingExportStartSec = trimBar.startSec;
         pendingExportEndSec = trimBar.endSec;
-        backend.exportDialog(trimBar.startSec, trimBar.endSec);
+        backend.exportDialog(trimBar.startSec, trimBar.endSec, copy);
     }
     function ensureAudioOutput() {
         if (audioOutput === null && win.hasVideo)
@@ -241,6 +250,16 @@ ApplicationWindow {
         onActivated: {
             win.quitConfirmVisible = false;
             exportVideo();
+        }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Shift+S"
+        context: Qt.ApplicationShortcut
+        enabled: win.hasVideo && backend.duration > 0 && !backend.busy
+        onActivated: {
+            win.quitConfirmVisible = false;
+            exportVideoCopy();
         }
     }
 
@@ -652,6 +671,7 @@ ApplicationWindow {
                         { keys: "Z", action: "Zoom the selection" },
                         { keys: "Ctrl O", action: "Open a video" },
                         { keys: "Ctrl S", action: "Export" },
+                        { keys: "Ctrl Shift S", action: "Export copy (fast)" },
                         { keys: "Q", action: "Quit" },
                         { keys: "?", action: "Show these shortcuts" }
                     ]

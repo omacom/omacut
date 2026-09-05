@@ -193,12 +193,12 @@ void Backend::openVideoDialog() {
     m_filePicker->openVideo();
 }
 
-void Backend::exportDialog(double start, double end) {
+void Backend::exportDialog(double start, double end, bool defaultCopy) {
     if (m_path.isEmpty() || !m_info.ok)
         return;
 
     m_filePicker->exportVideo(suggestedExportUrl(), start, end,
-                              exportHeights(m_info.width, m_info.height));
+                              exportHeights(m_info.width, m_info.height), defaultCopy);
 }
 
 QList<int> Backend::exportHeights(int width, int height) {
@@ -314,9 +314,15 @@ QUrl Backend::suggestedExportUrl() const {
     return QUrl::fromLocalFile(target);
 }
 
-void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHeight) {
+void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHeight,
+                         bool copy) {
     if (m_path.isEmpty() || !m_info.ok || m_busy)
         return;
+
+    // A stream-copy cut never decodes the streams, so it can't downscale; the
+    // original size wins even if a caller passed a scaleHeight alongside copy.
+    if (copy)
+        scaleHeight = 0;
 
     if (end - start <= 0.0) {
         emit exportFailed("The selected clip has no length.");
@@ -347,7 +353,7 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
     // success, so failed/cancelled exports preserve any existing file.
     const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
     QFile::remove(tmpPath);
-    const QStringList args = ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight);
+    const QStringList args = ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight, copy);
 
     auto *proc = new QProcess(this);
     auto completed = std::make_shared<bool>(false);

@@ -29,16 +29,18 @@ public:
     double lastStart = 0;
     double lastEnd = 0;
     QList<int> lastScaleHeights;
+    bool lastDefaultCopy = false;
 
     void openVideo() override { ++openCount; }
 
     void exportVideo(const QUrl &suggestedUrl, double start, double end,
-                     const QList<int> &scaleHeights) override {
+                     const QList<int> &scaleHeights, bool defaultCopy = false) override {
         ++exportCount;
         lastSuggestedUrl = suggestedUrl;
         lastStart = start;
         lastEnd = end;
         lastScaleHeights = scaleHeights;
+        lastDefaultCopy = defaultCopy;
     }
 };
 
@@ -88,10 +90,11 @@ public:
 
     Q_INVOKABLE bool load(const QUrl &) { return false; }
     Q_INVOKABLE void openVideoDialog() { ++openCount; }
-    Q_INVOKABLE void exportDialog(double start, double end) {
+    Q_INVOKABLE void exportDialog(double start, double end, bool copy = false) {
         ++exportCount;
         lastStart = start;
         lastEnd = end;
+        lastCopy = copy;
     }
     Q_INVOKABLE QUrl suggestedExportUrl() const { return {}; }
     Q_INVOKABLE void exportClip(const QUrl &, double, double) {}
@@ -108,6 +111,7 @@ public:
     int exportCount = 0;
     double lastStart = 0;
     double lastEnd = 0;
+    bool lastCopy = false;
     int thumbRequestCount = 0;
     double lastThumbStart = 0;
     double lastThumbEnd = 0;
@@ -196,6 +200,8 @@ private slots:
     void qmlQuitConfirmsUnexportedTrim();
     void trimArgsReencodeForPreciseCuts();
     void trimArgsScaleTheShorterSide();
+    void trimArgsCopyStreams();
+    void exportClipCopiesStreams();
     void exportHeightsNeverUpscale();
     void themeAccentReadsOmarchyColors();
     void themeAccentForegroundKeepsContrast();
@@ -397,6 +403,11 @@ void BackendTests::exportDialogDelegatesSuggestedUrlAndRange() {
              QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("clip_trimmed.mp4"))));
     QCOMPARE(picker->lastStart, 0.25);
     QCOMPARE(picker->lastEnd, 0.75);
+    QCOMPARE(picker->lastDefaultCopy, false);
+
+    // Ctrl+Shift+S preselects the stream-copy mode in the export dialog.
+    backend.exportDialog(0.25, 0.75, true);
+    QCOMPARE(picker->lastDefaultCopy, true);
 }
 
 void BackendTests::suggestedExportUrlAlwaysUsesMp4() {
@@ -618,6 +629,12 @@ void BackendTests::qmlShortcutsTriggerBackendActions() {
 
     QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 1, 3000);
+    QCOMPARE(backend.lastCopy, false);
+
+    // Ctrl+Shift+S asks for the fast stream-copy cut instead.
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier | Qt::ShiftModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 2, 3000);
+    QCOMPARE(backend.lastCopy, true);
 
     QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.openCount, 1, 3000);
@@ -882,6 +899,50 @@ void BackendTests::trimArgsScaleTheShorterSide() {
     QVERIFY(vfAt >= 0);
     QCOMPARE(args.value(vfAt + 1),
              QStringLiteral("scale='if(gt(iw,ih),-2,1080)':'if(gt(iw,ih),1080,-2)'"));
+}
+
+void BackendTests::trimArgsCopyStreams() {
+    // A nonzero scaleHeight still means no scaling in copy mode: the streams
+    // are never decoded, so the cut always keeps the source's original size.
+    const QStringList args = ffmpeg::trimArgs(QStringLiteral("in.mp4"),
+                                              QStringLiteral("out.mp4"),
+                                              0.25, 0.75, 1080, true);
+
+    // Video and audio are passed through, only the first audio stream is
+    // taken, and the re-encode bits and scale filter are gone.
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-c:v")) + 1), QStringLiteral("copy"));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-c:a")) + 1), QStringLiteral("copy"));
+    const int firstMap = args.indexOf(QStringLiteral("-map"));
+    QVERIFY(firstMap >= 0);
+    QCOMPARE(args.value(firstMap + 1), QStringLiteral("0:v:0"));
+    const int secondMap = args.indexOf(QStringLiteral("-map"), firstMap + 1);
+    QVERIFY(secondMap >= 0);
+    QCOMPARE(args.value(secondMap + 1), QStringLiteral("0:a:0?"));
+    QVERIFY(!args.contains(QStringLiteral("libx264")));
+    QVERIFY(!args.contains(QStringLiteral("aac")));
+    QVERIFY(!args.contains(QStringLiteral("-vf")));
+    QVERIFY(args.contains(QStringLiteral("+faststart")));
+}
+
+void BackendTests::exportClipCopiesStreams() {
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(videoUrl()));
+    waitForBackgroundWork(backend);
+
+    const QString outPath = m_dir.filePath(QStringLiteral("copied.mp4"));
+    backend.exportClip(QUrl::fromLocalFile(outPath), 0.0, 0.5, 0, true);
+
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 20000);
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 1);
+    QVERIFY(QFileInfo::exists(outPath));
+    QVERIFY2(formatName(outPath).contains(QStringLiteral("mp4")),
+             qPrintable(formatName(outPath)));
 }
 
 void BackendTests::exportHeightsNeverUpscale() {
