@@ -180,7 +180,7 @@ void PortalFilePicker::openVideo() {
 }
 
 void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, double end,
-                                   const QList<int> &scaleHeights) {
+                                   const QList<int> &scaleHeights, bool defaultCopy) {
     const QFileInfo target(suggestedUrl.toLocalFile());
 
     QVariantMap options;
@@ -191,18 +191,24 @@ void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, doubl
     options.insert(QStringLiteral("filters"), QVariant::fromValue(mp4Filters()));
     options.insert(QStringLiteral("current_filter"), QVariant::fromValue(mp4Filter()));
 
-    // A "Quality" combo in the save dialog, only when there's a real downscale
-    // to offer — sources at or below 720p just export as they are.
+    // "Quality" and "Mode" combos in the save dialog. Quality is only worth
+    // offering when there's a real downscale to pick — sources at or below 720p
+    // just export as they are. Mode (re-encode vs stream copy) always applies.
+    PortalChoices choices;
     if (!scaleHeights.isEmpty()) {
         PortalChoiceOptions qualities = {{QStringLiteral("original"), QStringLiteral("Original")}};
         for (const int height : scaleHeights)
             qualities.append({QString::number(height), QStringLiteral("%1p").arg(height)});
-        options.insert(QStringLiteral("choices"),
-                       QVariant::fromValue(PortalChoices{{QStringLiteral("quality"),
-                                                          QStringLiteral("Quality"),
-                                                          qualities,
-                                                          QStringLiteral("original")}}));
+        choices.append({QStringLiteral("quality"), QStringLiteral("Quality"),
+                        qualities, QStringLiteral("original")});
     }
+    choices.append({QStringLiteral("mode"), QStringLiteral("Mode"),
+                    {
+                        {QStringLiteral("reencode"), QStringLiteral("Re-encode")},
+                        {QStringLiteral("copy"), QStringLiteral("Copy (fast)")},
+                    },
+                    defaultCopy ? QStringLiteral("copy") : QStringLiteral("reencode")});
+    options.insert(QStringLiteral("choices"), QVariant::fromValue(choices));
 
     if (requestFile(QStringLiteral("SaveFile"), QStringLiteral("Save Video File"),
                     options, Action::Export)) {
@@ -307,9 +313,12 @@ void PortalFilePicker::handleResponse(uint response, const QVariantMap &results)
     if (action != Action::Export)
         return;
 
-    // The chosen quality rides along in the response: [("quality", "1080")],
-    // with "original" (or no choices at all) meaning no downscale.
+    // The chosen quality and mode ride along in the response: [("quality",
+    // "1080"), ("mode", "copy")], with "original" (or no choices at all)
+    // meaning no downscale and "reencode" meaning the default frame-accurate
+    // cut.
     int scaleHeight = 0;
+    bool copy = false;
     const QVariant choicesVar = results.value(QStringLiteral("choices"));
     if (choicesVar.canConvert<QDBusArgument>()) {
         const QDBusArgument arg = choicesVar.value<QDBusArgument>();
@@ -322,10 +331,16 @@ void PortalFilePicker::handleResponse(uint response, const QVariantMap &results)
             arg.endStructure();
             if (id == QStringLiteral("quality"))
                 scaleHeight = value.toInt();  // "original" parses to 0
+            else if (id == QStringLiteral("mode"))
+                copy = value == QStringLiteral("copy");
         }
         arg.endArray();
     }
-    emit exportSelected(url, start, end, scaleHeight);
+    // A stream-copy cut never decodes, so it can't downscale; Original size
+    // wins over any quality picked alongside it.
+    if (copy)
+        scaleHeight = 0;
+    emit exportSelected(url, start, end, scaleHeight, copy);
 }
 
 void PortalFilePicker::clearPending() {

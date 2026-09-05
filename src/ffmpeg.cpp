@@ -124,7 +124,7 @@ QImage thumbnail(const QString &path, double time, int height,
 }
 
 QStringList trimArgs(const QString &src, const QString &dst, double start, double end,
-                     int scaleHeight) {
+                     int scaleHeight, bool copy) {
     // Machine-readable progress on stdout (errors stay on stderr), so the UI
     // can show how far along the encode is.
     QStringList args = {"-y", "-loglevel", "error", "-progress", "pipe:1"};
@@ -134,15 +134,30 @@ QStringList trimArgs(const QString &src, const QString &dst, double start, doubl
     args << "-ss" << QString::number(start, 'f', 3)
          << "-i" << src
          << "-t" << QString::number(qMax(end - start, 0.0), 'f', 3);
-    // Cap the shorter side, judged on the decoded (rotation-applied) frame, so
-    // portrait and landscape both keep their aspect ratio. -2 keeps the other
-    // side divisible by two, which libx264 requires.
-    if (scaleHeight > 0)
-        args << "-vf"
-             << QString("scale='if(gt(iw,ih),-2,%1)':'if(gt(iw,ih),%1,-2)'").arg(scaleHeight);
-    args << "-c:v" << "libx264" << "-preset" << "veryfast"
-         << "-crf" << "18" << "-c:a" << "aac"
-         << "-movflags" << "+faststart"
+
+    if (copy) {
+        // Stream copy: no decoding or encoding, just demux + remux, so the cut
+        // is as fast as copying the bytes. The trade-off is the start point
+        // snaps to the nearest keyframe before `start` (-ss before -i seeks
+        // without decoding), so the cut is not frame-accurate. Only the first
+        // video and (optional) first audio stream are mapped — copying, say, a
+        // subtitle track into MP4 can fail. Scaling is impossible without
+        // decoding, so a copy cut always keeps the source's original size.
+        args << "-map" << "0:v:0"
+             << "-map" << "0:a:0?"
+             << "-c:v" << "copy"
+             << "-c:a" << "copy";
+    } else {
+        // Cap the shorter side, judged on the decoded (rotation-applied) frame,
+        // so portrait and landscape both keep their aspect ratio. -2 keeps the
+        // other side divisible by two, which libx264 requires.
+        if (scaleHeight > 0)
+            args << "-vf"
+                 << QString("scale='if(gt(iw,ih),-2,%1)':'if(gt(iw,ih),%1,-2)'").arg(scaleHeight);
+        args << "-c:v" << "libx264" << "-preset" << "veryfast"
+             << "-crf" << "18" << "-c:a" << "aac";
+    }
+    args << "-movflags" << "+faststart"
          << dst;
     return args;
 }
