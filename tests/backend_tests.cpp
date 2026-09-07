@@ -111,6 +111,7 @@ public:
 
     void announceInfo() { emit infoChanged(); }
     void announceExportDone() { emit exportDone(QStringLiteral("/tmp/exported.mp4")); }
+    void announceLoadError(const QString &message) { emit loadError(message); }
 
     int loadCount = 0;
     QUrl lastLoadUrl;
@@ -145,6 +146,16 @@ static QQuickItem *dialogButton(QQuickWindow *window, const QString &text) {
             return item;
     }
     return nullptr;
+}
+
+// Whether anything actually on screen is showing this text.
+static bool showsText(QQuickWindow *window, const QString &text) {
+    const auto items = window->findChildren<QQuickItem *>();
+    for (QQuickItem *item : items) {
+        if (item->isVisible() && item->property("text").toString() == text)
+            return true;
+    }
+    return false;
 }
 
 static QPoint itemCenter(QQuickItem *item) {
@@ -203,6 +214,7 @@ private slots:
     void failedExportPreservesExistingFile();
     void qmlDoesNotCreateAudioOutputWithoutVideo();
     void qmlDropLoadsVideo();
+    void qmlLoadErrorShowsWithoutVideo();
     void qmlShortcutsTriggerBackendActions();
     void qmlArrowKeysMoveThePlayhead();
     void qmlSpaceChordsSetTheTrimEdges();
@@ -651,6 +663,21 @@ void BackendTests::qmlDropLoadsVideo() {
 
     QTRY_COMPARE_WITH_TIMEOUT(backend.loadCount, 1, 3000);
     QCOMPARE(backend.lastLoadUrl, url);
+}
+
+void BackendTests::qmlLoadErrorShowsWithoutVideo() {
+    ShortcutBackend backend(QUrl(), 0.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QCOMPARE(window->property("hasVideo").toBool(), false);
+
+    backend.announceLoadError(QStringLiteral("not a video"));
+
+    const QString status = window->property("statusText").toString();
+    QVERIFY(!status.isEmpty());
+    QVERIFY2(showsText(window, status), qPrintable(status));
 }
 
 void BackendTests::qmlShortcutsTriggerBackendActions() {

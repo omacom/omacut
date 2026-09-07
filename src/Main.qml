@@ -597,7 +597,9 @@ ApplicationWindow {
 
         // --- status line ---
         Item {
-            visible: win.hasVideo
+            // A drop can fail before any video is loaded, so the status has to
+            // be on screen in the empty state too or the error goes unseen.
+            visible: win.hasVideo || win.statusText !== ""
             Layout.fillWidth: true
             Layout.preferredHeight: 26
 
