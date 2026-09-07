@@ -174,7 +174,9 @@ Item {
     Rectangle {
         id: timeBubble
         visible: root.trimmingRange
-        width: 82
+        // Follows the label, which grows an hours field past 3600s. The padding
+        // keeps the old 82px bubble for an mm:ss.cc time.
+        width: timeLabel.contentWidth + 10
         height: 32
         radius: 7
         x: Math.max(0, Math.min(root.width - width, root.activeHandleX - width / 2))
@@ -182,6 +184,7 @@ Item {
         color: "#2c2c2f"
 
         Text {
+            id: timeLabel
             anchors.centerIn: parent
             text: Format.fmt(root.activeTime)
             color: "white"
