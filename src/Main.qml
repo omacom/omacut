@@ -509,7 +509,10 @@ ApplicationWindow {
                 onDropped: (drop) => {
                     if (!drop.hasUrls || drop.urls.length === 0)
                         return;
-                    drop.acceptProposedAction();
+                    // Copy, never the proposed action: a source proposing a
+                    // move takes an accepted drop as licence to delete the
+                    // file it just handed over, and we only read it.
+                    drop.accept(Qt.CopyAction);
                     openDroppedUrls(drop.urls);
                 }
 

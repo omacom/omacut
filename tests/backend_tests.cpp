@@ -214,6 +214,7 @@ private slots:
     void failedExportPreservesExistingFile();
     void qmlDoesNotCreateAudioOutputWithoutVideo();
     void qmlDropLoadsVideo();
+    void qmlDropNeverReportsAMove();
     void qmlDropRefusesUrlsThatAreNotLocalFiles();
     void qmlLoadErrorShowsWithoutVideo();
     void qmlShortcutsTriggerBackendActions();
@@ -664,6 +665,38 @@ void BackendTests::qmlDropLoadsVideo() {
 
     QTRY_COMPARE_WITH_TIMEOUT(backend.loadCount, 1, 3000);
     QCOMPARE(backend.lastLoadUrl, url);
+}
+
+void BackendTests::qmlDropNeverReportsAMove() {
+    ShortcutBackend backend(QUrl(), 0.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+
+    QMimeData mimeData;
+    mimeData.setUrls({videoUrl()});
+    const QPoint pos(window->width() / 2, window->height() / 2);
+
+    // A file manager offers both, and Shift is what makes a move the one it
+    // proposes.
+    const Qt::DropActions offered = Qt::CopyAction | Qt::MoveAction;
+
+    QDragEnterEvent enterEvent(pos, offered, &mimeData, Qt::LeftButton, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(window, &enterEvent);
+
+    QDropEvent dropEvent(pos, offered, &mimeData, Qt::LeftButton, Qt::ShiftModifier);
+    QCOMPARE(dropEvent.proposedAction(), Qt::MoveAction);
+    QVERIFY(QCoreApplication::sendEvent(window, &dropEvent));
+    QVERIFY(dropEvent.isAccepted());
+
+    // A source proposing a move deletes its file once the target says the move
+    // happened, and opening a video only reads it.
+    QCOMPARE(dropEvent.dropAction(), Qt::CopyAction);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.loadCount, 1, 3000);
 }
 
 void BackendTests::qmlDropRefusesUrlsThatAreNotLocalFiles() {
