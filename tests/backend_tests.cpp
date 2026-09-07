@@ -1,9 +1,13 @@
 #include <QtTest>
 
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QMimeData>
 #include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -86,7 +90,11 @@ public:
     QString themeAccent() const { return QStringLiteral("#FFD60A"); }
     QString themeAccentForeground() const { return QStringLiteral("black"); }
 
-    Q_INVOKABLE bool load(const QUrl &) { return false; }
+    Q_INVOKABLE bool load(const QUrl &url) {
+        ++loadCount;
+        lastLoadUrl = url;
+        return false;
+    }
     Q_INVOKABLE void openVideoDialog() { ++openCount; }
     Q_INVOKABLE void exportDialog(double start, double end) {
         ++exportCount;
@@ -103,7 +111,10 @@ public:
 
     void announceInfo() { emit infoChanged(); }
     void announceExportDone() { emit exportDone(QStringLiteral("/tmp/exported.mp4")); }
+    void announceLoadError(const QString &message) { emit loadError(message); }
 
+    int loadCount = 0;
+    QUrl lastLoadUrl;
     int openCount = 0;
     int exportCount = 0;
     double lastStart = 0;
@@ -137,6 +148,34 @@ static QQuickItem *dialogButton(QQuickWindow *window, const QString &text) {
     return nullptr;
 }
 
+// Whether anything actually on screen is showing this text.
+static bool showsText(QQuickWindow *window, const QString &text) {
+    const auto items = window->findChildren<QQuickItem *>();
+    for (QQuickItem *item : items) {
+        if (item->isVisible() && item->property("text").toString() == text)
+            return true;
+    }
+    return false;
+}
+
+// How wide the status line draws a given load error.
+static double statusWidth(QQuickWindow *window, ShortcutBackend &backend, const QString &message) {
+    backend.announceLoadError(message);
+    const QString status = window->property("statusText").toString();
+    QQuickItem *label = nullptr;
+    const auto items = window->findChildren<QQuickItem *>();
+    for (QQuickItem *item : items) {
+        if (item->isVisible() && item->property("text").toString() == status)
+            label = item;
+    }
+    if (!label)
+        return 0;
+    // The width is only the drawn width once the item has laid out.
+    for (int i = 0; i < 200 && label->implicitWidth() <= 0; ++i)
+        QTest::qWait(10);
+    return label->implicitWidth();
+}
+
 static QPoint itemCenter(QQuickItem *item) {
     return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint();
 }
@@ -162,6 +201,9 @@ public:
     QQmlApplicationEngine &engine() { return m_engine; }
     QQuickItem *trimBar() const {
         return m_window ? m_window->findChild<QQuickItem *>(QStringLiteral("trimBar")) : nullptr;
+    }
+    QQuickItem *dropArea() const {
+        return m_window ? m_window->findChild<QQuickItem *>(QStringLiteral("dropArea")) : nullptr;
     }
 
 private:
@@ -189,6 +231,11 @@ private slots:
     void exportStartFailureClearsBusy();
     void failedExportPreservesExistingFile();
     void qmlDoesNotCreateAudioOutputWithoutVideo();
+    void qmlDropLoadsVideo();
+    void qmlDropNeverReportsAMove();
+    void qmlDropRefusesUrlsThatAreNotLocalFiles();
+    void qmlLoadErrorShowsWithoutVideo();
+    void qmlStatusLineReadsAPathAsText();
     void qmlShortcutsTriggerBackendActions();
     void qmlArrowKeysMoveThePlayhead();
     void qmlSpaceChordsSetTheTrimEdges();
@@ -601,6 +648,143 @@ void BackendTests::qmlDoesNotCreateAudioOutputWithoutVideo() {
     QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
     QVERIFY(harness.window()->property("audioOutputReady").isValid());
     QCOMPARE(harness.window()->property("audioOutputReady").toBool(), false);
+}
+
+void BackendTests::qmlDropLoadsVideo() {
+    ShortcutBackend backend(QUrl(), 0.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QQuickItem *dropArea = harness.dropArea();
+    QVERIFY(dropArea);
+    QVERIFY(dropArea->isEnabled());
+
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+
+    const QUrl url = videoUrl();
+    QMimeData mimeData;
+    mimeData.setUrls({url, QUrl::fromLocalFile(QStringLiteral("/tmp/ignored.txt"))});
+
+    const QPoint pos(window->width() / 2, window->height() / 2);
+
+    QDragEnterEvent enterEvent(pos, Qt::CopyAction, &mimeData, Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(QCoreApplication::sendEvent(window, &enterEvent));
+    QVERIFY(enterEvent.isAccepted());
+    QTRY_COMPARE_WITH_TIMEOUT(dropArea->property("containsDrag").toBool(), true, 3000);
+
+    QDragMoveEvent moveEvent(pos, Qt::CopyAction, &mimeData, Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(QCoreApplication::sendEvent(window, &moveEvent));
+    QVERIFY(moveEvent.isAccepted());
+
+    QDropEvent dropEvent(pos, Qt::CopyAction, &mimeData, Qt::LeftButton, Qt::NoModifier);
+    QVERIFY(QCoreApplication::sendEvent(window, &dropEvent));
+    QVERIFY(dropEvent.isAccepted());
+
+    QTRY_COMPARE_WITH_TIMEOUT(backend.loadCount, 1, 3000);
+    QCOMPARE(backend.lastLoadUrl, url);
+}
+
+void BackendTests::qmlDropNeverReportsAMove() {
+    ShortcutBackend backend(QUrl(), 0.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+
+    QMimeData mimeData;
+    mimeData.setUrls({videoUrl()});
+    const QPoint pos(window->width() / 2, window->height() / 2);
+
+    // A file manager offers both, and Shift is what makes a move the one it
+    // proposes.
+    const Qt::DropActions offered = Qt::CopyAction | Qt::MoveAction;
+
+    QDragEnterEvent enterEvent(pos, offered, &mimeData, Qt::LeftButton, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(window, &enterEvent);
+
+    QDropEvent dropEvent(pos, offered, &mimeData, Qt::LeftButton, Qt::ShiftModifier);
+    QCOMPARE(dropEvent.proposedAction(), Qt::MoveAction);
+    QVERIFY(QCoreApplication::sendEvent(window, &dropEvent));
+    QVERIFY(dropEvent.isAccepted());
+
+    // A source proposing a move deletes its file once the target says the move
+    // happened, and opening a video only reads it.
+    QCOMPARE(dropEvent.dropAction(), Qt::CopyAction);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.loadCount, 1, 3000);
+}
+
+void BackendTests::qmlDropRefusesUrlsThatAreNotLocalFiles() {
+    ShortcutBackend backend(QUrl(), 0.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+
+    // A file: URL with no absolute path keeps whatever it holds, and the path
+    // is what ffprobe is handed.
+    const QList<QUrl> refused = {
+        QUrl(QStringLiteral("https://example.com/clip.mp4")),
+        QUrl(QStringLiteral("file:http://example.com/clip.mp4")),
+        QUrl(QStringLiteral("file:-report")),
+    };
+
+    for (const QUrl &url : refused) {
+        QMimeData mimeData;
+        mimeData.setUrls({url});
+        const QPoint pos(window->width() / 2, window->height() / 2);
+
+        QDragEnterEvent enterEvent(pos, Qt::CopyAction, &mimeData, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &enterEvent);
+        QDropEvent dropEvent(pos, Qt::CopyAction, &mimeData, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &dropEvent);
+
+        QVERIFY2(backend.loadCount == 0, qPrintable(url.toString()));
+        const QString status = window->property("statusText").toString();
+        QVERIFY2(!status.isEmpty(), qPrintable(url.toString()));
+        QVERIFY2(showsText(window, status), qPrintable(url.toString()));
+    }
+}
+
+void BackendTests::qmlLoadErrorShowsWithoutVideo() {
+    ShortcutBackend backend(QUrl(), 0.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QCOMPARE(window->property("hasVideo").toBool(), false);
+
+    backend.announceLoadError(QStringLiteral("not a video"));
+
+    const QString status = window->property("statusText").toString();
+    QVERIFY(!status.isEmpty());
+    QVERIFY2(showsText(window, status), qPrintable(status));
+}
+
+void BackendTests::qmlStatusLineReadsAPathAsText() {
+    ShortcutBackend backend(QUrl(), 0.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+
+    // ffprobe quotes back the path it could not open, and a dropped path is a
+    // stranger's text: read as markup, the tags in it stop being characters.
+    const double withTags = statusWidth(window, backend, QStringLiteral("/tmp/<b>b</b>"));
+    const double withoutTags = statusWidth(window, backend, QStringLiteral("/tmp/b"));
+    QVERIFY(withoutTags > 0);
+    QVERIFY2(withTags > withoutTags,
+             qPrintable(QStringLiteral("%1 vs %2").arg(withTags).arg(withoutTags)));
 }
 
 void BackendTests::qmlShortcutsTriggerBackendActions() {
