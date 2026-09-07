@@ -158,6 +158,24 @@ static bool showsText(QQuickWindow *window, const QString &text) {
     return false;
 }
 
+// How wide the status line draws a given load error.
+static double statusWidth(QQuickWindow *window, ShortcutBackend &backend, const QString &message) {
+    backend.announceLoadError(message);
+    const QString status = window->property("statusText").toString();
+    QQuickItem *label = nullptr;
+    const auto items = window->findChildren<QQuickItem *>();
+    for (QQuickItem *item : items) {
+        if (item->isVisible() && item->property("text").toString() == status)
+            label = item;
+    }
+    if (!label)
+        return 0;
+    // The width is only the drawn width once the item has laid out.
+    for (int i = 0; i < 200 && label->implicitWidth() <= 0; ++i)
+        QTest::qWait(10);
+    return label->implicitWidth();
+}
+
 static QPoint itemCenter(QQuickItem *item) {
     return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint();
 }
@@ -217,6 +235,7 @@ private slots:
     void qmlDropNeverReportsAMove();
     void qmlDropRefusesUrlsThatAreNotLocalFiles();
     void qmlLoadErrorShowsWithoutVideo();
+    void qmlStatusLineReadsAPathAsText();
     void qmlShortcutsTriggerBackendActions();
     void qmlArrowKeysMoveThePlayhead();
     void qmlSpaceChordsSetTheTrimEdges();
@@ -747,6 +766,25 @@ void BackendTests::qmlLoadErrorShowsWithoutVideo() {
     const QString status = window->property("statusText").toString();
     QVERIFY(!status.isEmpty());
     QVERIFY2(showsText(window, status), qPrintable(status));
+}
+
+void BackendTests::qmlStatusLineReadsAPathAsText() {
+    ShortcutBackend backend(QUrl(), 0.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+
+    // ffprobe quotes back the path it could not open, and a dropped path is a
+    // stranger's text: read as markup, the tags in it stop being characters.
+    const double withTags = statusWidth(window, backend, QStringLiteral("/tmp/<b>b</b>"));
+    const double withoutTags = statusWidth(window, backend, QStringLiteral("/tmp/b"));
+    QVERIFY(withoutTags > 0);
+    QVERIFY2(withTags > withoutTags,
+             qPrintable(QStringLiteral("%1 vs %2").arg(withTags).arg(withoutTags)));
 }
 
 void BackendTests::qmlShortcutsTriggerBackendActions() {

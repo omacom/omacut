@@ -618,6 +618,9 @@ ApplicationWindow {
                 anchors.centerIn: parent
                 width: parent.width
                 visible: win.statusText !== ""
+                // ffprobe quotes the path back at us, and a dropped path is a
+                // stranger's text: AutoText would read markup in it as markup.
+                textFormat: Text.PlainText
                 text: win.statusText
                 color: win.noticeText !== "" ? win.accent : "#b8b8bc"
                 font.pixelSize: 13
