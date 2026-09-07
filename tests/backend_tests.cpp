@@ -214,6 +214,7 @@ private slots:
     void failedExportPreservesExistingFile();
     void qmlDoesNotCreateAudioOutputWithoutVideo();
     void qmlDropLoadsVideo();
+    void qmlDropRefusesUrlsThatAreNotLocalFiles();
     void qmlLoadErrorShowsWithoutVideo();
     void qmlShortcutsTriggerBackendActions();
     void qmlArrowKeysMoveThePlayhead();
@@ -663,6 +664,41 @@ void BackendTests::qmlDropLoadsVideo() {
 
     QTRY_COMPARE_WITH_TIMEOUT(backend.loadCount, 1, 3000);
     QCOMPARE(backend.lastLoadUrl, url);
+}
+
+void BackendTests::qmlDropRefusesUrlsThatAreNotLocalFiles() {
+    ShortcutBackend backend(QUrl(), 0.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+
+    window->show();
+    QVERIFY(QTest::qWaitForWindowExposed(window));
+
+    // A file: URL with no absolute path keeps whatever it holds, and the path
+    // is what ffprobe is handed.
+    const QList<QUrl> refused = {
+        QUrl(QStringLiteral("https://example.com/clip.mp4")),
+        QUrl(QStringLiteral("file:http://example.com/clip.mp4")),
+        QUrl(QStringLiteral("file:-report")),
+    };
+
+    for (const QUrl &url : refused) {
+        QMimeData mimeData;
+        mimeData.setUrls({url});
+        const QPoint pos(window->width() / 2, window->height() / 2);
+
+        QDragEnterEvent enterEvent(pos, Qt::CopyAction, &mimeData, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &enterEvent);
+        QDropEvent dropEvent(pos, Qt::CopyAction, &mimeData, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &dropEvent);
+
+        QVERIFY2(backend.loadCount == 0, qPrintable(url.toString()));
+        const QString status = window->property("statusText").toString();
+        QVERIFY2(!status.isEmpty(), qPrintable(url.toString()));
+        QVERIFY2(showsText(window, status), qPrintable(url.toString()));
+    }
 }
 
 void BackendTests::qmlLoadErrorShowsWithoutVideo() {

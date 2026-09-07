@@ -51,6 +51,14 @@ ApplicationWindow {
     function openDroppedUrls(urls) {
         if (!urls || urls.length === 0)
             return;
+        // The drag source writes its own uri-list, and a file: URL without an
+        // absolute path keeps whatever it holds: "file:http://host/x" reaches
+        // ffprobe as a network URL and "file:-report" as an option. Only an
+        // absolute local path is a file to open.
+        if (urls[0].toString().substring(0, 8) !== "file:///") {
+            showNotice("Cannot open video: only local files can be dropped");
+            return;
+        }
         backend.load(urls[0]);
     }
     function exportVideo() {
