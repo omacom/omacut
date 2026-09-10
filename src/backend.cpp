@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <cmath>
 
 #include "filepicker.h"
 #include "portalfilepicker.h"
@@ -75,9 +76,27 @@ Backend::~Backend() {
 }
 
 void Backend::wireFilePicker() {
-    connect(m_filePicker, &FilePicker::openSelected, this, &Backend::load);
-    connect(m_filePicker, &FilePicker::exportSelected, this, &Backend::exportClip);
-    connect(m_filePicker, &FilePicker::failed, this, &Backend::loadError);
+    connect(m_filePicker, &FilePicker::openSelected, this, [this](const QUrl &url) {
+        setDialogOpen(false);
+        load(url);
+    });
+    connect(m_filePicker, &FilePicker::exportSelected, this,
+            [this](const QUrl &url, double start, double end, int height) {
+        const auto ranges = m_pendingRanges;
+        m_pendingRanges.clear();
+        setDialogOpen(false);
+        if (ranges.isEmpty()) exportClip(url, start, end, height);
+        else exportRanges(url, ranges, height);
+    });
+    connect(m_filePicker, &FilePicker::cancelled, this, [this] {
+        m_pendingRanges.clear();
+        setDialogOpen(false);
+    });
+    connect(m_filePicker, &FilePicker::failed, this, [this](const QString &message) {
+        m_pendingRanges.clear();
+        setDialogOpen(false);
+        emit loadError(message);
+    });
 }
 
 void Backend::setBusy(bool busy) {
@@ -157,6 +176,8 @@ void Backend::watchTheme() {
 }
 
 bool Backend::load(const QUrl &url) {
+    if (m_busy || m_dialogOpen)
+        return false;
     const QString path = url.toLocalFile();
     const ffmpeg::VideoInfo info = ffmpeg::probe(path);
     if (!info.ok) {
@@ -182,6 +203,7 @@ bool Backend::load(const QUrl &url) {
     m_provider->setImages(QVector<QImage>(kThumbCount));
     emit thumbsChanged();
 
+    m_clips.reset(m_info.duration);
     emit infoChanged();
 
     setStatus(QStringLiteral("Loading..."));
@@ -189,14 +211,57 @@ bool Backend::load(const QUrl &url) {
     return true;
 }
 
+void Backend::clearVideo() {
+    if (m_busy || m_dialogOpen)
+        return;
+
+    stopThumbs();
+    ++m_thumbRevision; // Invalidate any thumbnail callbacks already queued.
+    m_info = {};
+    m_path.clear();
+    m_source = QUrl();
+    m_pendingRanges.clear();
+    m_thumbStart = 0;
+    m_thumbLen = 0;
+    m_fullThumbs.clear();
+    m_fullThumbsComplete = false;
+    m_thumbCount = 0;
+    m_thumbAvailableCount = 0;
+    m_thumbReadyCount = 0;
+    m_thumbWorkerDone = false;
+    m_provider->setImages({});
+    m_clips.reset(0);
+    setStatus({});
+    emit thumbsChanged();
+    emit infoChanged();
+}
+
+void Backend::setDialogOpen(bool open) {
+    if (m_dialogOpen == open) return;
+    m_dialogOpen = open;
+    emit dialogOpenChanged();
+}
+
 void Backend::openVideoDialog() {
+    if (m_busy || m_dialogOpen) return;
+    setDialogOpen(true);
     m_filePicker->openVideo();
 }
 
+void Backend::exportTimelineDialog() {
+    if (m_busy || m_dialogOpen || m_clips.count() == 0 || !m_info.ok) return;
+    m_pendingRanges = m_clips.snapshot();
+    setDialogOpen(true);
+    m_filePicker->exportVideo(suggestedExportUrl(), 0, m_clips.duration(),
+                             exportHeights(m_info.width, m_info.height));
+}
+
 void Backend::exportDialog(double start, double end) {
-    if (m_path.isEmpty() || !m_info.ok)
+    if (m_path.isEmpty() || !m_info.ok || m_busy || m_dialogOpen)
         return;
 
+    m_pendingRanges.clear();
+    setDialogOpen(true);
     m_filePicker->exportVideo(suggestedExportUrl(), start, end,
                               exportHeights(m_info.width, m_info.height));
 }
@@ -315,11 +380,37 @@ QUrl Backend::suggestedExportUrl() const {
 }
 
 void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHeight) {
-    if (m_path.isEmpty() || !m_info.ok || m_busy)
-        return;
+    exportRanges(dst, {QVariantMap{{"sourceStartSec", start}, {"sourceEndSec", end}}}, scaleHeight);
+}
 
-    if (end - start <= 0.0) {
-        emit exportFailed("The selected clip has no length.");
+void Backend::exportRanges(const QUrl &dst, const QVariantList &ranges, int scaleHeight) {
+    if (m_path.isEmpty() || !m_info.ok || m_busy || m_dialogOpen)
+        return;
+    double clipLen = 0;
+    double previousEnd = 0;
+    for (const auto &value : ranges) {
+        const auto range = value.toMap();
+        bool startOk = false, endOk = false;
+        const double start = range.value("sourceStartSec").toDouble(&startOk);
+        const double end = range.value("sourceEndSec").toDouble(&endOk);
+        if (!startOk || !endOk || !std::isfinite(start) || !std::isfinite(end)
+                || start < previousEnd || end > m_info.duration || end <= start) {
+            emit exportFailed("Invalid clip range.");
+            return;
+        }
+        clipLen += end - start;
+        previousEnd = end;
+    }
+    if (ranges.isEmpty()) {
+        emit exportFailed("The timeline is empty.");
+        return;
+    }
+    if (!dst.isLocalFile() || dst.toLocalFile().isEmpty()) {
+        emit exportFailed("Choose a local output file.");
+        return;
+    }
+    if (scaleHeight != 0 && !exportHeights(m_info.width, m_info.height).contains(scaleHeight)) {
+        emit exportFailed("Invalid export quality.");
         return;
     }
 
@@ -347,14 +438,17 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
     // success, so failed/cancelled exports preserve any existing file.
     const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
     QFile::remove(tmpPath);
-    const QStringList args = ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight);
+    const auto first = ranges.first().toMap();
+    const QStringList args = ranges.size() == 1
+        ? ffmpeg::trimArgs(m_path, tmpPath, first.value("sourceStartSec").toDouble(),
+                           first.value("sourceEndSec").toDouble(), scaleHeight)
+        : ffmpeg::concatArgs(m_path, tmpPath, ranges, m_info.hasAudio, scaleHeight);
 
     auto *proc = new QProcess(this);
     auto completed = std::make_shared<bool>(false);
 
     // ffmpeg -progress writes key=value blocks to stdout as it encodes;
     // out_time_us against the clip length gives the percentage.
-    const double clipLen = end - start;
     auto progressBuf = std::make_shared<QByteArray>();
     connect(proc, &QProcess::readyReadStandardOutput, this,
             [this, proc, progressBuf, clipLen, completed] {

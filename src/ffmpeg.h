@@ -3,6 +3,7 @@
 #include <QImage>
 #include <QString>
 #include <QStringList>
+#include <QVariantList>
 
 #include <atomic>
 
@@ -14,6 +15,7 @@ struct VideoInfo {
     double duration = 0.0;  // seconds
     int width = 0;
     int height = 0;
+    bool hasAudio = false;
     bool ok = false;
     QString error;
 };
@@ -33,6 +35,10 @@ QImage thumbnail(const QString &path, double time, int height = 90,
 // portrait video is 1080 wide), always preserving the aspect ratio.
 QStringList trimArgs(const QString &src, const QString &dst, double start, double end,
                      int scaleHeight = 0);
+
+// Concatenate retained source ranges into one re-encoded output.
+QStringList concatArgs(const QString &src, const QString &dst, const QVariantList &ranges,
+                       bool hasAudio, int scaleHeight = 0);
 
 // Locate a tool on PATH; returns empty string if missing.
 QString toolPath(const QString &tool);

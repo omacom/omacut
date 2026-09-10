@@ -9,6 +9,7 @@
 #include <QVector>
 
 #include "ffmpeg.h"
+#include "clipmodel.h"
 
 class ThumbProvider;
 class FilePicker;
@@ -18,6 +19,8 @@ class ThumbWorker;
 // loaded video's info and drives thumbnail generation and export.
 class Backend : public QObject {
     Q_OBJECT
+    Q_PROPERTY(ClipModel* clips READ clips CONSTANT)
+    Q_PROPERTY(bool dialogOpen READ dialogOpen NOTIFY dialogOpenChanged)
     Q_PROPERTY(QUrl source READ source NOTIFY infoChanged)
     Q_PROPERTY(double duration READ duration NOTIFY infoChanged)
     Q_PROPERTY(int thumbCount READ thumbCount NOTIFY thumbsChanged)
@@ -34,6 +37,8 @@ public:
                      QObject *parent = nullptr);
     ~Backend() override;
 
+    ClipModel *clips() { return &m_clips; }
+    bool dialogOpen() const { return m_dialogOpen; }
     QUrl source() const { return m_source; }
     double duration() const { return m_info.duration; }
     int thumbCount() const { return m_thumbCount; }
@@ -53,10 +58,14 @@ public:
 
     // Load a video (probes it, then kicks off thumbnail generation).
     Q_INVOKABLE bool load(const QUrl &url);
+    // Unload the source and discard timeline/thumbnail state.
+    Q_INVOKABLE void clearVideo();
 
     // Open native desktop file dialogs.
     Q_INVOKABLE void openVideoDialog();
     Q_INVOKABLE void exportDialog(double start, double end);
+    Q_INVOKABLE void exportTimelineDialog();
+    Q_INVOKABLE void exportRanges(const QUrl &dst, const QVariantList &ranges, int scaleHeight = 0);
 
     // Suggested "<name>_trimmed.mp4" target next to the source.
     Q_INVOKABLE QUrl suggestedExportUrl() const;
@@ -75,6 +84,7 @@ public:
     Q_INVOKABLE void requestThumbs(double start, double end);
 
 signals:
+    void dialogOpenChanged();
     void infoChanged();
     void thumbsChanged();
     void busyChanged();
@@ -95,6 +105,10 @@ private:
     void loadThemeAccent();
     void watchTheme();
 
+    void setDialogOpen(bool open);
+    ClipModel m_clips;
+    bool m_dialogOpen = false;
+    QVariantList m_pendingRanges;
     ThumbProvider *m_provider;
     FilePicker *m_filePicker;
     ThumbWorker *m_thumbWorker = nullptr;

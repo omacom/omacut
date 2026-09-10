@@ -25,13 +25,15 @@ ApplicationWindow {
 
     // What the last export wrote, so quitting only warns about unexported work.
     // A trim spanning the whole video is never dirty — that's just the source.
-    property real exportedStartSec: -1
-    property real exportedEndSec: -1
-    property real pendingExportStartSec: 0
-    property real pendingExportEndSec: 0
+    property string exportedRanges: ""
+    property string pendingExportRanges: ""
+    property int playbackClip: 0
+    readonly property bool canEdit: hasVideo && !backend.busy && !backend.dialogOpen
+        && !quitConfirmVisible && !helpVisible
     readonly property bool trimDirty: hasVideo && backend.duration > 0
-        && (trimBar.startSec > 0 || trimBar.endSec < backend.duration)
-        && (trimBar.startSec !== exportedStartSec || trimBar.endSec !== exportedEndSec)
+        && !(trimBar.ranges.length === 1 && trimBar.ranges[0].sourceStartSec === 0
+             && trimBar.ranges[0].sourceEndSec === backend.duration)
+        && JSON.stringify(trimBar.ranges) !== exportedRanges
 
     Material.theme: Material.Dark
     Material.accent: win.accent
@@ -49,11 +51,11 @@ ApplicationWindow {
         backend.openVideoDialog();
     }
     function exportVideo() {
-        if (!win.hasVideo || backend.duration <= 0 || backend.busy)
+        if (!win.hasVideo || backend.clips.count === 0 || backend.busy || backend.dialogOpen)
             return;
-        pendingExportStartSec = trimBar.startSec;
-        pendingExportEndSec = trimBar.endSec;
-        backend.exportDialog(trimBar.startSec, trimBar.endSec);
+        player.pause();
+        pendingExportRanges = JSON.stringify(trimBar.ranges);
+        backend.exportTimelineDialog();
     }
     function ensureAudioOutput() {
         if (audioOutput === null && win.hasVideo)
@@ -67,7 +69,7 @@ ApplicationWindow {
         oldAudioOutput.destroy();
     }
     function togglePlay() {
-        if (!win.hasVideo || backend.duration <= 0)
+        if (!win.canEdit || backend.clips.count === 0)
             return;
         ensureAudioOutput();
         if (player.priming)
@@ -81,22 +83,26 @@ ApplicationWindow {
         // millisecond before endSec. Treat anything within 10 ms of the end
         // as "at the end" or play would instantly re-pause instead of
         // restarting from the trim start.
-        var pos = player.position / 1000;
-        if (pos < trimBar.startSec || pos >= trimBar.endSec - 0.01)
-            player.position = Math.round(trimBar.startSec * 1000);
+        var pos = trimBar.timelinePosition(trimBar.playheadSec);
+        if (pos >= backend.clips.duration - 0.01)
+            pos = 0;
+        movePlayheadTo(backend.clips.sourceTime(pos));
         player.play();
     }
-    function movePlayheadTo(seconds) {
+    function movePlayheadTo(seconds, selectClip = true) {
         if (player.priming)
             player.finishPriming();
         trimBar.playheadSec = seconds;
+        playbackClip = backend.clips.clipAt(trimBar.timelinePosition(seconds));
+        if (selectClip && playbackClip >= 0) backend.clips.select(playbackClip);
         player.position = Math.round(seconds * 1000);
     }
     function seekBy(seconds) {
         if (!win.hasVideo || backend.duration <= 0)
             return;
-        // The playhead lives inside the trim, same as scrubbing and preview.
-        movePlayheadTo(Math.max(trimBar.startSec, Math.min(trimBar.playheadSec + seconds, trimBar.endSec)));
+        if (backend.clips.count === 0) return;
+        var position = Math.max(0, Math.min(trimBar.timelinePosition(trimBar.playheadSec) + seconds, backend.clips.duration));
+        movePlayheadTo(backend.clips.sourceTime(position));
     }
     // Both edges park the playhead on themselves, so you see the frame you just
     // trimmed to — the same thing dragging a handle does. While zoomed, the
@@ -106,14 +112,36 @@ ApplicationWindow {
             return;
         var minGap = Math.min(0.1, backend.duration);
         trimBar.startSec = Math.max(trimBar.windowStart, Math.min(seconds, trimBar.endSec - minGap));
-        movePlayheadTo(trimBar.startSec);
+        movePlayheadTo(trimBar.startSec, false);
     }
     function moveTrimEndTo(seconds) {
         if (!win.hasVideo || backend.duration <= 0)
             return;
         var minGap = Math.min(0.1, backend.duration);
         trimBar.endSec = Math.min(trimBar.windowEnd, Math.max(seconds, trimBar.startSec + minGap));
-        movePlayheadTo(trimBar.endSec);
+        movePlayheadTo(trimBar.endSec, false);
+    }
+    function splitClip() {
+        if (!canEdit || backend.clips.count === 0) return;
+        player.pause();
+        if (backend.clips.split(trimBar.timelinePosition(trimBar.playheadSec))) {
+            trimBar.zoomed = false;
+            backend.requestThumbs(0, backend.duration);
+            movePlayheadTo(trimBar.playheadSec);
+        } else showNotice("Move the playhead away from the clip edges to split");
+    }
+    function deleteClip() {
+        if (!canEdit || backend.clips.selectedIndex < 0) return;
+        player.pause();
+        if (backend.clips.removeSelected()) {
+            trimBar.zoomed = false;
+            if (backend.clips.count > 0) {
+                backend.requestThumbs(0, backend.duration);
+                movePlayheadTo(trimBar.startSec);
+            } else {
+                backend.clearVideo();
+            }
+        }
     }
     property bool quitting: false
     function requestQuit() {
@@ -142,6 +170,7 @@ ApplicationWindow {
             ensureAudioOutput();
         } else {
             player.stop();
+            videoOut.clearOutput();
             releaseAudioOutput();
         }
     }
@@ -162,72 +191,84 @@ ApplicationWindow {
     // up — a disabled Shortcut also stops swallowing its key, which lets the
     // dialog's own keyboard navigation receive the arrows, Space and Enter.
     Shortcut {
+        sequence: "T"
+        context: Qt.ApplicationShortcut
+        enabled: win.canEdit && backend.clips.count > 0
+        onActivated: splitClip()
+    }
+    Shortcut {
+        sequences: ["Delete", "Backspace"]
+        context: Qt.ApplicationShortcut
+        enabled: win.canEdit && backend.clips.selectedIndex >= 0
+        onActivated: deleteClip()
+    }
+    Shortcut {
         sequence: "Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.canEdit && backend.clips.count > 0
         onActivated: togglePlay()
     }
 
     Shortcut {
         sequence: "Ctrl+Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.canEdit && backend.clips.selectedIndex >= 0
         onActivated: moveTrimStartTo(trimBar.playheadSec)
     }
 
     Shortcut {
         sequence: "Alt+Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.canEdit && backend.clips.selectedIndex >= 0
         onActivated: moveTrimEndTo(trimBar.playheadSec)
     }
 
     Shortcut {
         sequence: "Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.canEdit && backend.clips.count > 0
         onActivated: seekBy(-1)
     }
 
     Shortcut {
         sequence: "Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.canEdit && backend.clips.count > 0
         onActivated: seekBy(1)
     }
 
     Shortcut {
         sequence: "Shift+Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.canEdit && backend.clips.count > 0
         onActivated: seekBy(-5)
     }
 
     Shortcut {
         sequence: "Shift+Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.canEdit && backend.clips.count > 0
         onActivated: seekBy(5)
     }
 
     Shortcut {
         sequence: "Alt+Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.canEdit && backend.clips.count > 0
         onActivated: seekBy(-0.2)
     }
 
     Shortcut {
         sequence: "Alt+Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.canEdit && backend.clips.count > 0
         onActivated: seekBy(0.2)
     }
 
     Shortcut {
         sequence: "Z"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && backend.duration > 0 && !win.quitConfirmVisible
+        enabled: win.canEdit && backend.clips.selectedIndex >= 0
         onActivated: {
             trimBar.toggleZoom();
             backend.requestThumbs(trimBar.windowStart, trimBar.windowEnd);
@@ -237,7 +278,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+S"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && backend.duration > 0 && !backend.busy
+        enabled: win.hasVideo && backend.clips.count > 0 && !backend.busy && !backend.dialogOpen
         onActivated: {
             win.quitConfirmVisible = false;
             exportVideo();
@@ -247,7 +288,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+O"
         context: Qt.ApplicationShortcut
-        enabled: !win.quitConfirmVisible
+        enabled: !win.quitConfirmVisible && !backend.busy && !backend.dialogOpen
         onActivated: openVideo()
     }
 
@@ -282,6 +323,7 @@ ApplicationWindow {
 
     MediaPlayer {
         id: player
+        objectName: "player"
         source: backend.source
         videoOutput: videoOut
         audioOutput: win.audioOutput
@@ -315,18 +357,25 @@ ApplicationWindow {
             if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia)
                 startPriming();
         }
-        onPositionChanged: {
-            if (priming && position > 0) {
+        onPositionChanged: function(newPosition) {
+            if (priming && newPosition > 0) {
                 finishPriming();
                 return;
             }
-            // Stop at the trim end, like a clip preview.
-            if (playbackState === MediaPlayer.PlayingState && position / 1000 >= trimBar.endSec) {
-                pause();
-                position = Math.round(trimBar.endSec * 1000);
+            // Jump over removed source material while previewing the timeline.
+            var range = trimBar.ranges[win.playbackClip];
+            if (playbackState === MediaPlayer.PlayingState && range && newPosition / 1000 >= range.sourceEndSec - 0.001) {
+                if (win.playbackClip + 1 < trimBar.ranges.length) {
+                    win.playbackClip++;
+                    backend.clips.select(win.playbackClip);
+                    player.position = Math.round(trimBar.ranges[win.playbackClip].sourceStartSec * 1000);
+                } else {
+                    pause();
+                    player.position = Math.round(range.sourceEndSec * 1000);
+                }
             }
             if (!trimBar.interacting)
-                trimBar.playheadSec = position / 1000;
+                trimBar.playheadSec = player.position / 1000;
         }
     }
 
@@ -398,6 +447,14 @@ ApplicationWindow {
 
         color: buttonColor
         opacity: enabled ? 1 : 0.45
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Button
+        Accessible.name: tipText
+        Accessible.onPressAction: clicked()
+        border.width: activeFocus ? 2 : 0
+        border.color: win.accent
+        Keys.onReturnPressed: clicked()
+        Keys.onEnterPressed: clicked()
 
         HoverHandler { id: iconHover }
         ToolTip.visible: iconHover.hovered && tipText !== ""
@@ -428,6 +485,18 @@ ApplicationWindow {
                     ctx.lineTo(19, 12);
                     ctx.closePath();
                     ctx.fill();
+                } else if (iconButton.iconName === "split") {
+                    ctx.beginPath();
+                    ctx.moveTo(5, 5); ctx.lineTo(19, 19);
+                    ctx.moveTo(5, 19); ctx.lineTo(19, 5);
+                    ctx.moveTo(12, 2); ctx.lineTo(12, 7);
+                    ctx.stroke();
+                } else if (iconButton.iconName === "delete") {
+                    ctx.strokeRect(7, 7, 10, 13);
+                    ctx.beginPath();
+                    ctx.moveTo(5, 5); ctx.lineTo(19, 5);
+                    ctx.moveTo(10, 2); ctx.lineTo(14, 2);
+                    ctx.stroke();
                 } else if (iconButton.iconName === "download") {
                     ctx.beginPath();
                     ctx.moveTo(12, 4);
@@ -494,6 +563,7 @@ ApplicationWindow {
 
             Button {
                 id: openVideoButton
+                objectName: "openVideoButton"
                 anchors.centerIn: parent
                 visible: !win.hasVideo
                 text: "Open a video"
@@ -525,13 +595,15 @@ ApplicationWindow {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
                 iconName: player.playbackState === MediaPlayer.PlayingState && !player.priming ? "pause" : "play"
-                tipText: player.playbackState === MediaPlayer.PlayingState ? "Pause" : "Play"
-                enabled: backend.duration > 0
+                tipText: player.playbackState === MediaPlayer.PlayingState ? "Pause (Space)" : "Play (Space)"
+                enabled: win.canEdit && backend.clips.count > 0
                 onClicked: togglePlay()
             }
 
-            TrimBar {
+            ClipTimeline {
                 id: trimBar
+                clips: backend.clips
+                enabled: win.canEdit
                 objectName: "trimBar"
                 Layout.fillWidth: true
                 accent: win.accent
@@ -539,15 +611,29 @@ ApplicationWindow {
                 thumbCount: backend.thumbCount
                 thumbReadyCount: backend.thumbReadyCount
                 thumbRevision: backend.thumbRevision
-                onScrub: (seconds) => player.position = Math.round(seconds * 1000)
+                onScrub: (seconds) => { player.pause(); win.movePlayheadTo(seconds, false); }
             }
 
+            IconButton {
+                objectName: "splitButton"
+                iconName: "split"
+                tipText: "Split at playhead (T)"
+                enabled: win.canEdit && backend.clips.count > 0
+                onClicked: splitClip()
+            }
+            IconButton {
+                objectName: "deleteButton"
+                iconName: "delete"
+                tipText: "Delete selected clip (Del / Backspace)"
+                enabled: win.canEdit && backend.clips.selectedIndex >= 0
+                onClicked: deleteClip()
+            }
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
                 iconName: "download"
-                tipText: "Export"
-                enabled: backend.duration > 0 && !backend.busy
+                tipText: "Export timeline (Ctrl+S)"
+                enabled: win.canEdit && backend.clips.count > 0
                 onClicked: exportVideo()
             }
         }
@@ -575,7 +661,8 @@ ApplicationWindow {
                 anchors.centerIn: parent
                 visible: win.statusText === "" && backend.duration > 0 && !trimBar.trimmingRange
                 textFormat: Text.StyledText
-                text: Format.fmt(trimBar.playheadSec) + " (" + Format.fmt(trimBar.endSec - trimBar.startSec) + ")"
+                text: Format.fmt(trimBar.timelinePosition(trimBar.playheadSec)) + " / " + Format.fmt(backend.clips.duration)
+                    + " · " + backend.clips.count + " clip(s)"
                     + (trimBar.zoomed ? " · <font color=\"" + win.accent + "\">zoomed</font>" : "")
                 color: "#d6d6da"
                 font.pixelSize: 13
@@ -644,6 +731,8 @@ ApplicationWindow {
                 Repeater {
                     model: [
                         { keys: "Space", action: "Play / pause" },
+                        { keys: "T", action: "Split at playhead" },
+                        { keys: "Del / Backspace", action: "Delete selected clip" },
                         { keys: "← / →", action: "Move playhead 1s" },
                         { keys: "Shift ← / →", action: "Move playhead 5s" },
                         { keys: "Alt ← / →", action: "Move playhead 0.2s" },
@@ -772,15 +861,14 @@ ApplicationWindow {
             player.priming = false;
             player.primed = false;
             trimBar.zoomed = false;
-            trimBar.startSec = 0;
-            trimBar.endSec = backend.duration;
             trimBar.playheadSec = 0;
-            win.exportedStartSec = -1;
-            win.exportedEndSec = -1;
+            win.exportedRanges = "";
+            win.pendingExportRanges = "";
+            win.playbackClip = win.hasVideo ? 0 : -1;
+            trimBar.sync();
         }
         function onExportDone(path) {
-            win.exportedStartSec = win.pendingExportStartSec;
-            win.exportedEndSec = win.pendingExportEndSec;
+            win.exportedRanges = win.pendingExportRanges;
             win.showNotice("Saved " + path);
         }
         function onExportFailed(message) {

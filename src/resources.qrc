@@ -2,6 +2,7 @@
     <qresource prefix="/">
         <file alias="Main.qml">Main.qml</file>
         <file alias="TrimBar.qml">TrimBar.qml</file>
+        <file alias="ClipTimeline.qml">ClipTimeline.qml</file>
         <file alias="Format.js">Format.js</file>
     </qresource>
 </RCC>

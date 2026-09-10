@@ -22,4 +22,5 @@ signals:
     // scaleHeight is 0 for "Original", otherwise the chosen short-side size.
     void exportSelected(const QUrl &url, double start, double end, int scaleHeight);
     void failed(const QString &message);
+    void cancelled();
 };

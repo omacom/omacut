@@ -5,6 +5,7 @@ TARGET = omacut
 TEMPLATE = app
 
 HEADERS += \
+    src/clipmodel.h \
     src/filepicker.h \
     src/portalfilepicker.h \
     src/ffmpeg.h \
@@ -13,6 +14,7 @@ HEADERS += \
     src/backend.h
 
 SOURCES += \
+    src/clipmodel.cpp \
     src/main.cpp \
     src/portalfilepicker.cpp \
     src/ffmpeg.cpp \

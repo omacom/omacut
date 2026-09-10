@@ -6,6 +6,7 @@ TEMPLATE = app
 INCLUDEPATH += ../src
 
 HEADERS += \
+    ../src/clipmodel.h \
     ../src/backend.h \
     ../src/ffmpeg.h \
     ../src/filepicker.h \
@@ -14,6 +15,7 @@ HEADERS += \
     ../src/thumbworker.h
 
 SOURCES += \
+    ../src/clipmodel.cpp \
     backend_tests.cpp \
     ../src/backend.cpp \
     ../src/ffmpeg.cpp \

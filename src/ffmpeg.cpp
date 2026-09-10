@@ -36,7 +36,6 @@ VideoInfo probe(const QString &path) {
         "-print_format", "json",
         "-show_format",
         "-show_streams",
-        "-select_streams", "v:0",
         path,
     });
     if (!proc.waitForFinished(kProbeTimeoutMs)) {
@@ -61,7 +60,19 @@ VideoInfo probe(const QString &path) {
         return info;
     }
 
-    const QJsonObject stream = streams.first().toObject();
+    QJsonObject stream;
+    for (const auto &value : streams) {
+        const auto candidate = value.toObject();
+        if (candidate.value("codec_type").toString() == "audio")
+            info.hasAudio = true;
+        if (stream.isEmpty() && (candidate.value("codec_type").toString() == "video"
+                || candidate.contains("width")))
+            stream = candidate;
+    }
+    if (stream.isEmpty()) {
+        info.error = "No video stream found in this file.";
+        return info;
+    }
 
     info.width = stream.value("width").toInt();
     info.height = stream.value("height").toInt();
@@ -144,6 +155,41 @@ QStringList trimArgs(const QString &src, const QString &dst, double start, doubl
          << "-crf" << "18" << "-c:a" << "aac"
          << "-movflags" << "+faststart"
          << dst;
+    return args;
+}
+
+QStringList concatArgs(const QString &src, const QString &dst, const QVariantList &ranges,
+                       bool hasAudio, int scaleHeight) {
+    QStringList args = {"-y", "-loglevel", "error", "-progress", "pipe:1"};
+    QStringList filters;
+    QString inputs;
+    for (int i = 0; i < ranges.size(); ++i) {
+        const auto range = ranges[i].toMap();
+        const double start = range.value("sourceStartSec").toDouble();
+        const double length = range.value("sourceEndSec").toDouble() - start;
+        const QString len = QString::number(length, 'f', 6);
+        args << "-ss" << QString::number(start, 'f', 6) << "-t" << len << "-i" << src;
+        filters << QString("[%1:v:0]setpts=PTS-STARTPTS[v%1]").arg(i);
+        inputs += QString("[v%1]").arg(i);
+        if (hasAudio) {
+            // Preserve initial audio delay and pad short/missing tails so each
+            // segment's audio has exactly its requested duration.
+            filters << QString("[%1:a:0]aresample=async=1:first_pts=0,apad,atrim=duration=%2,asetpts=PTS-STARTPTS[a%1]").arg(i).arg(len);
+            inputs += QString("[a%1]").arg(i);
+        }
+    }
+    filters << inputs + QString("concat=n=%1:v=1:a=%2[vout]").arg(ranges.size()).arg(hasAudio ? 1 : 0)
+        + (hasAudio ? "[aout]" : "");
+    QString video = "[vout]";
+    if (scaleHeight > 0) {
+        filters << QString("[vout]scale='if(gt(iw,ih),-2,%1)':'if(gt(iw,ih),%1,-2)'[scaled]").arg(scaleHeight);
+        video = "[scaled]";
+    }
+    args << "-filter_complex" << filters.join(';') << "-map" << video;
+    if (hasAudio)
+        args << "-map" << "[aout]";
+    args << "-c:v" << "libx264" << "-preset" << "veryfast" << "-crf" << "18"
+         << "-c:a" << "aac" << "-movflags" << "+faststart" << dst;
     return args;
 }
 

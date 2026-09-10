@@ -19,3 +19,9 @@ cd "$BUILD_DIR"
 "$QMAKE" "$ROOT/tests/backend_tests.pro"
 make
 ./backend_tests
+
+mkdir -p "$BUILD_DIR/clipmodel"
+cd "$BUILD_DIR/clipmodel"
+"$QMAKE" "$ROOT/tests/clipmodel_tests.pro"
+make
+./clipmodel_tests
