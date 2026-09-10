@@ -9,6 +9,7 @@ Built using **Qt Quick (QML)** UI with the Material style — the same Qt stack 
 ## Hotkeys
 
 - *Space*: Start/stop video playback.
+- *0–9*: Jump to 0%–90% of the current trim (0 goes to the trim start, 1 to 10%, etc.).
 - *Left/Right*: Move the playhead by 1 second.
 - *Shift+Left/Right*: Move the playhead by 5 seconds.
 - *Alt+Left/Right*: Move the playhead by 0.2 seconds.

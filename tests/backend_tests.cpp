@@ -190,6 +190,8 @@ private slots:
     void failedExportPreservesExistingFile();
     void qmlDoesNotCreateAudioOutputWithoutVideo();
     void qmlShortcutsTriggerBackendActions();
+    void qmlNumberKeysSeekTrim();
+    void qmlNumberKeysWithoutVideo();
     void qmlArrowKeysMoveThePlayhead();
     void qmlSpaceChordsSetTheTrimEdges();
     void qmlZoomFocusesTheSelection();
@@ -628,6 +630,53 @@ void BackendTests::qmlShortcutsTriggerBackendActions() {
     QTest::keyClick(window, Qt::Key_Escape);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("helpVisible").toBool(), false, 3000);
     QCOMPARE(backend.openCount, 1);
+}
+
+void BackendTests::qmlNumberKeysSeekTrim() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath("placeholder.mp4")), 100);
+    QmlHarness harness(backend);
+    auto *window = harness.window();
+    QVERIFY(window);
+    backend.announceInfo();
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+    auto *bar = harness.trimBar();
+    QVERIFY(bar);
+    // Include 0 after another jump, rather than only testing the initial state.
+    for (int i = 9; i >= 0; --i) {
+        QTest::keyClick(window, Qt::Key(Qt::Key_0 + i));
+        QCOMPARE(bar->property("playheadSec").toDouble(), i * 10.0);
+    }
+    bar->setProperty("startSec", 15.0);
+    bar->setProperty("endSec", 70.0);
+    for (int i = 9; i >= 0; --i) {
+        QTest::keyClick(window, Qt::Key(Qt::Key_0 + i));
+        QCOMPARE(bar->property("playheadSec").toDouble(), 15.0 + i * 5.5);
+    }
+    QTest::keyClick(window, Qt::Key_Question);
+    QTest::keyClick(window, Qt::Key_9);
+    QCOMPARE(bar->property("playheadSec").toDouble(), 15.0);
+    QTest::keyClick(window, Qt::Key_Escape);
+    QTest::keyClick(window, Qt::Key_Q);
+    QVERIFY(window->property("quitConfirmVisible").toBool());
+    QTest::keyClick(window, Qt::Key_9);
+    QCOMPARE(bar->property("playheadSec").toDouble(), 15.0);
+    QTest::keyClick(window, Qt::Key_Escape);
+}
+
+void BackendTests::qmlNumberKeysWithoutVideo() {
+    ShortcutBackend backend(QUrl(), 0);
+    QmlHarness harness(backend);
+    auto *window = harness.window();
+    QVERIFY(window);
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+    for (int i = 0; i < 10; ++i)
+        QTest::keyClick(window, Qt::Key(Qt::Key_0 + i));
+    QCOMPARE(harness.trimBar()->property("playheadSec").toDouble(), 0.0);
+    QVERIFY(!window->property("audioOutputReady").toBool());
 }
 
 void BackendTests::qmlArrowKeysMoveThePlayhead() {
