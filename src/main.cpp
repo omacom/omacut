@@ -1,6 +1,11 @@
 // omacut — a dead-simple video length trimmer. Qt Quick (QML) UI, ffmpeg cuts.
 
+#ifdef OMACUT_PORTAL_FILE_PICKER
 #include <QGuiApplication>
+#else
+// QFileDialog is a widget, so the non-portal picker needs a QApplication.
+#include <QApplication>
+#endif
 #include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -11,7 +16,11 @@
 #include "thumbprovider.h"
 
 int main(int argc, char *argv[]) {
+#ifdef OMACUT_PORTAL_FILE_PICKER
     QGuiApplication app(argc, argv);
+#else
+    QApplication app(argc, argv);
+#endif
     app.setApplicationName("omacut");
 
     // Associates the window with omacut.desktop so the compositor (Wayland app_id

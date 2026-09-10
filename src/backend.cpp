@@ -10,8 +10,16 @@
 #include <cstdio>
 #include <memory>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 #include "filepicker.h"
+#ifdef OMACUT_PORTAL_FILE_PICKER
 #include "portalfilepicker.h"
+#else
+#include "dialogfilepicker.h"
+#endif
 #include "thumbprovider.h"
 #include "thumbworker.h"
 
@@ -40,14 +48,28 @@ QString mp4PathFor(const QString &path) {
 }
 
 bool replaceWithTemp(const QString &tmpPath, const QString &outPath) {
+#ifdef Q_OS_WIN
+    // std::rename() fails on Windows when the destination exists, which is the
+    // common case here -- re-exporting over a previous cut -- and
+    // QFile::encodeName would mangle a non-ASCII path on the way. MoveFileExW
+    // replaces in one step, atomically within a volume, and takes UTF-16.
+    return MoveFileExW(reinterpret_cast<const wchar_t *>(tmpPath.utf16()),
+                       reinterpret_cast<const wchar_t *>(outPath.utf16()),
+                       MOVEFILE_REPLACE_EXISTING) != 0;
+#else
     const QByteArray tmpName = QFile::encodeName(tmpPath);
     const QByteArray outName = QFile::encodeName(outPath);
     return std::rename(tmpName.constData(), outName.constData()) == 0;
+#endif
 }
 }
 
 Backend::Backend(ThumbProvider *provider, QObject *parent)
+#ifdef OMACUT_PORTAL_FILE_PICKER
     : Backend(provider, new PortalFilePicker(), parent) {}
+#else
+    : Backend(provider, new DialogFilePicker(), parent) {}
+#endif
 
 Backend::Backend(ThumbProvider *provider, FilePicker *filePicker, QObject *parent)
     : QObject(parent), m_provider(provider), m_filePicker(filePicker),

@@ -1,5 +1,6 @@
 #include "ffmpeg.h"
 
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -17,6 +18,14 @@ constexpr int kThumbPollMs = 50;
 }
 
 QString toolPath(const QString &tool) {
+    // A self-contained build ships ffmpeg alongside the executable; prefer that
+    // over whatever the PATH happens to offer, so the pair always matches. Falls
+    // back to the PATH, which is how a distro package finds its dependency.
+    const QString bundled =
+        QStandardPaths::findExecutable(tool, {QCoreApplication::applicationDirPath()});
+    if (!bundled.isEmpty())
+        return bundled;
+
     return QStandardPaths::findExecutable(tool);
 }
 

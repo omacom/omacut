@@ -266,9 +266,26 @@ QString BackendTests::formatName(const QString &path) const {
     return QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
 }
 
-// Drop an "ffmpeg" into dirPath that always fails to start (its shebang points
-// nowhere), for tests that prepend dirPath to PATH.
+// Join dirPath onto the front of an existing PATH, with whatever separator this
+// platform uses -- ':' on Unix, ';' on Windows.
+static QByteArray pathPrependedTo(const QString &dirPath, const QByteArray &path) {
+    return QFile::encodeName(dirPath) + QDir::listSeparator().toLatin1() + path;
+}
+
+// Drop an "ffmpeg" into dirPath that always fails to start, for tests that
+// prepend dirPath to PATH.
 bool BackendTests::installBrokenFfmpeg(const QString &dirPath) {
+#ifdef Q_OS_WIN
+    // Windows looks executables up by extension and starts them through
+    // CreateProcess, which has no notion of a shebang. A file named right but
+    // holding no valid executable image is what fails to start here.
+    QFile fake(QDir(dirPath).filePath(QStringLiteral("ffmpeg.exe")));
+    if (!fake.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    fake.write("omacut: not an executable image\n");
+    fake.close();
+    return true;
+#else
     QFile fake(QDir(dirPath).filePath(QStringLiteral("ffmpeg")));
     if (!fake.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return false;
@@ -276,6 +293,7 @@ bool BackendTests::installBrokenFfmpeg(const QString &dirPath) {
     fake.close();
     return fake.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner
                                | QFileDevice::ExeOwner);
+#endif
 }
 
 void BackendTests::openDialogDelegatesToFilePicker() {
@@ -545,12 +563,17 @@ void BackendTests::exportStartFailureClearsBusy() {
     QVERIFY(installBrokenFfmpeg(pathDir.path()));
 
     EnvVarGuard pathGuard("PATH");
-    qputenv("PATH", QFile::encodeName(pathDir.path()) + ':' + qgetenv("PATH"));
+    qputenv("PATH", pathPrependedTo(pathDir.path(), qgetenv("PATH")));
 
     backend.exportClip(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("failed.mp4"))),
                        0.0, 1.0);
 
+#ifndef Q_OS_WIN
+    // Unix reports a failed exec asynchronously, so the export is briefly busy.
+    // CreateProcess fails inline instead, which means errorOccurred -- and the
+    // cleanup behind it -- has already run by the time exportClip() returns.
     QVERIFY(backend.busy());
+#endif
     QTRY_COMPARE_WITH_TIMEOUT(failedSpy.count(), 1, 5000);
     QVERIFY(!backend.busy());
     QVERIFY(backend.status().isEmpty());
@@ -582,7 +605,7 @@ void BackendTests::failedExportPreservesExistingFile() {
     QVERIFY(installBrokenFfmpeg(pathDir.path()));
 
     EnvVarGuard pathGuard("PATH");
-    qputenv("PATH", QFile::encodeName(pathDir.path()) + ':' + qgetenv("PATH"));
+    qputenv("PATH", pathPrependedTo(pathDir.path(), qgetenv("PATH")));
 
     backend.exportClip(QUrl::fromLocalFile(outPath), 0.0, 1.0);
     QTRY_COMPARE_WITH_TIMEOUT(failedSpy.count(), 1, 5000);
