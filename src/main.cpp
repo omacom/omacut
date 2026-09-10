@@ -1,4 +1,4 @@
-// omacut — a dead-simple video length trimmer. Qt Quick (QML) UI, ffmpeg cuts.
+// omacut — a dead-simple video and audio length trimmer. Qt Quick (QML) UI, ffmpeg cuts.
 
 #include <QGuiApplication>
 #include <QIcon>

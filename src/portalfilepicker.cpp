@@ -132,9 +132,34 @@ PortalFileFilter videoFilter() {
     };
 }
 
-PortalFileFilters videoFilters() {
+PortalFileFilter audioFilter() {
     return {
+        QStringLiteral("Audio files"),
+        {
+            {1, QStringLiteral("audio/*")},
+            {0, QStringLiteral("*.aac")},
+            {0, QStringLiteral("*.flac")},
+            {0, QStringLiteral("*.m4a")},
+            {0, QStringLiteral("*.mp3")},
+            {0, QStringLiteral("*.oga")},
+            {0, QStringLiteral("*.ogg")},
+            {0, QStringLiteral("*.opus")},
+            {0, QStringLiteral("*.wav")},
+            {0, QStringLiteral("*.wma")},
+        },
+    };
+}
+
+// Everything omacut can trim, as the default filter in the open dialog.
+PortalFileFilter mediaFilter() {
+    return {QStringLiteral("Media files"), videoFilter().rules + audioFilter().rules};
+}
+
+PortalFileFilters mediaFilters() {
+    return {
+        mediaFilter(),
         videoFilter(),
+        audioFilter(),
         {QStringLiteral("All files"), {{0, QStringLiteral("*")}}},
     };
 }
@@ -143,8 +168,8 @@ PortalFileFilter mp4Filter() {
     return {QStringLiteral("MP4 video"), {{0, QStringLiteral("*.mp4")}}};
 }
 
-PortalFileFilters mp4Filters() {
-    return {mp4Filter()};
+PortalFileFilter mp3Filter() {
+    return {QStringLiteral("MP3 audio"), {{0, QStringLiteral("*.mp3")}}};
 }
 
 QString portalToken() {
@@ -173,14 +198,14 @@ void PortalFilePicker::openVideo() {
     options.insert(QStringLiteral("modal"), true);
     options.insert(QStringLiteral("multiple"), false);
     options.insert(QStringLiteral("current_folder"), portalPathBytes(openFolder()));
-    options.insert(QStringLiteral("filters"), QVariant::fromValue(videoFilters()));
-    options.insert(QStringLiteral("current_filter"), QVariant::fromValue(videoFilter()));
+    options.insert(QStringLiteral("filters"), QVariant::fromValue(mediaFilters()));
+    options.insert(QStringLiteral("current_filter"), QVariant::fromValue(mediaFilter()));
 
-    requestFile(QStringLiteral("OpenFile"), QStringLiteral("Open Video File"), options, Action::Open);
+    requestFile(QStringLiteral("OpenFile"), QStringLiteral("Open Media File"), options, Action::Open);
 }
 
-void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, double end,
-                                   const QList<int> &scaleHeights) {
+QVariantMap PortalFilePicker::exportOptions(const QUrl &suggestedUrl, const QVariant &filters,
+                                            const QVariant &currentFilter) const {
     const QFileInfo target(suggestedUrl.toLocalFile());
 
     QVariantMap options;
@@ -188,8 +213,24 @@ void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, doubl
     options.insert(QStringLiteral("modal"), true);
     options.insert(QStringLiteral("current_folder"), portalPathBytes(target.absolutePath()));
     options.insert(QStringLiteral("current_name"), target.fileName());
-    options.insert(QStringLiteral("filters"), QVariant::fromValue(mp4Filters()));
-    options.insert(QStringLiteral("current_filter"), QVariant::fromValue(mp4Filter()));
+    options.insert(QStringLiteral("filters"), filters);
+    options.insert(QStringLiteral("current_filter"), currentFilter);
+    return options;
+}
+
+void PortalFilePicker::requestExport(const QString &title, const QVariantMap &options,
+                                     double start, double end) {
+    if (requestFile(QStringLiteral("SaveFile"), title, options, Action::Export)) {
+        m_pendingExportStart = start;
+        m_pendingExportEnd = end;
+    }
+}
+
+void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, double end,
+                                   const QList<int> &scaleHeights) {
+    QVariantMap options = exportOptions(suggestedUrl,
+                                        QVariant::fromValue(PortalFileFilters{mp4Filter()}),
+                                        QVariant::fromValue(mp4Filter()));
 
     // A "Quality" combo in the save dialog, only when there's a real downscale
     // to offer — sources at or below 720p just export as they are.
@@ -204,11 +245,14 @@ void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, doubl
                                                           QStringLiteral("original")}}));
     }
 
-    if (requestFile(QStringLiteral("SaveFile"), QStringLiteral("Save Video File"),
-                    options, Action::Export)) {
-        m_pendingExportStart = start;
-        m_pendingExportEnd = end;
-    }
+    requestExport(QStringLiteral("Save Video File"), options, start, end);
+}
+
+void PortalFilePicker::exportAudio(const QUrl &suggestedUrl, double start, double end) {
+    const QVariantMap options = exportOptions(suggestedUrl,
+                                              QVariant::fromValue(PortalFileFilters{mp3Filter()}),
+                                              QVariant::fromValue(mp3Filter()));
+    requestExport(QStringLiteral("Save Audio File"), options, start, end);
 }
 
 bool PortalFilePicker::connectToRequestPath(const QString &path) {

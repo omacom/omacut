@@ -13,7 +13,9 @@ ApplicationWindow {
     minimumHeight: 460
     visible: true
     title: backend.source.toString() === "" ? "omacut" : "omacut — " + fileName(backend.source)
+    // "hasVideo" means a file is loaded, video or audio; isAudio tells them apart.
     readonly property bool hasVideo: backend.source.toString() !== ""
+    readonly property bool isAudio: backend.isAudio
     readonly property color accent: backend.themeAccent
     readonly property color accentForeground: backend.themeAccentForeground
     readonly property bool audioOutputReady: audioOutput !== null
@@ -295,6 +297,12 @@ ApplicationWindow {
             if (primed || priming || backend.source.toString() === "")
                 return;
             win.ensureAudioOutput();
+            // Audio has no opening frame to reveal, and the muted play/pause
+            // cycle would only nudge the playhead.
+            if (backend.isAudio) {
+                primed = true;
+                return;
+            }
             primed = true;
             priming = true;
             position = 0;
@@ -467,7 +475,7 @@ ApplicationWindow {
         anchors.margins: win.hasVideo ? 16 : 0
         spacing: 14
 
-        // --- video preview ---
+        // --- preview: the video, or a big waveform for audio ---
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -477,12 +485,78 @@ ApplicationWindow {
 
             VideoOutput {
                 id: videoOut
+                objectName: "videoOutput"
                 anchors.fill: parent
+                // Hidden for audio so embedded cover art never paints over the waveform.
+                visible: !win.isAudio
             }
             Connections {
                 target: videoOut.videoSink
                 function onVideoFrameChanged(frame) {
                     player.finishPriming();
+                }
+            }
+
+            // The same waveform slices as the trim bar, blown up, with the
+            // selection and playhead drawn over them. The slices already cover
+            // the zoom window, so times map against the window, not the file.
+            Item {
+                id: audioPreview
+                objectName: "audioPreview"
+                anchors.fill: parent
+                anchors.margins: 12
+                visible: win.isAudio && backend.duration > 0
+
+                function xForTime(t) {
+                    return (t - trimBar.windowStart) / trimBar.windowLen * width;
+                }
+
+                // The wave stretches across the full width but is capped at its
+                // rendered height and centred, so a tall window doesn't blow it
+                // up into a wall of bars.
+                Row {
+                    id: waveformRow
+                    width: parent.width
+                    height: Math.min(parent.height, 240)
+                    anchors.verticalCenter: parent.verticalCenter
+                    Repeater {
+                        model: backend.thumbCount
+                        Image {
+                            width: waveformRow.width / Math.max(backend.thumbCount, 1)
+                            height: waveformRow.height
+                            fillMode: Image.Stretch
+                            asynchronous: true
+                            cache: false
+                            // Gated on isAudio too: a hidden Image still loads
+                            // its source, and video has no use for these.
+                            source: win.isAudio && index < backend.thumbReadyCount
+                                ? "image://thumbs/" + backend.thumbRevision + "/" + index
+                                : ""
+                        }
+                    }
+                }
+
+                // Dim outside the selection, like the trim bar.
+                Rectangle {
+                    x: 0
+                    width: Math.max(0, Math.min(parent.width, audioPreview.xForTime(trimBar.startSec)))
+                    height: parent.height
+                    color: "#99000000"
+                }
+                Rectangle {
+                    x: Math.max(0, Math.min(parent.width, audioPreview.xForTime(trimBar.endSec)))
+                    width: Math.max(0, parent.width - x)
+                    height: parent.height
+                    color: "#99000000"
+                }
+
+                Rectangle {
+                    visible: trimBar.playheadSec >= trimBar.windowStart
+                        && trimBar.playheadSec <= trimBar.windowEnd
+                    x: audioPreview.xForTime(trimBar.playheadSec) - 1
+                    width: 2
+                    height: parent.height
+                    color: "white"
                 }
             }
 
@@ -496,7 +570,7 @@ ApplicationWindow {
                 id: openVideoButton
                 anchors.centerIn: parent
                 visible: !win.hasVideo
-                text: "Open a video"
+                text: "Open a video or audio file"
                 highlighted: true
                 focusPolicy: Qt.NoFocus
                 font.pixelSize: 18
@@ -539,6 +613,7 @@ ApplicationWindow {
                 thumbCount: backend.thumbCount
                 thumbReadyCount: backend.thumbReadyCount
                 thumbRevision: backend.thumbRevision
+                waveform: win.isAudio
                 onScrub: (seconds) => player.position = Math.round(seconds * 1000)
             }
 
@@ -614,7 +689,7 @@ ApplicationWindow {
     Rectangle {
         visible: win.helpVisible
         anchors.fill: parent
-        color: "#000000cc"
+        color: "#cc000000"
 
         MouseArea {
             anchors.fill: parent
@@ -650,7 +725,7 @@ ApplicationWindow {
                         { keys: "Ctrl Space", action: "Trim start to playhead" },
                         { keys: "Alt Space", action: "Trim end to playhead" },
                         { keys: "Z", action: "Zoom the selection" },
-                        { keys: "Ctrl O", action: "Open a video" },
+                        { keys: "Ctrl O", action: "Open a file" },
                         { keys: "Ctrl S", action: "Export" },
                         { keys: "Q", action: "Quit" },
                         { keys: "?", action: "Show these shortcuts" }
@@ -680,7 +755,7 @@ ApplicationWindow {
     Rectangle {
         visible: win.quitConfirmVisible
         anchors.fill: parent
-        color: "#000000cc"
+        color: "#cc000000"
         onVisibleChanged: {
             if (visible)
                 quitExportButton.forceActiveFocus();
@@ -766,7 +841,7 @@ ApplicationWindow {
         function onInfoChanged() {
             win.noticeText = "";
             noticeTimer.stop();
-            // Reset priming too, or a video opened mid-prime would stay black:
+            // Reset priming too, or a file opened mid-prime would stay black:
             // startPriming() bails while priming is still true.
             primeFallback.stop();
             player.priming = false;
@@ -787,7 +862,7 @@ ApplicationWindow {
             win.showNotice("Export failed: " + message);
         }
         function onLoadError(message) {
-            win.showNotice("Cannot open video: " + message);
+            win.showNotice("Cannot open file: " + message);
         }
     }
 }

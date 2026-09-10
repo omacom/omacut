@@ -15,11 +15,13 @@ class FilePicker;
 class ThumbWorker;
 
 // The bridge between QML and the ffmpeg/ffprobe layer. Holds the currently
-// loaded video's info and drives thumbnail generation and export.
+// loaded media's info and drives filmstrip generation and export. Audio files
+// go through the same pipeline: waveform slices in the strip, MP3 on export.
 class Backend : public QObject {
     Q_OBJECT
     Q_PROPERTY(QUrl source READ source NOTIFY infoChanged)
     Q_PROPERTY(double duration READ duration NOTIFY infoChanged)
+    Q_PROPERTY(bool isAudio READ isAudio NOTIFY infoChanged)
     Q_PROPERTY(int thumbCount READ thumbCount NOTIFY thumbsChanged)
     Q_PROPERTY(int thumbReadyCount READ thumbReadyCount NOTIFY thumbsChanged)
     Q_PROPERTY(int thumbRevision READ thumbRevision NOTIFY thumbsChanged)
@@ -36,6 +38,9 @@ public:
 
     QUrl source() const { return m_source; }
     double duration() const { return m_info.duration; }
+    // True for a loaded file with no picture: the strip shows waveforms and
+    // exports are MP3 instead of MP4.
+    bool isAudio() const { return m_info.ok && !m_info.hasVideo; }
     int thumbCount() const { return m_thumbCount; }
     int thumbReadyCount() const { return m_thumbReadyCount; }
     int thumbRevision() const { return m_thumbRevision; }
@@ -51,18 +56,19 @@ public:
     // "black" or "white", whichever stays legible on the given color.
     static QString foregroundFor(const QString &color);
 
-    // Load a video (probes it, then kicks off thumbnail generation).
+    // Load a video or audio file (probes it, then kicks off strip generation).
     Q_INVOKABLE bool load(const QUrl &url);
 
-    // Open native desktop file dialogs.
+    // Open native desktop file dialogs. The open dialog accepts any media;
+    // the export dialog is tailored to the loaded kind.
     Q_INVOKABLE void openVideoDialog();
     Q_INVOKABLE void exportDialog(double start, double end);
 
-    // Suggested "<name>_trimmed.mp4" target next to the source.
+    // Suggested "<name>_trimmed.mp4" (or .mp3 for audio) target next to the source.
     Q_INVOKABLE QUrl suggestedExportUrl() const;
 
-    // Write [start, end] (seconds) of the loaded video to dst. A non-zero
-    // scaleHeight downscales the shorter side to that size.
+    // Write [start, end] (seconds) of the loaded media to dst. A non-zero
+    // scaleHeight downscales the shorter side to that size (video only).
     Q_INVOKABLE void exportClip(const QUrl &dst, double start, double end,
                                 int scaleHeight = 0);
 
@@ -85,6 +91,7 @@ signals:
     void loadError(const QString &message);
 
 private:
+    QString exportSuffix() const;
     void setBusy(bool busy);
     void setStatus(const QString &status);
     void failExport(const QString &tmpPath, const QString &message);

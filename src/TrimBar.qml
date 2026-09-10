@@ -1,8 +1,8 @@
 import QtQuick
 import "Format.js" as Format
 
-// A thumbnail filmstrip with two draggable handles and a scrubbable playhead.
-// All times are in seconds.
+// A filmstrip (frame grabs, or waveform slices for audio) with two draggable
+// handles and a scrubbable playhead. All times are in seconds.
 Item {
     id: root
     implicitHeight: 76
@@ -18,6 +18,9 @@ Item {
     property int thumbCount: 0
     property int thumbReadyCount: 0
     property int thumbRevision: 0
+    // Waveform slices are stretched so each maps exactly onto its time span;
+    // frame grabs keep their aspect ratio and crop instead.
+    property bool waveform: false
     // True while the user is dragging anything, so the player won't fight the UI.
     property bool interacting: false
     property int activeMode: 0  // 0 none, 1 start, 2 end, 3 playhead
@@ -90,7 +93,7 @@ Item {
                     // Bound the decoded texture to the strip height. The filmstrip
                     // has a fixed height, so this never thrashes on resize.
                     sourceSize.height: track.height
-                    fillMode: Image.PreserveAspectCrop
+                    fillMode: root.waveform ? Image.Stretch : Image.PreserveAspectCrop
                     asynchronous: true
                     cache: false
                     source: index < root.thumbReadyCount
@@ -107,14 +110,14 @@ Item {
         y: track.y
         width: Math.max(0, root.xForTime(root.startSec) - track.x)
         height: track.height
-        color: "#00000099"
+        color: "#99000000"
     }
     Rectangle {
         x: root.xForTime(root.endSec)
         y: track.y
         width: Math.max(0, track.x + track.width - root.xForTime(root.endSec))
         height: track.height
-        color: "#00000099"
+        color: "#99000000"
     }
 
     // ---- yellow selection frame ----
