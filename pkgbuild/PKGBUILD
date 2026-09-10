@@ -3,7 +3,7 @@
 pkgname=omacut
 pkgver=0.2.0
 pkgrel=1
-pkgdesc='Dead-simple video length trimmer built with Qt Quick and ffmpeg'
+pkgdesc='Dead-simple video and audio length trimmer built with Qt Quick and ffmpeg'
 arch=('x86_64')
 url='https://github.com/omacom-io/omacut'
 license=('MIT')

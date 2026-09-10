@@ -1,5 +1,7 @@
 #include <QtTest>
 
+#include <algorithm>
+
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -25,6 +27,7 @@ class FakeFilePicker : public FilePicker {
 public:
     int openCount = 0;
     int exportCount = 0;
+    int audioExportCount = 0;
     QUrl lastSuggestedUrl;
     double lastStart = 0;
     double lastEnd = 0;
@@ -39,6 +42,14 @@ public:
         lastStart = start;
         lastEnd = end;
         lastScaleHeights = scaleHeights;
+    }
+
+    void exportAudio(const QUrl &suggestedUrl, double start, double end) override {
+        ++audioExportCount;
+        lastSuggestedUrl = suggestedUrl;
+        lastStart = start;
+        lastEnd = end;
+        lastScaleHeights.clear();
     }
 };
 
@@ -64,6 +75,7 @@ class ShortcutBackend : public QObject {
     Q_OBJECT
     Q_PROPERTY(QUrl source READ source NOTIFY infoChanged)
     Q_PROPERTY(double duration READ duration NOTIFY infoChanged)
+    Q_PROPERTY(bool isAudio READ isAudio NOTIFY infoChanged)
     Q_PROPERTY(int thumbCount READ thumbCount NOTIFY thumbsChanged)
     Q_PROPERTY(int thumbReadyCount READ thumbReadyCount NOTIFY thumbsChanged)
     Q_PROPERTY(int thumbRevision READ thumbRevision NOTIFY thumbsChanged)
@@ -73,11 +85,13 @@ class ShortcutBackend : public QObject {
     Q_PROPERTY(QString themeAccentForeground READ themeAccentForeground NOTIFY themeAccentChanged)
 
 public:
-    explicit ShortcutBackend(QUrl source, double duration, QObject *parent = nullptr)
-        : QObject(parent), m_source(std::move(source)), m_duration(duration) {}
+    explicit ShortcutBackend(QUrl source, double duration, bool isAudio = false,
+                             QObject *parent = nullptr)
+        : QObject(parent), m_source(std::move(source)), m_duration(duration), m_isAudio(isAudio) {}
 
     QUrl source() const { return m_source; }
     double duration() const { return m_duration; }
+    bool isAudio() const { return m_isAudio; }
     int thumbCount() const { return 0; }
     int thumbReadyCount() const { return 0; }
     int thumbRevision() const { return 0; }
@@ -125,6 +139,7 @@ signals:
 private:
     QUrl m_source;
     double m_duration;
+    bool m_isAudio;
 };
 
 // Finds a DialogButton by its label ("primary" tells them apart from Labels).
@@ -182,6 +197,15 @@ private slots:
     void thumbnailWorkerStopsBlockedJobs();
     void exportDialogDelegatesSuggestedUrlAndRange();
     void suggestedExportUrlAlwaysUsesMp4();
+    void probeDetectsAudioOnly();
+    void probeIgnoresCoverArtVideoStream();
+    void audioLoadBuildsWaveformStrip();
+    void waveformKeepsTheWindowsTimeAxis();
+    void suggestedExportUrlUsesMp3ForAudio();
+    void exportDialogForAudioSkipsQuality();
+    void exportAudioClipWritesMp3();
+    void audioTrimArgsEncodeMp3();
+    void qmlAudioShowsWaveformPreview();
     void exportClipWritesMp4();
     void exportClipCanReplaceSourceFile();
     void exportZeroLengthClipFails();
@@ -202,12 +226,17 @@ private slots:
 
 private:
     QUrl videoUrl() const { return QUrl::fromLocalFile(m_videoPath); }
+    QUrl audioUrl() const { return QUrl::fromLocalFile(m_audioPath); }
     QString formatName(const QString &path) const;
     void waitForBackgroundWork(Backend &backend);
     bool installBrokenFfmpeg(const QString &dirPath);
+    bool runFfmpeg(const QStringList &args);
 
     QTemporaryDir m_dir;
     QString m_videoPath;
+    QString m_audioPath;
+    QString m_coverPath;
+    QString m_coverMp4Path;
 };
 
 void BackendTests::initTestCase() {
@@ -215,28 +244,82 @@ void BackendTests::initTestCase() {
 
     QVERIFY2(m_dir.isValid(), "temporary directory is valid");
     m_videoPath = m_dir.filePath(QStringLiteral("clip.mp4"));
+    m_audioPath = m_dir.filePath(QStringLiteral("clip.wav"));
+    m_coverPath = m_dir.filePath(QStringLiteral("cover.mp3"));
+    m_coverMp4Path = m_dir.filePath(QStringLiteral("cover.m4a"));
 
+    QVERIFY2(!QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty(),
+             "ffmpeg is available");
+
+    QVERIFY(runFfmpeg({
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("testsrc=size=32x32:rate=2:duration=1"),
+        QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"),
+        m_videoPath,
+    }));
+    QVERIFY(QFileInfo::exists(m_videoPath));
+
+    // A one-second tone, the audio-only counterpart of clip.mp4.
+    QVERIFY(runFfmpeg({
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("sine=frequency=440:duration=1"),
+        m_audioPath,
+    }));
+    QVERIFY(QFileInfo::exists(m_audioPath));
+
+    // The same tone as an MP3 with embedded cover art, which ffprobe reports
+    // as a video stream flagged attached_pic.
+    QVERIFY(runFfmpeg({
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("sine=frequency=440:duration=1"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("testsrc=size=32x32:rate=1"),
+        QStringLiteral("-map"), QStringLiteral("0:a"),
+        QStringLiteral("-map"), QStringLiteral("1:v"),
+        QStringLiteral("-c:a"), QStringLiteral("libmp3lame"),
+        QStringLiteral("-c:v"), QStringLiteral("mjpeg"),
+        QStringLiteral("-frames:v"), QStringLiteral("1"),
+        QStringLiteral("-disposition:v:0"), QStringLiteral("attached_pic"),
+        QStringLiteral("-id3v2_version"), QStringLiteral("3"),
+        m_coverPath,
+    }));
+    QVERIFY(QFileInfo::exists(m_coverPath));
+
+    // Cover art in an MP4 container without the attached_pic flag: a plain
+    // one-frame video track alongside the audio.
+    QVERIFY(runFfmpeg({
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("sine=frequency=440:duration=1"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("testsrc=size=32x32:rate=1"),
+        QStringLiteral("-map"), QStringLiteral("0:a"),
+        QStringLiteral("-map"), QStringLiteral("1:v"),
+        QStringLiteral("-c:a"), QStringLiteral("aac"),
+        QStringLiteral("-c:v"), QStringLiteral("mjpeg"),
+        QStringLiteral("-frames:v"), QStringLiteral("1"),
+        QStringLiteral("-f"), QStringLiteral("mp4"),
+        m_coverMp4Path,
+    }));
+    QVERIFY(QFileInfo::exists(m_coverMp4Path));
+}
+
+bool BackendTests::runFfmpeg(const QStringList &args) {
     const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
-    QVERIFY2(!ffmpeg.isEmpty(), "ffmpeg is available");
+    if (ffmpeg.isEmpty())
+        return false;
 
     QProcess proc;
-    proc.start(ffmpeg, {
-        QStringLiteral("-hide_banner"),
-        QStringLiteral("-loglevel"),
-        QStringLiteral("error"),
-        QStringLiteral("-f"),
-        QStringLiteral("lavfi"),
-        QStringLiteral("-i"),
-        QStringLiteral("testsrc=size=32x32:rate=1:duration=1"),
-        QStringLiteral("-pix_fmt"),
-        QStringLiteral("yuv420p"),
-        QStringLiteral("-y"),
-        m_videoPath,
-    });
-    QVERIFY2(proc.waitForFinished(10000), qPrintable(QString::fromUtf8(proc.readAll())));
-    QCOMPARE(proc.exitStatus(), QProcess::NormalExit);
-    QCOMPARE(proc.exitCode(), 0);
-    QVERIFY(QFileInfo::exists(m_videoPath));
+    proc.start(ffmpeg, QStringList{QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"),
+                                   QStringLiteral("error"), QStringLiteral("-y")} + args);
+    if (!proc.waitForFinished(10000)) {
+        qWarning("ffmpeg timed out: %s", qPrintable(args.join(QLatin1Char(' '))));
+        return false;
+    }
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+        qWarning("ffmpeg failed: %s", qPrintable(QString::fromUtf8(proc.readAllStandardError())));
+        return false;
+    }
+    return true;
 }
 
 void BackendTests::waitForBackgroundWork(Backend &backend) {
@@ -412,6 +495,203 @@ void BackendTests::suggestedExportUrlAlwaysUsesMp4() {
 
     QCOMPARE(backend.suggestedExportUrl(),
              QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("renamed-source_trimmed.mp4"))));
+}
+
+void BackendTests::probeDetectsAudioOnly() {
+    const ffmpeg::VideoInfo info = ffmpeg::probe(m_audioPath);
+
+    QVERIFY2(info.ok, qPrintable(info.error));
+    QVERIFY(info.hasAudio);
+    QVERIFY(!info.hasVideo);
+    QCOMPARE(info.width, 0);
+    QCOMPARE(info.height, 0);
+    QVERIFY(qAbs(info.duration - 1.0) < 0.05);
+}
+
+void BackendTests::probeIgnoresCoverArtVideoStream() {
+    const ffmpeg::VideoInfo info = ffmpeg::probe(m_coverPath);
+
+    QVERIFY2(info.ok, qPrintable(info.error));
+    QVERIFY(info.hasAudio);
+    // The 32x32 picture is a video stream on paper, but it is cover art.
+    QVERIFY(!info.hasVideo);
+    QCOMPARE(info.width, 0);
+
+    // Without the flag, a single-frame video track is still artwork, and the
+    // duration comes from the audio rather than that one frame.
+    const ffmpeg::VideoInfo mp4 = ffmpeg::probe(m_coverMp4Path);
+    QVERIFY2(mp4.ok, qPrintable(mp4.error));
+    QVERIFY(!mp4.hasVideo);
+    QVERIFY(qAbs(mp4.duration - 1.0) < 0.1);
+
+    // Real video still counts as video.
+    QVERIFY(ffmpeg::probe(m_videoPath).hasVideo);
+}
+
+void BackendTests::audioLoadBuildsWaveformStrip() {
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+
+    QVERIFY(backend.load(audioUrl()));
+    QVERIFY(backend.isAudio());
+    QVERIFY(backend.thumbCount() > 0);
+    waitForBackgroundWork(backend);
+    QCOMPARE(backend.thumbReadyCount(), backend.thumbCount());
+
+    // Every slot holds a waveform slice drawn on a transparent background.
+    for (int i = 0; i < backend.thumbCount(); ++i) {
+        QSize size;
+        const QImage slice = provider.requestImage(QStringLiteral("1/%1").arg(i), &size, QSize());
+        QVERIFY2(!slice.isNull(), qPrintable(QStringLiteral("slot %1 is empty").arg(i)));
+        QVERIFY(slice.hasAlphaChannel());
+    }
+
+    // Loading a video afterwards switches back to frames.
+    QVERIFY(backend.load(videoUrl()));
+    QVERIFY(!backend.isAudio());
+    waitForBackgroundWork(backend);
+}
+
+void BackendTests::waveformKeepsTheWindowsTimeAxis() {
+    // A window that runs past the end is padded with silence, so the wave
+    // keeps its place instead of stretching to fill the width: the tone
+    // covers exactly the first half of a 2 s window over a 1 s file.
+    const QImage padded = ffmpeg::waveform(m_audioPath, 0.0, 2.0, 400, 60);
+    QVERIFY(!padded.isNull());
+    QCOMPARE(padded.size(), QSize(400, 60));
+    const auto inked = [&padded](int x) {
+        for (int y = 0; y < padded.height(); ++y) {
+            if (qAlpha(padded.pixel(x, y)) > 0)
+                return true;
+        }
+        return false;
+    };
+    QVERIFY(inked(100));
+    QVERIFY(!inked(300));
+
+    // Tiny zoom windows render too, rather than tripping showwavespic's
+    // "too few samples" and coming back empty.
+    const QImage tiny = ffmpeg::waveform(m_audioPath, 0.5, 0.1, 3840, 60);
+    QVERIFY(!tiny.isNull());
+    QVERIFY(std::any_of(tiny.constBits(), tiny.constBits() + tiny.sizeInBytes(),
+                        [](unsigned char byte) { return byte != 0; }));
+}
+
+void BackendTests::suggestedExportUrlUsesMp3ForAudio() {
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+
+    QVERIFY(backend.load(audioUrl()));
+    waitForBackgroundWork(backend);
+
+    QCOMPARE(backend.suggestedExportUrl(),
+             QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("clip_trimmed.mp3"))));
+}
+
+void BackendTests::exportDialogForAudioSkipsQuality() {
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+
+    QVERIFY(backend.load(audioUrl()));
+    waitForBackgroundWork(backend);
+    backend.exportDialog(0.25, 0.75);
+
+    QCOMPARE(picker->audioExportCount, 1);
+    QCOMPARE(picker->exportCount, 0);
+    QCOMPARE(picker->lastSuggestedUrl,
+             QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("clip_trimmed.mp3"))));
+    QCOMPARE(picker->lastStart, 0.25);
+    QCOMPARE(picker->lastEnd, 0.75);
+}
+
+void BackendTests::exportAudioClipWritesMp3() {
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+    QStringList statuses;
+    connect(&backend, &Backend::statusChanged, [&backend, &statuses] {
+        statuses << backend.status();
+    });
+
+    QVERIFY(backend.load(audioUrl()));
+    waitForBackgroundWork(backend);
+
+    // The dialog confirmed a .wav name; the export lands on the .mp3 sibling.
+    const QString selectedPath = m_dir.filePath(QStringLiteral("audio-export.wav"));
+    const QString mp3Path = m_dir.filePath(QStringLiteral("audio-export.mp3"));
+    backend.exportClip(QUrl::fromLocalFile(selectedPath), 0.0, 1.0);
+
+    QVERIFY(backend.busy());
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 20000);
+
+    QCOMPARE(failedSpy.count(), 0);
+    QVERIFY2(statuses.contains(QStringLiteral("Exporting 100%")),
+             qPrintable(statuses.join(QStringLiteral(" | "))));
+    QCOMPARE(doneSpy.count(), 1);
+    QCOMPARE(doneSpy.first().at(0).toString(), mp3Path);
+    QVERIFY(!backend.busy());
+    QVERIFY(QFileInfo::exists(mp3Path));
+    QVERIFY(!QFileInfo::exists(selectedPath));
+    QVERIFY(!QFileInfo::exists(mp3Path + QStringLiteral(".omacut-part.mp3")));
+
+    const ffmpeg::VideoInfo exported = ffmpeg::probe(mp3Path);
+    QVERIFY2(exported.ok, qPrintable(exported.error));
+    QVERIFY(!exported.hasVideo);
+    QVERIFY2(formatName(mp3Path).contains(QStringLiteral("mp3")),
+             qPrintable(formatName(mp3Path)));
+}
+
+void BackendTests::audioTrimArgsEncodeMp3() {
+    const QStringList args = ffmpeg::audioTrimArgs(QStringLiteral("in.wav"),
+                                                   QStringLiteral("out.mp3"),
+                                                   0.25, 0.75);
+
+    QVERIFY(args.contains(QStringLiteral("libmp3lame")));
+    QVERIFY(args.contains(QStringLiteral("-vn")));
+    QVERIFY(!args.contains(QStringLiteral("libx264")));
+    QVERIFY(!args.contains(QStringLiteral("-vf")));
+
+    const int formatAt = args.indexOf(QStringLiteral("-f"));
+    QVERIFY(formatAt >= 0);
+    QCOMPARE(args.value(formatAt + 1), QStringLiteral("mp3"));
+
+    const int progressAt = args.indexOf(QStringLiteral("-progress"));
+    QVERIFY(progressAt >= 0);
+    QCOMPARE(args.value(progressAt + 1), QStringLiteral("pipe:1"));
+
+    const int lengthAt = args.indexOf(QStringLiteral("-t"));
+    QVERIFY(lengthAt >= 0);
+    QCOMPARE(args.value(lengthAt + 1), QStringLiteral("0.500"));
+}
+
+void BackendTests::qmlAudioShowsWaveformPreview() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp3"))),
+                            20.0, true);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QTRY_VERIFY_WITH_TIMEOUT(window->property("audioOutputReady").toBool(), 3000);
+    QCOMPARE(window->property("isAudio").toBool(), true);
+
+    backend.announceInfo();
+    QQuickItem *preview = window->findChild<QQuickItem *>(QStringLiteral("audioPreview"));
+    QQuickItem *videoOut = window->findChild<QQuickItem *>(QStringLiteral("videoOutput"));
+    QQuickItem *trimBar = harness.trimBar();
+    QVERIFY(preview);
+    QVERIFY(videoOut);
+    QVERIFY(trimBar);
+
+    // The waveform takes the preview's place, and the strip stretches slices
+    // so each covers exactly its slot's time span.
+    QCOMPARE(preview->property("visible").toBool(), true);
+    QCOMPARE(videoOut->property("visible").toBool(), false);
+    QCOMPARE(trimBar->property("waveform").toBool(), true);
 }
 
 void BackendTests::exportClipWritesMp4() {

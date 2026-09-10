@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
 Name=Omacut
-GenericName=Video Trimmer
-Comment=Dead-simple video length trimmer
+GenericName=Media Trimmer
+Comment=Dead-simple video and audio length trimmer
 Exec=omacut %f
 Icon=omacut
 Terminal=false
 Categories=AudioVideo;Video;AudioVideoEditing;
-MimeType=video/mp4;video/x-matroska;video/quicktime;video/webm;video/x-msvideo;video/mpeg;
-Keywords=video;trim;cut;clip;ffmpeg;
+MimeType=video/mp4;video/x-matroska;video/quicktime;video/webm;video/x-msvideo;video/mpeg;audio/mpeg;audio/mp4;audio/x-m4a;audio/aac;audio/flac;audio/x-flac;audio/x-wav;audio/wav;audio/ogg;audio/x-vorbis+ogg;audio/opus;audio/x-opus+ogg;
+Keywords=video;audio;trim;cut;clip;ffmpeg;
 StartupWMClass=omacut

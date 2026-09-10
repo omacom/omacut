@@ -7,6 +7,7 @@
 #include <QProcess>
 #include <QTextStream>
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 
@@ -28,15 +29,15 @@ QString omarchyColorsPath() {
     return omarchyCurrentDir() + QStringLiteral("/theme/colors.toml");
 }
 
-QString mp4PathFor(const QString &path) {
+QString pathWithSuffix(const QString &path, const QString &suffix) {
     const QFileInfo file(path);
-    if (file.suffix().compare(QStringLiteral("mp4"), Qt::CaseInsensitive) == 0)
+    if (file.suffix().compare(suffix, Qt::CaseInsensitive) == 0)
         return path;
 
     const QString baseName = file.completeBaseName().isEmpty()
         ? file.fileName()
         : file.completeBaseName();
-    return file.dir().filePath(baseName + QStringLiteral(".mp4"));
+    return file.dir().filePath(baseName + QLatin1Char('.') + suffix);
 }
 
 bool replaceWithTemp(const QString &tmpPath, const QString &outPath) {
@@ -168,7 +169,7 @@ bool Backend::load(const QUrl &url) {
     m_path = path;
     m_source = url;
 
-    // New video: drop the old filmstrip and bump the revision so QML reloads.
+    // New file: drop the old filmstrip and bump the revision so QML reloads.
     stopThumbs();
     m_thumbStart = 0.0;
     m_thumbLen = m_info.duration;
@@ -197,8 +198,15 @@ void Backend::exportDialog(double start, double end) {
     if (m_path.isEmpty() || !m_info.ok)
         return;
 
-    m_filePicker->exportVideo(suggestedExportUrl(), start, end,
-                              exportHeights(m_info.width, m_info.height));
+    if (isAudio())
+        m_filePicker->exportAudio(suggestedExportUrl(), start, end);
+    else
+        m_filePicker->exportVideo(suggestedExportUrl(), start, end,
+                                  exportHeights(m_info.width, m_info.height));
+}
+
+QString Backend::exportSuffix() const {
+    return isAudio() ? QStringLiteral("mp3") : QStringLiteral("mp4");
 }
 
 QList<int> Backend::exportHeights(int width, int height) {
@@ -212,7 +220,8 @@ QList<int> Backend::exportHeights(int width, int height) {
 }
 
 void Backend::startThumbs() {
-    auto *worker = new ThumbWorker(m_path, m_thumbStart, m_thumbLen, kThumbCount);
+    auto *worker = new ThumbWorker(m_path, m_thumbStart, m_thumbLen, kThumbCount,
+                                   isAudio() ? ThumbWorker::Waveform : ThumbWorker::Frames);
     m_thumbWorker = worker;
     // Pair the pointer check with the revision: a recycled worker address could
     // otherwise let a stale queued callback write into the new filmstrip.
@@ -222,11 +231,14 @@ void Backend::startThumbs() {
         if (worker != m_thumbWorker || revision != m_thumbRevision)
             return;
         m_provider->setImage(index, image);
-        // Thumbs arrive in order, so the strip is fully cached at the last one.
+        // Thumbs arrive in order, so the strip is fully cached at the last one —
+        // unless a slot failed, in which case zooming back out re-renders
+        // rather than restoring the gap.
         if (m_thumbStart <= 0.0 && m_thumbLen >= m_info.duration) {
             m_fullThumbs[index] = image;
             if (index == kThumbCount - 1)
-                m_fullThumbsComplete = true;
+                m_fullThumbsComplete = std::none_of(m_fullThumbs.cbegin(), m_fullThumbs.cend(),
+                                                    [](const QImage &thumb) { return thumb.isNull(); });
         }
         m_thumbAvailableCount = qMax(m_thumbAvailableCount, index + 1);
         if (m_thumbReadyCount == 0)
@@ -310,7 +322,7 @@ QUrl Backend::suggestedExportUrl() const {
     if (m_path.isEmpty())
         return {};
     const QFileInfo src(m_path);
-    const QString target = src.dir().filePath(src.completeBaseName() + "_trimmed.mp4");
+    const QString target = src.dir().filePath(src.completeBaseName() + "_trimmed." + exportSuffix());
     return QUrl::fromLocalFile(target);
 }
 
@@ -323,11 +335,12 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
         return;
     }
 
-    // Forcing the .mp4 suffix can redirect the write to a file the save
+    // Forcing the .mp4/.mp3 suffix can redirect the write to a file the save
     // dialog never asked the user about overwriting — refuse rather than
     // silently replace it.
+    const QString suffix = exportSuffix();
     const QString selectedPath = dst.toLocalFile();
-    const QString outPath = mp4PathFor(selectedPath);
+    const QString outPath = pathWithSuffix(selectedPath, suffix);
     if (outPath != selectedPath && QFileInfo::exists(outPath)) {
         emit exportFailed(QStringLiteral("%1 already exists.")
                               .arg(QFileInfo(outPath).fileName()));
@@ -345,9 +358,11 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
 
     // Encode to a sibling temp file and atomically replace the target only after
     // success, so failed/cancelled exports preserve any existing file.
-    const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
+    const QString tmpPath = outPath + QStringLiteral(".omacut-part.") + suffix;
     QFile::remove(tmpPath);
-    const QStringList args = ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight);
+    const QStringList args = isAudio()
+        ? ffmpeg::audioTrimArgs(m_path, tmpPath, start, end)
+        : ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight);
 
     auto *proc = new QProcess(this);
     auto completed = std::make_shared<bool>(false);

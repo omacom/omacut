@@ -1,6 +1,6 @@
 # Omacut
 
-A dead-simple video **length** trimmer. Open a video, drag the two handles to pick a start and end, preview the clip, and export. On Omarchy, the interface follows your theme's accent color.
+A dead-simple video and audio **length** trimmer. Open a video or an audio file, drag the two handles to pick a start and end, preview the clip, and export. Audio files show a waveform instead of a filmstrip. On Omarchy, the interface follows your theme's accent color.
 
 Built using **Qt Quick (QML)** UI with the Material style — the same Qt stack Quickshell builds on — and **ffmpeg** for the cut. The C++ side compiles to a single executable; the QML is embedded in it via Qt resources.
 
@@ -8,14 +8,14 @@ Built using **Qt Quick (QML)** UI with the Material style — the same Qt stack 
 
 ## Hotkeys
 
-- *Space*: Start/stop video playback.
+- *Space*: Start/stop playback.
 - *Left/Right*: Move the playhead by 1 second.
 - *Shift+Left/Right*: Move the playhead by 5 seconds.
 - *Alt+Left/Right*: Move the playhead by 0.2 seconds.
 - *Ctrl+Space*: Move the start of the trim to the playhead.
 - *Alt+Space*: Move the end of the trim to the playhead.
 - *Z*: Zoom into the trimmed selection for fine tuning (Z again zooms back out).
-- *Ctrl+O*: Open a new file to trim.
+- *Ctrl+O*: Open a new video or audio file to trim.
 - *Ctrl+S*: Export the current trim.
 - *Q*: Quit (asks first if the trim hasn't been exported).
 - *?*: Show the hotkeys in the app.
@@ -29,7 +29,9 @@ Install via the Omarchy Package Repository via the `omacut` package. It's instal
 - `xdg-desktop-portal` and a portal backend for the file picker
 - `ffmpeg` and `ffprobe` on your PATH (used at runtime)
 
-Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio.
+Video exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio.
+
+Audio exports are always written as MP3 files (any embedded cover art is dropped); the Quality combo only appears for video.
 
 ## Build
 
