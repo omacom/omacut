@@ -80,7 +80,20 @@ VideoInfo probe(const QString &path) {
     info.ok = info.duration > 0.0;
     if (!info.ok)
         info.error = "Video has a zero or invalid duration.";
+
     return info;
+}
+
+QStringList copyArgs(const QString &src, const QString &dst, double start, double end) {
+    // All streams are mapped and copied as-is; the muxer is chosen from the dst
+    // suffix. No -vf/-c:v/-c:a, so nothing gets recompressed.
+    return {"-y", "-loglevel", "error", "-progress", "pipe:1",
+            "-ss", QString::number(start, 'f', 3),
+            "-i", src,
+            "-t", QString::number(qMax(end - start, 0.0), 'f', 3),
+            "-map", "0",
+            "-c", "copy",
+            dst};
 }
 
 QImage thumbnail(const QString &path, double time, int height,

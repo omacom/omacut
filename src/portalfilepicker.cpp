@@ -27,23 +27,6 @@ struct PortalFileFilter {
 
 using PortalFileFilters = QList<PortalFileFilter>;
 
-// The portal's combo-box "choices" option: (id, label, [(option-id, option-label)], initial).
-struct PortalChoiceOption {
-    QString id;
-    QString label;
-};
-
-using PortalChoiceOptions = QList<PortalChoiceOption>;
-
-struct PortalChoice {
-    QString id;
-    QString label;
-    PortalChoiceOptions options;
-    QString initial;
-};
-
-using PortalChoices = QList<PortalChoice>;
-
 QDBusArgument &operator<<(QDBusArgument &argument, const PortalFilterRule &rule) {
     argument.beginStructure();
     argument << rule.type << rule.pattern;
@@ -72,44 +55,12 @@ const QDBusArgument &operator>>(const QDBusArgument &argument, PortalFileFilter 
     return argument;
 }
 
-QDBusArgument &operator<<(QDBusArgument &argument, const PortalChoiceOption &option) {
-    argument.beginStructure();
-    argument << option.id << option.label;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument, PortalChoiceOption &option) {
-    argument.beginStructure();
-    argument >> option.id >> option.label;
-    argument.endStructure();
-    return argument;
-}
-
-QDBusArgument &operator<<(QDBusArgument &argument, const PortalChoice &choice) {
-    argument.beginStructure();
-    argument << choice.id << choice.label << choice.options << choice.initial;
-    argument.endStructure();
-    return argument;
-}
-
-const QDBusArgument &operator>>(const QDBusArgument &argument, PortalChoice &choice) {
-    argument.beginStructure();
-    argument >> choice.id >> choice.label >> choice.options >> choice.initial;
-    argument.endStructure();
-    return argument;
-}
-
 void registerPortalFilterTypes() {
     static const bool registered = [] {
         qDBusRegisterMetaType<PortalFilterRule>();
         qDBusRegisterMetaType<PortalFilterRules>();
         qDBusRegisterMetaType<PortalFileFilter>();
         qDBusRegisterMetaType<PortalFileFilters>();
-        qDBusRegisterMetaType<PortalChoiceOption>();
-        qDBusRegisterMetaType<PortalChoiceOptions>();
-        qDBusRegisterMetaType<PortalChoice>();
-        qDBusRegisterMetaType<PortalChoices>();
         return true;
     }();
     Q_UNUSED(registered);
@@ -127,7 +78,13 @@ PortalFileFilter videoFilter() {
             {0, QStringLiteral("*.mp4")},
             {0, QStringLiteral("*.mpeg")},
             {0, QStringLiteral("*.mpg")},
+            {0, QStringLiteral("*.ts")},
+            {0, QStringLiteral("*.mts")},
+            {0, QStringLiteral("*.m2ts")},
             {0, QStringLiteral("*.webm")},
+            {0, QStringLiteral("*.ogv")},
+            {0, QStringLiteral("*.flv")},
+            {0, QStringLiteral("*.asf")},
         },
     };
 }
@@ -137,14 +94,6 @@ PortalFileFilters videoFilters() {
         videoFilter(),
         {QStringLiteral("All files"), {{0, QStringLiteral("*")}}},
     };
-}
-
-PortalFileFilter mp4Filter() {
-    return {QStringLiteral("MP4 video"), {{0, QStringLiteral("*.mp4")}}};
-}
-
-PortalFileFilters mp4Filters() {
-    return {mp4Filter()};
 }
 
 QString portalToken() {
@@ -179,8 +128,8 @@ void PortalFilePicker::openVideo() {
     requestFile(QStringLiteral("OpenFile"), QStringLiteral("Open Video File"), options, Action::Open);
 }
 
-void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, double end,
-                                   const QList<int> &scaleHeights) {
+bool PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, double end,
+                                   int scaleHeight) {
     const QFileInfo target(suggestedUrl.toLocalFile());
 
     QVariantMap options;
@@ -188,27 +137,20 @@ void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, double start, doubl
     options.insert(QStringLiteral("modal"), true);
     options.insert(QStringLiteral("current_folder"), portalPathBytes(target.absolutePath()));
     options.insert(QStringLiteral("current_name"), target.fileName());
-    options.insert(QStringLiteral("filters"), QVariant::fromValue(mp4Filters()));
-    options.insert(QStringLiteral("current_filter"), QVariant::fromValue(mp4Filter()));
+    const bool copyMode = scaleHeight == kLosslessCopy;
+    const PortalFileFilter filter = copyMode
+        ? PortalFileFilter{QStringLiteral("Matroska video"), {{0, QStringLiteral("*.mkv")}}}
+        : PortalFileFilter{QStringLiteral("MP4 video"), {{0, QStringLiteral("*.mp4")}}};
+    options.insert(QStringLiteral("filters"), QVariant::fromValue(PortalFileFilters{filter}));
+    options.insert(QStringLiteral("current_filter"), QVariant::fromValue(filter));
 
-    // A "Quality" combo in the save dialog, only when there's a real downscale
-    // to offer — sources at or below 720p just export as they are.
-    if (!scaleHeights.isEmpty()) {
-        PortalChoiceOptions qualities = {{QStringLiteral("original"), QStringLiteral("Original")}};
-        for (const int height : scaleHeights)
-            qualities.append({QString::number(height), QStringLiteral("%1p").arg(height)});
-        options.insert(QStringLiteral("choices"),
-                       QVariant::fromValue(PortalChoices{{QStringLiteral("quality"),
-                                                          QStringLiteral("Quality"),
-                                                          qualities,
-                                                          QStringLiteral("original")}}));
-    }
-
-    if (requestFile(QStringLiteral("SaveFile"), QStringLiteral("Save Video File"),
-                    options, Action::Export)) {
-        m_pendingExportStart = start;
-        m_pendingExportEnd = end;
-    }
+    if (!requestFile(QStringLiteral("SaveFile"), QStringLiteral("Save Video File"),
+                     options, Action::Export))
+        return false;
+    m_pendingExportStart = start;
+    m_pendingExportEnd = end;
+    m_pendingExportMode = scaleHeight;
+    return true;
 }
 
 bool PortalFilePicker::connectToRequestPath(const QString &path) {
@@ -230,7 +172,10 @@ bool PortalFilePicker::requestFile(const QString &method, const QString &title,
                           QStringLiteral("org.freedesktop.portal.FileChooser"),
                           bus);
     if (!portal.isValid()) {
-        emit failed(QStringLiteral("The XDG desktop portal file chooser is not available."));
+        if (action == Action::Export)
+            emit exportFailed(QStringLiteral("The XDG desktop portal file chooser is not available."));
+        else
+            emit failed(QStringLiteral("The XDG desktop portal file chooser is not available."));
         return false;
     }
 
@@ -247,25 +192,34 @@ bool PortalFilePicker::requestFile(const QString &method, const QString &title,
     m_pendingAction = action;
     if (!connectToRequestPath(predictedPath)) {
         clearPending();
-        emit failed(QStringLiteral("Could not listen for the portal file picker response."));
+        if (action == Action::Export)
+            emit exportFailed(QStringLiteral("Could not listen for the portal file picker response."));
+        else
+            emit failed(QStringLiteral("Could not listen for the portal file picker response."));
         return false;
     }
 
     auto *watcher = new QDBusPendingCallWatcher(
         portal.asyncCall(method, QString(), title, options), this);
 
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, watcher]() {
+    connect(watcher, &QDBusPendingCallWatcher::finished, this,
+            [this, watcher, predictedPath, action]() {
         QDBusPendingReply<QDBusObjectPath> reply = *watcher;
         watcher->deleteLater();
 
         // A response may already have been handled while the reply was in flight.
-        if (m_pendingAction == Action::None)
+        if (m_pendingAction != action || m_pendingPath != predictedPath)
             return;
 
         if (reply.isError()) {
+            const Action action = m_pendingAction;
             clearPending();
-            emit failed(QStringLiteral("The portal file picker failed: %1")
-                            .arg(reply.error().message()));
+            const QString message = QStringLiteral("The portal file picker failed: %1")
+                .arg(reply.error().message());
+            if (action == Action::Export)
+                emit exportFailed(message);
+            else
+                emit failed(message);
             return;
         }
 
@@ -279,7 +233,10 @@ bool PortalFilePicker::requestFile(const QString &method, const QString &title,
                 this, SLOT(handleResponse(uint,QVariantMap)));
             if (!connectToRequestPath(actualPath)) {
                 clearPending();
-                emit failed(QStringLiteral("Could not listen for the portal file picker response."));
+                if (action == Action::Export)
+                    emit exportFailed(QStringLiteral("Could not listen for the portal file picker response."));
+                else
+                    emit failed(QStringLiteral("Could not listen for the portal file picker response."));
             }
         }
     });
@@ -290,14 +247,21 @@ void PortalFilePicker::handleResponse(uint response, const QVariantMap &results)
     const Action action = m_pendingAction;
     const double start = m_pendingExportStart;
     const double end = m_pendingExportEnd;
+    const int mode = m_pendingExportMode;
     clearPending();
 
-    if (response != 0)
+    if (response != 0) {
+        if (action == Action::Export)
+            emit exportCancelled();
         return;
+    }
 
     const QStringList uris = results.value(QStringLiteral("uris")).toStringList();
-    if (uris.isEmpty())
+    if (uris.isEmpty()) {
+        if (action == Action::Export)
+            emit exportFailed(QStringLiteral("The portal returned no file."));
         return;
+    }
 
     const QUrl url(uris.first());
     if (action == Action::Open) {
@@ -307,25 +271,7 @@ void PortalFilePicker::handleResponse(uint response, const QVariantMap &results)
     if (action != Action::Export)
         return;
 
-    // The chosen quality rides along in the response: [("quality", "1080")],
-    // with "original" (or no choices at all) meaning no downscale.
-    int scaleHeight = 0;
-    const QVariant choicesVar = results.value(QStringLiteral("choices"));
-    if (choicesVar.canConvert<QDBusArgument>()) {
-        const QDBusArgument arg = choicesVar.value<QDBusArgument>();
-        arg.beginArray();
-        while (!arg.atEnd()) {
-            QString id;
-            QString value;
-            arg.beginStructure();
-            arg >> id >> value;
-            arg.endStructure();
-            if (id == QStringLiteral("quality"))
-                scaleHeight = value.toInt();  // "original" parses to 0
-        }
-        arg.endArray();
-    }
-    emit exportSelected(url, start, end, scaleHeight);
+    emit exportSelected(url, start, end, mode);
 }
 
 void PortalFilePicker::clearPending() {
@@ -338,4 +284,7 @@ void PortalFilePicker::clearPending() {
 
     m_pendingPath.clear();
     m_pendingAction = Action::None;
+    m_pendingExportStart = 0;
+    m_pendingExportEnd = 0;
+    m_pendingExportMode = 0;
 }

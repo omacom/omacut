@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QUrl>
 
+inline constexpr int kLosslessCopy = -1;
+
 class FilePicker : public QObject {
     Q_OBJECT
 
@@ -12,14 +14,16 @@ public:
     virtual ~FilePicker() = default;
 
     virtual void openVideo() = 0;
-    // scaleHeights are the downscale choices to offer besides "Original"
+    // scaleHeights are the downscale choices to offer besides "Compressed"
     // (e.g. {1080, 720}), matched by min(width, height) of the source.
-    virtual void exportVideo(const QUrl &suggestedUrl, double start, double end,
-                             const QList<int> &scaleHeights) = 0;
+    virtual bool exportVideo(const QUrl &suggestedUrl, double start, double end,
+                             int scaleHeight) = 0;
 
 signals:
     void openSelected(const QUrl &url);
-    // scaleHeight is 0 for "Original", otherwise the chosen short-side size.
+    // -1 = lossless copy; 0 = Compressed re-encode; positive = scale height (short side).
     void exportSelected(const QUrl &url, double start, double end, int scaleHeight);
     void failed(const QString &message);
+    void exportCancelled();
+    void exportFailed(const QString &message);
 };

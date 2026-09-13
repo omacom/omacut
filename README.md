@@ -29,7 +29,9 @@ Install via the Omarchy Package Repository via the `omacut` package. It's instal
 - `xdg-desktop-portal` and a portal backend for the file picker
 - `ffmpeg` and `ffprobe` on your PATH (used at runtime)
 
-Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio.
+Choose the export mode in Omacut before selecting a destination. **Lossless copy (MKV)** copies all streams without re-encoding into a Matroska file (`.mkv`). **Compressed (MP4)** re-encodes to H.264 video and AAC audio, with optional 1080p/720p downscaling — never upscaling, and always preserving the aspect ratio. The native save dialog opens with a suggested filename and filter matching the selected format. If you manually change the extension, Omacut enforces `.mkv` or `.mp4` on export and refuses to overwrite an existing file at a different, corrected path.
+
+Lossless cuts are limited by keyframe/packet boundaries rather than being frame accurate. Stream copy preserves encoded data but may rewrite container timestamps/metadata. Unsupported streams for Matroska make the export fail; there is no silent fallback to re-encoding.
 
 ## Build
 

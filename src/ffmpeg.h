@@ -34,6 +34,12 @@ QImage thumbnail(const QString &path, double time, int height = 90,
 QStringList trimArgs(const QString &src, const QString &dst, double start, double end,
                      int scaleHeight = 0);
 
+// Build the ffmpeg argument list for a lossless copy of [start, end] of src to
+// dst: all streams are mapped and bitstream-copied (-c copy), so no re-encode
+// happens and the cut lands on keyframe/packet boundaries. The output muxer is
+// picked by ffmpeg from the dst suffix.
+QStringList copyArgs(const QString &src, const QString &dst, double start, double end);
+
 // Locate a tool on PATH; returns empty string if missing.
 QString toolPath(const QString &tool);
 

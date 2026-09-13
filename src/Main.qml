@@ -29,6 +29,10 @@ ApplicationWindow {
     property real exportedEndSec: -1
     property real pendingExportStartSec: 0
     property real pendingExportEndSec: 0
+    property bool exportOptionsVisible: false
+    property bool nativeExportPending: false
+    property int selectedExportMode: 0
+    property var exportModeValues: [0]
     readonly property bool trimDirty: hasVideo && backend.duration > 0
         && (trimBar.startSec > 0 || trimBar.endSec < backend.duration)
         && (trimBar.startSec !== exportedStartSec || trimBar.endSec !== exportedEndSec)
@@ -46,14 +50,43 @@ ApplicationWindow {
         noticeTimer.restart();
     }
     function openVideo() {
+        if (exportOptionsVisible || nativeExportPending)
+            return;
         backend.openVideoDialog();
     }
-    function exportVideo() {
-        if (!win.hasVideo || backend.duration <= 0 || backend.busy)
+    function openExportOptions() {
+        if (!win.hasVideo || backend.duration <= 0 || backend.busy
+                || exportOptionsVisible || nativeExportPending)
             return;
+        if (player.playbackState === MediaPlayer.PlayingState)
+            player.pause();
         pendingExportStartSec = trimBar.startSec;
         pendingExportEndSec = trimBar.endSec;
-        backend.exportDialog(trimBar.startSec, trimBar.endSec);
+        // -1 = lossless copy, 0 = compressed default, then the downscale heights.
+        exportModeValues = [-1, 0].concat(backend.exportHeights());
+        selectedExportMode = 0;
+        exportModeCombo.currentIndex = exportModeValues.indexOf(0);
+        exportOptionsVisible = true;
+    }
+    // Shared reset for closing the options dialog without exporting: the
+    // snapshot must not leak into a later attempt. Native pending state is
+    // deliberately untouched here — the picker owns that while it is open.
+    function cancelExportOptions() {
+        exportOptionsVisible = false;
+        pendingExportStartSec = 0;
+        pendingExportEndSec = 0;
+    }
+    function clearPendingExport() {
+        nativeExportPending = false;
+        pendingExportStartSec = 0;
+        pendingExportEndSec = 0;
+    }
+    function confirmExportOptions() {
+        exportOptionsVisible = false;
+        nativeExportPending = backend.exportDialog(pendingExportStartSec, pendingExportEndSec,
+                                                   selectedExportMode);
+        if (!nativeExportPending)
+            clearPendingExport();
     }
     function ensureAudioOutput() {
         if (audioOutput === null && win.hasVideo)
@@ -148,6 +181,11 @@ ApplicationWindow {
     onClosing: (close) => {
         if (win.quitting)
             return;
+        if (win.exportOptionsVisible) {
+            close.accepted = false;
+            win.cancelExportOptions();
+            return;
+        }
         if (win.trimDirty) {
             close.accepted = false;
             if (player.playbackState === MediaPlayer.PlayingState)
@@ -164,70 +202,70 @@ ApplicationWindow {
     Shortcut {
         sequence: "Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.exportOptionsVisible
         onActivated: togglePlay()
     }
 
     Shortcut {
         sequence: "Ctrl+Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.exportOptionsVisible
         onActivated: moveTrimStartTo(trimBar.playheadSec)
     }
 
     Shortcut {
         sequence: "Alt+Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.exportOptionsVisible
         onActivated: moveTrimEndTo(trimBar.playheadSec)
     }
 
     Shortcut {
         sequence: "Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.exportOptionsVisible
         onActivated: seekBy(-1)
     }
 
     Shortcut {
         sequence: "Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.exportOptionsVisible
         onActivated: seekBy(1)
     }
 
     Shortcut {
         sequence: "Shift+Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.exportOptionsVisible
         onActivated: seekBy(-5)
     }
 
     Shortcut {
         sequence: "Shift+Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.exportOptionsVisible
         onActivated: seekBy(5)
     }
 
     Shortcut {
         sequence: "Alt+Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.exportOptionsVisible
         onActivated: seekBy(-0.2)
     }
 
     Shortcut {
         sequence: "Alt+Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.exportOptionsVisible
         onActivated: seekBy(0.2)
     }
 
     Shortcut {
         sequence: "Z"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && backend.duration > 0 && !win.quitConfirmVisible
+        enabled: win.hasVideo && backend.duration > 0 && !win.quitConfirmVisible && !win.exportOptionsVisible
         onActivated: {
             trimBar.toggleZoom();
             backend.requestThumbs(trimBar.windowStart, trimBar.windowEnd);
@@ -238,16 +276,17 @@ ApplicationWindow {
         sequence: "Ctrl+S"
         context: Qt.ApplicationShortcut
         enabled: win.hasVideo && backend.duration > 0 && !backend.busy
+            && !win.exportOptionsVisible && !win.nativeExportPending
         onActivated: {
             win.quitConfirmVisible = false;
-            exportVideo();
+            openExportOptions();
         }
     }
 
     Shortcut {
         sequence: "Ctrl+O"
         context: Qt.ApplicationShortcut
-        enabled: !win.quitConfirmVisible
+        enabled: !win.quitConfirmVisible && !win.exportOptionsVisible && !win.nativeExportPending
         onActivated: openVideo()
     }
 
@@ -255,7 +294,7 @@ ApplicationWindow {
         sequence: "Q"
         context: Qt.ApplicationShortcut
         onActivated: {
-            if (!win.quitConfirmVisible)
+            if (!win.quitConfirmVisible && !win.exportOptionsVisible)
                 requestQuit();
         }
     }
@@ -275,6 +314,8 @@ ApplicationWindow {
         onActivated: {
             if (win.quitConfirmVisible)
                 win.quitConfirmVisible = false;
+            else if (win.exportOptionsVisible)
+                win.cancelExportOptions();
             else if (win.helpVisible)
                 win.helpVisible = false;
         }
@@ -548,7 +589,7 @@ ApplicationWindow {
                 iconName: "download"
                 tipText: "Export"
                 enabled: backend.duration > 0 && !backend.busy
-                onClicked: exportVideo()
+                 onClicked: openExportOptions()
             }
         }
 
@@ -676,6 +717,90 @@ ApplicationWindow {
         }
     }
 
+    // --- export options (app-owned, before the native SaveFile dialog) ---
+    Rectangle {
+        objectName: "exportOptionsDialog"
+        visible: win.exportOptionsVisible
+        anchors.fill: parent
+        color: "#000000cc"
+        z: 2
+        Keys.onEscapePressed: win.cancelExportOptions()
+        onVisibleChanged: if (visible) exportModeCombo.forceActiveFocus()
+
+        MouseArea { anchors.fill: parent }
+        Rectangle {
+            anchors.centerIn: parent
+            width: exportColumn.width + 64
+            height: exportColumn.height + 48
+            radius: 12
+            color: "#1c1c1e"
+            MouseArea { anchors.fill: parent }
+            Column {
+                id: exportColumn
+                anchors.centerIn: parent
+                spacing: 10
+                Label {
+                    text: "Export options"
+                    color: "white"
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                }
+                Label {
+                    text: "Choose the format before selecting the destination."
+                    color: "#d6d6da"
+                    font.pixelSize: 13
+                }
+                ComboBox {
+                    id: exportModeCombo
+                    objectName: "exportModeCombo"
+                    width: 260
+                    // Labels are derived from the same mode list that is
+                    // forwarded to the picker, so they can't drift apart.
+                    model: exportModeValues.map(function(m) {
+                        if (m === -1) return "Lossless copy (MKV)";
+                        if (m === 0) return "Compressed (MP4)";
+                        return "Compressed " + m + "p (MP4)";
+                    })
+                    onActivated: function(index) { selectedExportMode = exportModeValues[index]; }
+                    KeyNavigation.tab: exportContinueButton
+                    KeyNavigation.backtab: exportCancelButton
+                    onCurrentIndexChanged: if (exportOptionsVisible) selectedExportMode = exportModeValues[currentIndex]
+                }
+                Label {
+                    width: 260
+                    wrapMode: Text.WordWrap
+                    text: "Lossless copy keeps the original streams and is keyframe/packet accurate; it may not cut on an exact frame."
+                    color: "#b8b8bc"
+                    font.pixelSize: 12
+                    visible: selectedExportMode === -1
+                }
+                Row {
+                    anchors.right: parent.right
+                    spacing: 10
+                    DialogButton {
+                        id: exportCancelButton
+                        text: "Cancel"
+                        KeyNavigation.tab: exportModeCombo
+                        KeyNavigation.backtab: exportContinueButton
+                        KeyNavigation.left: exportContinueButton
+                        KeyNavigation.right: exportContinueButton
+                        onClicked: win.cancelExportOptions()
+                    }
+                    DialogButton {
+                        id: exportContinueButton
+                        text: "Continue"
+                        primary: true
+                        KeyNavigation.tab: exportCancelButton
+                        KeyNavigation.backtab: exportModeCombo
+                        KeyNavigation.left: exportCancelButton
+                        KeyNavigation.right: exportCancelButton
+                        onClicked: confirmExportOptions()
+                    }
+                }
+            }
+        }
+    }
+
     // --- quit confirmation ---
     Rectangle {
         visible: win.quitConfirmVisible
@@ -753,7 +878,7 @@ ApplicationWindow {
                         KeyNavigation.backtab: quitQuitButton
                         onClicked: {
                             win.quitConfirmVisible = false;
-                            exportVideo();
+                             openExportOptions();
                         }
                     }
                 }
@@ -763,7 +888,22 @@ ApplicationWindow {
 
     Connections {
         target: backend
+        function onExportDone(path) {
+            win.exportedStartSec = win.pendingExportStartSec;
+            win.exportedEndSec = win.pendingExportEndSec;
+            win.clearPendingExport();
+            win.showNotice("Saved " + path);
+        }
+        function onExportFailed(message) {
+            win.clearPendingExport();
+            win.showNotice("Export failed: " + message);
+        }
+        function onExportCancelled() {
+            win.clearPendingExport();
+        }
         function onInfoChanged() {
+            win.clearPendingExport();
+            win.exportOptionsVisible = false;
             win.noticeText = "";
             noticeTimer.stop();
             // Reset priming too, or a video opened mid-prime would stay black:
@@ -777,14 +917,6 @@ ApplicationWindow {
             trimBar.playheadSec = 0;
             win.exportedStartSec = -1;
             win.exportedEndSec = -1;
-        }
-        function onExportDone(path) {
-            win.exportedStartSec = win.pendingExportStartSec;
-            win.exportedEndSec = win.pendingExportEndSec;
-            win.showNotice("Saved " + path);
-        }
-        function onExportFailed(message) {
-            win.showNotice("Export failed: " + message);
         }
         function onLoadError(message) {
             win.showNotice("Cannot open video: " + message);

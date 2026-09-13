@@ -39,6 +39,17 @@ QString mp4PathFor(const QString &path) {
     return file.dir().filePath(baseName + QStringLiteral(".mp4"));
 }
 
+QString mkvPathFor(const QString &path) {
+    const QFileInfo file(path);
+    if (file.suffix().compare(QStringLiteral("mkv"), Qt::CaseInsensitive) == 0)
+        return path;
+
+    const QString baseName = file.completeBaseName().isEmpty()
+        ? file.fileName()
+        : file.completeBaseName();
+    return file.dir().filePath(baseName + QStringLiteral(".mkv"));
+}
+
 bool replaceWithTemp(const QString &tmpPath, const QString &outPath) {
     const QByteArray tmpName = QFile::encodeName(tmpPath);
     const QByteArray outName = QFile::encodeName(outPath);
@@ -78,6 +89,8 @@ void Backend::wireFilePicker() {
     connect(m_filePicker, &FilePicker::openSelected, this, &Backend::load);
     connect(m_filePicker, &FilePicker::exportSelected, this, &Backend::exportClip);
     connect(m_filePicker, &FilePicker::failed, this, &Backend::loadError);
+    connect(m_filePicker, &FilePicker::exportCancelled, this, &Backend::exportCancelled);
+    connect(m_filePicker, &FilePicker::exportFailed, this, &Backend::exportFailed);
 }
 
 void Backend::setBusy(bool busy) {
@@ -193,12 +206,11 @@ void Backend::openVideoDialog() {
     m_filePicker->openVideo();
 }
 
-void Backend::exportDialog(double start, double end) {
+bool Backend::exportDialog(double start, double end, int scaleHeight) {
     if (m_path.isEmpty() || !m_info.ok)
-        return;
+        return false;
 
-    m_filePicker->exportVideo(suggestedExportUrl(), start, end,
-                              exportHeights(m_info.width, m_info.height));
+    return m_filePicker->exportVideo(suggestedExportUrl(scaleHeight), start, end, scaleHeight);
 }
 
 QList<int> Backend::exportHeights(int width, int height) {
@@ -209,6 +221,10 @@ QList<int> Backend::exportHeights(int width, int height) {
             heights << candidate;
     }
     return heights;
+}
+
+QList<int> Backend::exportHeights() const {
+    return exportHeights(m_info.width, m_info.height);
 }
 
 void Backend::startThumbs() {
@@ -306,11 +322,13 @@ void Backend::requestThumbs(double start, double end) {
     startThumbs();
 }
 
-QUrl Backend::suggestedExportUrl() const {
+QUrl Backend::suggestedExportUrl(int scaleHeight) const {
     if (m_path.isEmpty())
         return {};
     const QFileInfo src(m_path);
-    const QString target = src.dir().filePath(src.completeBaseName() + "_trimmed.mp4");
+    const QString suffix = scaleHeight == kLosslessCopy ? QStringLiteral(".mkv")
+                                                        : QStringLiteral(".mp4");
+    const QString target = src.dir().filePath(src.completeBaseName() + "_trimmed" + suffix);
     return QUrl::fromLocalFile(target);
 }
 
@@ -323,11 +341,11 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
         return;
     }
 
-    // Forcing the .mp4 suffix can redirect the write to a file the save
-    // dialog never asked the user about overwriting — refuse rather than
-    // silently replace it.
     const QString selectedPath = dst.toLocalFile();
-    const QString outPath = mp4PathFor(selectedPath);
+    const bool copyMode = (scaleHeight == kLosslessCopy);
+    const QString outPath = copyMode ? mkvPathFor(selectedPath) : mp4PathFor(selectedPath);
+    // Forcing a suffix can redirect the write to a file the save dialog never
+    // asked the user about overwriting — refuse rather than silently replace it.
     if (outPath != selectedPath && QFileInfo::exists(outPath)) {
         emit exportFailed(QStringLiteral("%1 already exists.")
                               .arg(QFileInfo(outPath).fileName()));
@@ -345,9 +363,12 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
 
     // Encode to a sibling temp file and atomically replace the target only after
     // success, so failed/cancelled exports preserve any existing file.
-    const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
+    const QString tmpPath = outPath + QStringLiteral(".omacut-part.")
+        + (copyMode ? QStringLiteral("mkv") : QStringLiteral("mp4"));
     QFile::remove(tmpPath);
-    const QStringList args = ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight);
+    const QStringList args = copyMode
+        ? ffmpeg::copyArgs(m_path, tmpPath, start, end)
+        : ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight);
 
     auto *proc = new QProcess(this);
     auto completed = std::make_shared<bool>(false);
@@ -375,14 +396,17 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
             });
 
     connect(proc, &QProcess::finished, this,
-            [this, proc, outPath, tmpPath, completed](int code, QProcess::ExitStatus exitStatus) {
+            [this, proc, outPath, tmpPath, copyMode, completed](int code, QProcess::ExitStatus exitStatus) {
                 if (*completed)
                     return;
                 *completed = true;
                 const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
                 proc->deleteLater();
                 if (exitStatus != QProcess::NormalExit || code != 0) {
-                    failExport(tmpPath, err.isEmpty() ? QStringLiteral("ffmpeg trim failed.") : err);
+                    failExport(tmpPath, err.isEmpty()
+                        ? (copyMode ? QStringLiteral("ffmpeg copy failed.")
+                                    : QStringLiteral("ffmpeg trim failed."))
+                        : err);
                     return;
                 }
                 if (!replaceWithTemp(tmpPath, outPath)) {

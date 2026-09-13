@@ -56,10 +56,15 @@ public:
 
     // Open native desktop file dialogs.
     Q_INVOKABLE void openVideoDialog();
-    Q_INVOKABLE void exportDialog(double start, double end);
+    // Opens the native save dialog for [start, end] in the given export mode
+    // (see FilePicker::exportSelected). Returns false when no dialog could be
+    // started (e.g. one is already pending) so the QML caller can release its
+    // pending state.
+    Q_INVOKABLE bool exportDialog(double start, double end, int scaleHeight = 0);
 
-    // Suggested "<name>_trimmed.mp4" target next to the source.
-    Q_INVOKABLE QUrl suggestedExportUrl() const;
+    // Suggested "<name>_trimmed.mp4" (or "_trimmed.mkv" for a lossless copy)
+    // target next to the source, matching the mode the save dialog will show.
+    Q_INVOKABLE QUrl suggestedExportUrl(int scaleHeight = 0) const;
 
     // Write [start, end] (seconds) of the loaded video to dst. A non-zero
     // scaleHeight downscales the shorter side to that size.
@@ -69,6 +74,10 @@ public:
     // The downscale heights worth offering for a source: only ones strictly
     // below the source's shorter side, so exports never upscale.
     static QList<int> exportHeights(int width, int height);
+
+    // Same as exportHeights(width, height) for the loaded video — what the QML
+    // export-options dialog offers besides Lossless copy and Compressed.
+    Q_INVOKABLE QList<int> exportHeights() const;
 
     // Regenerate the filmstrip for [start, end] (seconds) — used by zoom.
     // The full-length strip is cached, so zooming back out restores instantly.
@@ -82,6 +91,7 @@ signals:
     void themeAccentChanged();
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
+    void exportCancelled();
     void loadError(const QString &message);
 
 private:
