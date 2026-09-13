@@ -4,6 +4,10 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QCryptographicHash>
 #include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -28,17 +32,18 @@ public:
     QUrl lastSuggestedUrl;
     double lastStart = 0;
     double lastEnd = 0;
-    QList<int> lastScaleHeights;
+    int lastMode = 0;
 
     void openVideo() override { ++openCount; }
 
-    void exportVideo(const QUrl &suggestedUrl, double start, double end,
-                     const QList<int> &scaleHeights) override {
+    bool exportVideo(const QUrl &suggestedUrl, double start, double end,
+                     int mode) override {
         ++exportCount;
         lastSuggestedUrl = suggestedUrl;
         lastStart = start;
         lastEnd = end;
-        lastScaleHeights = scaleHeights;
+        lastMode = mode;
+        return true;
     }
 };
 
@@ -88,12 +93,15 @@ public:
 
     Q_INVOKABLE bool load(const QUrl &) { return false; }
     Q_INVOKABLE void openVideoDialog() { ++openCount; }
-    Q_INVOKABLE void exportDialog(double start, double end) {
+    Q_INVOKABLE bool exportDialog(double start, double end, int mode) {
         ++exportCount;
         lastStart = start;
         lastEnd = end;
+        lastMode = mode;
+        return true;
     }
-    Q_INVOKABLE QUrl suggestedExportUrl() const { return {}; }
+    Q_INVOKABLE QList<int> exportHeights() const { return {1080, 720}; }
+    Q_INVOKABLE QUrl suggestedExportUrl(int) const { return {}; }
     Q_INVOKABLE void exportClip(const QUrl &, double, double) {}
     Q_INVOKABLE void requestThumbs(double start, double end) {
         ++thumbRequestCount;
@@ -111,6 +119,7 @@ public:
     int thumbRequestCount = 0;
     double lastThumbStart = 0;
     double lastThumbEnd = 0;
+    int lastMode = 0;
 
 signals:
     void infoChanged();
@@ -120,6 +129,7 @@ signals:
     void themeAccentChanged();
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
+    void exportCancelled();
     void loadError(const QString &message);
 
 private:
@@ -131,7 +141,8 @@ private:
 static QQuickItem *dialogButton(QQuickWindow *window, const QString &text) {
     const auto items = window->findChildren<QQuickItem *>();
     for (QQuickItem *item : items) {
-        if (item->property("primary").isValid() && item->property("text").toString() == text)
+        if (item->isVisible() && item->property("primary").isValid()
+                && item->property("text").toString() == text)
             return item;
     }
     return nullptr;
@@ -186,6 +197,7 @@ private slots:
     void exportClipCanReplaceSourceFile();
     void exportZeroLengthClipFails();
     void exportRefusesRewrittenPathOverExistingFile();
+    void exportClipCopyModeCollidesWithExistingMkv();
     void exportStartFailureClearsBusy();
     void failedExportPreservesExistingFile();
     void qmlDoesNotCreateAudioOutputWithoutVideo();
@@ -196,6 +208,8 @@ private slots:
     void qmlQuitConfirmsUnexportedTrim();
     void trimArgsReencodeForPreciseCuts();
     void trimArgsScaleTheShorterSide();
+    void copyArgsPreserveStreams();
+    void exportClipCopiesStreams();
     void exportHeightsNeverUpscale();
     void themeAccentReadsOmarchyColors();
     void themeAccentForegroundKeepsContrast();
@@ -203,6 +217,7 @@ private slots:
 private:
     QUrl videoUrl() const { return QUrl::fromLocalFile(m_videoPath); }
     QString formatName(const QString &path) const;
+    QStringList streamList(const QString &path) const;
     void waitForBackgroundWork(Backend &backend);
     bool installBrokenFfmpeg(const QString &dirPath);
 
@@ -266,8 +281,30 @@ QString BackendTests::formatName(const QString &path) const {
     return QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
 }
 
-// Drop an "ffmpeg" into dirPath that always fails to start (its shebang points
-// nowhere), for tests that prepend dirPath to PATH.
+// The full stream inventory as "codec_type:codec_name" entries, in ffprobe
+// order, for end-to-end stream-preservation checks.
+QStringList BackendTests::streamList(const QString &path) const {
+    const QString ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (ffprobe.isEmpty())
+        return {};
+    QProcess proc;
+    proc.start(ffprobe, {QStringLiteral("-v"), QStringLiteral("error"),
+                         QStringLiteral("-show_streams"),
+                         QStringLiteral("-print_format"), QStringLiteral("json"),
+                         path});
+    if (!proc.waitForFinished(10000) || proc.exitStatus() != QProcess::NormalExit
+            || proc.exitCode() != 0)
+        return {};
+    const QJsonObject root = QJsonDocument::fromJson(proc.readAllStandardOutput()).object();
+    QStringList result;
+    const QJsonArray streams = root.value(QStringLiteral("streams")).toArray();
+    for (const QJsonValue &value : streams) {
+        const QJsonObject stream = value.toObject();
+        result << stream.value(QStringLiteral("codec_type")).toString() + QLatin1Char(':')
+                      + stream.value(QStringLiteral("codec_name")).toString();
+    }
+    return result;
+}
 bool BackendTests::installBrokenFfmpeg(const QString &dirPath) {
     QFile fake(QDir(dirPath).filePath(QStringLiteral("ffmpeg")));
     if (!fake.open(QIODevice::WriteOnly | QIODevice::Truncate))
@@ -412,6 +449,102 @@ void BackendTests::suggestedExportUrlAlwaysUsesMp4() {
 
     QCOMPARE(backend.suggestedExportUrl(),
              QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("renamed-source_trimmed.mp4"))));
+}
+
+void BackendTests::copyArgsPreserveStreams() {
+    const QStringList args = ffmpeg::copyArgs(QStringLiteral("in.mp4"), QStringLiteral("out.mkv"),
+                                               0.25, 0.75);
+    QVERIFY(args.contains(QStringLiteral("-map")));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-map")) + 1), QStringLiteral("0"));
+    QVERIFY(args.contains(QStringLiteral("-c")));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-c")) + 1), QStringLiteral("copy"));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-progress")) + 1), QStringLiteral("pipe:1"));
+    QVERIFY(args.contains(QStringLiteral("-ss")));
+    QVERIFY(args.contains(QStringLiteral("-t")));
+    QVERIFY(args.contains(QStringLiteral("-i")));
+    QCOMPARE(args.last(), QStringLiteral("out.mkv"));
+    for (const QString &forbidden : {QStringLiteral("-vf"), QStringLiteral("libx264"),
+                                     QStringLiteral("aac"), QStringLiteral("+faststart"),
+                                     QStringLiteral("-preset"), QStringLiteral("-crf")})
+        QVERIFY(!args.contains(forbidden));
+}
+
+void BackendTests::exportClipCopiesStreams() {
+    const QString sourcePath = m_dir.filePath(QStringLiteral("copy-source.mp4"));
+    const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    QVERIFY(!ffmpeg.isEmpty());
+    QProcess generator;
+    generator.start(ffmpeg, {
+        QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"), QStringLiteral("error"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"), QStringLiteral("-i"),
+        QStringLiteral("testsrc=size=32x32:rate=1:duration=3"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"), QStringLiteral("-i"),
+        QStringLiteral("sine=frequency=440:duration=3"),
+        QStringLiteral("-shortest"), QStringLiteral("-y"), sourcePath,
+    });
+    QVERIFY2(generator.waitForFinished(10000), qPrintable(QString::fromUtf8(generator.readAll())));
+    QCOMPARE(generator.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(generator.exitCode(), 0);
+
+    const QStringList sourceStreams = streamList(sourcePath);
+    QCOMPARE(sourceStreams.size(), 2);
+    QVERIFY(sourceStreams.contains(QStringLiteral("video:h264")));
+    QVERIFY(sourceStreams.contains(QStringLiteral("audio:aac")));
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    const QString outPath = m_dir.filePath(QStringLiteral("copy-output.mp4"));
+    // The full 0-to-3-second range starts and ends on the synthetic clip's
+    // keyframe/packet boundaries, avoiding an arbitrary-keyframe cut.
+    backend.exportClip(QUrl::fromLocalFile(outPath), 0.0, 3.0, kLosslessCopy);
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 20000);
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 1);
+    const QString actualPath = doneSpy.first().at(0).toString();
+    QVERIFY(QFileInfo::exists(actualPath));
+    QCOMPARE(QFileInfo(actualPath).suffix(), QStringLiteral("mkv"));
+    QVERIFY2(formatName(actualPath).contains(QStringLiteral("matroska")),
+             qPrintable(formatName(actualPath)));
+    QCOMPARE(streamList(actualPath), sourceStreams);
+    QVERIFY(!QFileInfo::exists(outPath));
+    const QStringList tempFiles = QDir(QFileInfo(actualPath).absolutePath()).entryList(
+        {QFileInfo(actualPath).fileName() + QStringLiteral(".omacut-part.*")}, QDir::Files);
+    QVERIFY(tempFiles.isEmpty());
+}
+
+void BackendTests::exportClipCopyModeCollidesWithExistingMkv() {
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(videoUrl()));
+    waitForBackgroundWork(backend);
+
+    const QString selectedPath = m_dir.filePath(QStringLiteral("copy-target.mp4"));
+    const QString mkvPath = m_dir.filePath(QStringLiteral("copy-target.mkv"));
+    const QByteArray original("existing Matroska target");
+    QFile existing(mkvPath);
+    QVERIFY(existing.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(existing.write(original), original.size());
+    existing.close();
+
+    backend.exportClip(QUrl::fromLocalFile(selectedPath), 0.0, 1.0, kLosslessCopy);
+
+    QCOMPARE(failedSpy.count(), 1);
+    QCOMPARE(doneSpy.count(), 0);
+    QFile check(mkvPath);
+    QVERIFY(check.open(QIODevice::ReadOnly));
+    QCOMPARE(check.readAll(), original);
+    QVERIFY(!QFileInfo::exists(selectedPath));
+    QVERIFY(!QFileInfo::exists(mkvPath + QStringLiteral(".omacut-part.mkv")));
 }
 
 void BackendTests::exportClipWritesMp4() {
@@ -617,7 +750,39 @@ void BackendTests::qmlShortcutsTriggerBackendActions() {
     QTest::qWait(100);
 
     QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY(window->property("exportOptionsVisible").toBool());
+    QCOMPARE(backend.exportCount, 0);
+    QQuickItem *combo = window->findChild<QQuickItem *>(QStringLiteral("exportModeCombo"));
+    QVERIFY(combo);
+    QCOMPARE(window->property("selectedExportMode").toInt(), 0);
+    QTest::keyClick(window, Qt::Key_Tab);
+    QTest::keyClick(window, Qt::Key_Return);
     QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 1, 3000);
+    QCOMPARE(backend.lastMode, 0);
+    backend.exportCancelled();
+    QTRY_VERIFY(!window->property("nativeExportPending").toBool());
+
+    // Lossless is selectable before the native picker is invoked.
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY(window->property("exportOptionsVisible").toBool());
+    QTest::keyClick(window, Qt::Key_Up);
+    QCOMPARE(window->property("selectedExportMode").toInt(), kLosslessCopy);
+    QQuickItem *continueButton = dialogButton(window, QStringLiteral("Continue"));
+    QVERIFY(continueButton);
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, itemCenter(continueButton));
+    QTRY_COMPARE(backend.exportCount, 2);
+    QCOMPARE(backend.lastMode, kLosslessCopy);
+    backend.exportFailed(QStringLiteral("Test picker failure"));
+    QTRY_VERIFY(!window->property("nativeExportPending").toBool());
+
+    // Retry resets both the visible combo and mode; Escape performs no export.
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY(window->property("exportOptionsVisible").toBool());
+    QCOMPARE(combo->property("currentIndex").toInt(), 1);
+    QCOMPARE(window->property("selectedExportMode").toInt(), 0);
+    QTest::keyClick(window, Qt::Key_Escape);
+    QTRY_VERIFY(!window->property("exportOptionsVisible").toBool());
+    QCOMPARE(backend.exportCount, 2);
 
     QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.openCount, 1, 3000);
@@ -810,12 +975,30 @@ void BackendTests::qmlQuitConfirmsUnexportedTrim() {
     QCOMPARE(backend.exportCount, 0);
     QCOMPARE(trimBar->property("playheadSec").toDouble(), 5.0);
 
-    // Enter on the default Export focus exports, as does Ctrl+S.
+    // Ctrl+S replaces quit confirmation instead of stacking two modal dialogs.
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_VERIFY(window->property("quitConfirmVisible").toBool());
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY(window->property("exportOptionsVisible").toBool());
+    QVERIFY(!window->property("quitConfirmVisible").toBool());
+    QTest::keyClick(window, Qt::Key_Escape);
+    QTRY_VERIFY(!window->property("exportOptionsVisible").toBool());
+    QVERIFY(!window->property("quitConfirmVisible").toBool());
+    QCOMPARE(backend.exportCount, 0);
+
+    // Export opens options first; Continue invokes the native picker.
     QTest::keyClick(window, Qt::Key_Q);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
     QTest::keyClick(window, Qt::Key_Return);
+    QTRY_VERIFY(window->property("exportOptionsVisible").toBool());
+    QCOMPARE(backend.exportCount, 0);
+    QQuickItem *continueButton = dialogButton(window, QStringLiteral("Continue"));
+    QVERIFY(continueButton);
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, itemCenter(continueButton));
     QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 1, 3000);
     QCOMPARE(window->property("quitConfirmVisible").toBool(), false);
+    backend.exportCancelled();
+    QTRY_VERIFY(!window->property("nativeExportPending").toBool());
 
     // The buttons work with the mouse too: Cancel dismisses, Export exports.
     QTest::keyClick(window, Qt::Key_Q);
@@ -831,6 +1014,9 @@ void BackendTests::qmlQuitConfirmsUnexportedTrim() {
     QQuickItem *exportButton = dialogButton(window, QStringLiteral("Export"));
     QVERIFY(exportButton);
     QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, itemCenter(exportButton));
+    QTRY_VERIFY(window->property("exportOptionsVisible").toBool());
+    QCOMPARE(backend.exportCount, 1);
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, itemCenter(continueButton));
     QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 2, 3000);
     QCOMPARE(window->property("quitConfirmVisible").toBool(), false);
 
