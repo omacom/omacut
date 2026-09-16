@@ -31,6 +31,8 @@ Install via the Omarchy Package Repository via the `omacut` package. It's instal
 
 Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio.
 
+After an export finishes, the trim resets: both handles go back out to the ends of the video, so the next cut from the same file begins from scratch. Only the handles move — the playhead stays where it was.
+
 ## Build
 
 Uses Qt's own build tool, `qmake6` (no cmake needed):

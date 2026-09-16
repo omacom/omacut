@@ -115,6 +115,16 @@ ApplicationWindow {
         trimBar.endSec = Math.min(trimBar.windowEnd, Math.max(seconds, trimBar.startSec + minGap));
         movePlayheadTo(trimBar.endSec);
     }
+    // An export finishes a trim, so the two edges open back up to the whole
+    // video — the next cut starts from scratch instead of from the handles the
+    // last export left behind. Nothing else moves: the playhead holds its
+    // position, playback keeps its state, and the filmstrip keeps its zoom.
+    function resetTrim() {
+        if (!win.hasVideo || backend.duration <= 0)
+            return;
+        trimBar.startSec = 0;
+        trimBar.endSec = backend.duration;
+    }
     property bool quitting: false
     function requestQuit() {
         if (trimDirty) {
@@ -782,6 +792,7 @@ ApplicationWindow {
             win.exportedStartSec = win.pendingExportStartSec;
             win.exportedEndSec = win.pendingExportEndSec;
             win.showNotice("Saved " + path);
+            win.resetTrim();
         }
         function onExportFailed(message) {
             win.showNotice("Export failed: " + message);

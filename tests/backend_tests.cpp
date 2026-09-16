@@ -193,6 +193,7 @@ private slots:
     void qmlArrowKeysMoveThePlayhead();
     void qmlSpaceChordsSetTheTrimEdges();
     void qmlZoomFocusesTheSelection();
+    void qmlExportResetsTheTrim();
     void qmlQuitConfirmsUnexportedTrim();
     void trimArgsReencodeForPreciseCuts();
     void trimArgsScaleTheShorterSide();
@@ -767,6 +768,50 @@ void BackendTests::qmlZoomFocusesTheSelection() {
     QCOMPARE(backend.thumbRequestCount, 3);
     QCOMPARE(backend.lastThumbStart, 0.0);
     QCOMPARE(backend.lastThumbEnd, 20.0);
+}
+
+void BackendTests::qmlExportResetsTheTrim() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QTRY_VERIFY_WITH_TIMEOUT(window->property("audioOutputReady").toBool(), 3000);
+
+    backend.announceInfo();
+    QQuickItem *trimBar = harness.trimBar();
+    QVERIFY(trimBar);
+
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+
+    // Trim to 5..15 and zoom in on it: the state an export is launched from.
+    QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(trimBar->property("startSec").toDouble(), 5.0, 3000);
+    QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_Space, Qt::AltModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(trimBar->property("endSec").toDouble(), 15.0, 3000);
+    QTest::keyClick(window, Qt::Key_Z);
+    QTRY_COMPARE_WITH_TIMEOUT(trimBar->property("zoomed").toBool(), true, 3000);
+    const int thumbRequestsBeforeExport = backend.thumbRequestCount;
+
+    // The export lands: only the two edges move, back out to the whole video.
+    backend.announceExportDone();
+    QTRY_COMPARE_WITH_TIMEOUT(trimBar->property("startSec").toDouble(), 0.0, 3000);
+    QCOMPARE(trimBar->property("endSec").toDouble(), 20.0);
+
+    // The playhead holds its position, and the filmstrip keeps its zoom — so
+    // no thumbnails are regenerated either.
+    QCOMPARE(trimBar->property("playheadSec").toDouble(), 15.0);
+    QCOMPARE(trimBar->property("zoomed").toBool(), true);
+    QCOMPARE(backend.thumbRequestCount, thumbRequestsBeforeExport);
+
+    // A full-length selection is not unexported work, so quitting won't ask.
+    QCOMPARE(window->property("trimDirty").toBool(), false);
 }
 
 void BackendTests::qmlQuitConfirmsUnexportedTrim() {
