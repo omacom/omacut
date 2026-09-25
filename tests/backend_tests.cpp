@@ -257,6 +257,7 @@ private slots:
     void busyBlocksLoadAndOpenDuringEncode();
     void qmlBusyBlocksOpenAndQuit();
     void qmlBusySaveShowsNotice();
+    void qmlSavePromptFitsWindowWithLongName();
     void overwriteReloadFailureKeepsErrorVisible();
     void failedOverwriteLeavesSourceUntouched();
     void overwriteKeepsSourcePermissions();
@@ -1879,6 +1880,39 @@ void BackendTests::qmlBusySaveShowsNotice() {
     QCOMPARE(window->property("savePromptVisible").toBool(), false);
     QCOMPARE(backend.overwriteCount, 0);
     QCOMPARE(backend.exportCount, 0);
+}
+
+void BackendTests::qmlSavePromptFitsWindowWithLongName() {
+    const QString longPath = m_dir.filePath(QStringLiteral(
+        "this is a really really long filename for testing modal layouts - vacation footage final v2.mp4"));
+    ShortcutBackend backend(QUrl::fromLocalFile(longPath), 20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QTRY_VERIFY_WITH_TIMEOUT(window->property("audioOutputReady").toBool(), 3000);
+
+    backend.announceInfo();
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(window->property("savePromptVisible").toBool(), 3000);
+    QTest::qWait(100);
+
+    // IN-05: a long filename must not push the modal (and its buttons) past
+    // the window edge — the label wraps/elides instead.
+    auto *modal = window->findChild<QQuickItem *>(QStringLiteral("saveModal"));
+    QVERIFY2(modal, "saveModal objectName missing from the save prompt");
+    QVERIFY2(modal->width() <= window->width(),
+             qPrintable(QStringLiteral("modal %1 > window %2")
+                            .arg(modal->width())
+                            .arg(window->width())));
+    const QRectF modalRect =
+        modal->mapRectToScene(QRectF(0, 0, modal->width(), modal->height()));
+    QVERIFY(modalRect.left() >= -1);
+    QVERIFY(modalRect.right() <= window->width() + 1);
 }
 
 void BackendTests::overwriteReloadFailureKeepsErrorVisible() {

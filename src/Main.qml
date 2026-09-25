@@ -855,8 +855,9 @@ ApplicationWindow {
         }
 
         Rectangle {
+            objectName: "saveModal"
             anchors.centerIn: parent
-            width: saveColumn.width + 64
+            width: Math.min(saveColumn.width + 64, win.width - 64)
             height: saveColumn.height + 48
             radius: 12
             color: "#1c1c1e"
@@ -882,6 +883,13 @@ ApplicationWindow {
                     color: "#d6d6da"
                     font.pixelSize: 13
                     bottomPadding: 12
+                    // A long filename must not push the buttons out of the
+                    // window — wrap (char-wise for unbroken names) and elide
+                    // rather than let the dialog overflow the screen.
+                    width: Math.min(implicitWidth, win.width - 160)
+                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    maximumLineCount: 4
+                    elide: Text.ElideRight
                 }
 
                 Row {
@@ -949,8 +957,9 @@ ApplicationWindow {
         }
 
         Rectangle {
+            objectName: "staleModal"
             anchors.centerIn: parent
-            width: staleColumn.width + 64
+            width: Math.min(staleColumn.width + 64, win.width - 64)
             height: staleColumn.height + 48
             radius: 12
             color: "#1c1c1e"
@@ -976,6 +985,10 @@ ApplicationWindow {
                     color: "#d6d6da"
                     font.pixelSize: 13
                     bottomPadding: 12
+                    width: Math.min(implicitWidth, win.width - 160)
+                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    maximumLineCount: 4
+                    elide: Text.ElideRight
                 }
 
                 Row {
@@ -1030,8 +1043,9 @@ ApplicationWindow {
         }
 
         Rectangle {
+            objectName: "dropModal"
             anchors.centerIn: parent
-            width: dropColumn.width + 64
+            width: Math.min(dropColumn.width + 64, win.width - 64)
             height: dropColumn.height + 48
             radius: 12
             color: "#1c1c1e"
@@ -1057,6 +1071,10 @@ ApplicationWindow {
                     color: "#d6d6da"
                     font.pixelSize: 13
                     bottomPadding: 12
+                    width: Math.min(implicitWidth, win.width - 160)
+                    wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    maximumLineCount: 4
+                    elide: Text.ElideRight
                 }
 
                 Row {
