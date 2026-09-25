@@ -4,6 +4,9 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -224,6 +227,9 @@ private slots:
     void overwriteArgsMapsAllStreamsByOutputIndex();
     void overwriteOriginalReplacesMp4InPlace();
     void qmlSavePromptOffersOverwriteOrExport();
+    void overwriteDropsNamesUnmappableStreams();
+    void qmlDropWarnMustBeConfirmed();
+    void overwritePreservesStreamsEndToEnd();
     void trimArgsReencodeForPreciseCuts();
     void trimArgsScaleTheShorterSide();
     void exportHeightsNeverUpscale();
@@ -233,12 +239,15 @@ private slots:
 private:
     QUrl videoUrl() const { return QUrl::fromLocalFile(m_videoPath); }
     QString formatName(const QString &path) const;
+    QString formatTag(const QString &path, const QString &key) const;
+    QList<QPair<double, double>> chapterRanges(const QString &path) const;
     void waitForBackgroundWork(Backend &backend);
     bool installBrokenFfmpeg(const QString &dirPath);
 
     QTemporaryDir m_dir;
     QString m_videoPath;
     QString m_longPath;
+    QString m_multiPath;
 };
 
 void BackendTests::initTestCase() {
@@ -290,6 +299,56 @@ void BackendTests::initTestCase() {
     QCOMPARE(longProc.exitStatus(), QProcess::NormalExit);
     QCOMPARE(longProc.exitCode(), 0);
     QVERIFY(QFileInfo::exists(m_longPath));
+
+    // A stream-rich MP4: h264 video + two aac audio + mov_text subtitle +
+    // chapters + a format title — exercises every overwrite codec policy.
+    m_multiPath = m_dir.filePath(QStringLiteral("multi.mp4"));
+    const QString metaPath = m_dir.filePath(QStringLiteral("multi.ffmetadata"));
+    const QString subPath = m_dir.filePath(QStringLiteral("multi.srt"));
+    {
+        QFile meta(metaPath);
+        QVERIFY(meta.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        meta.write(";FFMETADATA1\n"
+                   "title=omacut fixture\n"
+                   "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=2000\ntitle=first\n"
+                   "[CHAPTER]\nTIMEBASE=1/1000\nSTART=2000\nEND=4000\ntitle=second\n");
+        meta.close();
+        QFile sub(subPath);
+        QVERIFY(sub.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        sub.write("1\n00:00:00,500 --> 00:00:03,000\nfixture subtitle\n");
+        sub.close();
+    }
+    QProcess multiProc;
+    multiProc.start(ffmpeg, {
+        QStringLiteral("-hide_banner"),
+        QStringLiteral("-loglevel"),
+        QStringLiteral("error"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("testsrc=size=32x32:rate=10:duration=4"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("sine=frequency=440:duration=4"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("sine=frequency=880:duration=4"),
+        QStringLiteral("-i"), subPath,
+        QStringLiteral("-f"), QStringLiteral("ffmetadata"),
+        QStringLiteral("-i"), metaPath,
+        QStringLiteral("-map"), QStringLiteral("0:v"),
+        QStringLiteral("-map"), QStringLiteral("1:a"),
+        QStringLiteral("-map"), QStringLiteral("2:a"),
+        QStringLiteral("-map"), QStringLiteral("3:s"),
+        QStringLiteral("-c:v"), QStringLiteral("libx264"),
+        QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"),
+        QStringLiteral("-c:a"), QStringLiteral("aac"),
+        QStringLiteral("-c:s"), QStringLiteral("mov_text"),
+        QStringLiteral("-map_metadata"), QStringLiteral("4"),
+        QStringLiteral("-map_chapters"), QStringLiteral("4"),
+        QStringLiteral("-y"), m_multiPath,
+    });
+    QVERIFY2(multiProc.waitForFinished(15000),
+             qPrintable(QString::fromUtf8(multiProc.readAll())));
+    QCOMPARE(multiProc.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(multiProc.exitCode(), 0);
+    QVERIFY(QFileInfo::exists(m_multiPath));
 }
 
 void BackendTests::waitForBackgroundWork(Backend &backend) {
@@ -317,6 +376,62 @@ QString BackendTests::formatName(const QString &path) const {
     if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
         return {};
     return QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
+}
+
+QString BackendTests::formatTag(const QString &path, const QString &key) const {
+    const QString ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (ffprobe.isEmpty())
+        return {};
+
+    QProcess proc;
+    proc.start(ffprobe, {
+        QStringLiteral("-v"),
+        QStringLiteral("error"),
+        QStringLiteral("-show_entries"),
+        QStringLiteral("format_tags=") + key,
+        QStringLiteral("-of"),
+        QStringLiteral("default=noprint_wrappers=1:nokey=1"),
+        path,
+    });
+    if (!proc.waitForFinished(10000))
+        return {};
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
+        return {};
+    return QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
+}
+
+// [start, end] seconds for every chapter in the file — empty list for a
+// chapterless file or a probe failure.
+QList<QPair<double, double>> BackendTests::chapterRanges(const QString &path) const {
+    QList<QPair<double, double>> ranges;
+    const QString ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+    if (ffprobe.isEmpty())
+        return ranges;
+
+    QProcess proc;
+    proc.start(ffprobe, {
+        QStringLiteral("-v"),
+        QStringLiteral("error"),
+        QStringLiteral("-print_format"),
+        QStringLiteral("json"),
+        QStringLiteral("-show_chapters"),
+        path,
+    });
+    if (!proc.waitForFinished(10000))
+        return ranges;
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
+        return ranges;
+
+    const QJsonArray chapters = QJsonDocument::fromJson(proc.readAllStandardOutput())
+                                    .object()
+                                    .value(QStringLiteral("chapters"))
+                                    .toArray();
+    for (const QJsonValue &value : chapters) {
+        const QJsonObject chapter = value.toObject();
+        ranges.append({chapter.value(QStringLiteral("start_time")).toString().toDouble(),
+                       chapter.value(QStringLiteral("end_time")).toString().toDouble()});
+    }
+    return ranges;
 }
 
 // Drop an "ffmpeg" into dirPath that always fails to start (its shebang points
@@ -1093,6 +1208,176 @@ void BackendTests::qmlSavePromptOffersOverwriteOrExport() {
                               false, 3000);
     QCOMPARE(backend.exportCount, 1);
     QCOMPARE(backend.overwriteCount, 1);
+}
+
+void BackendTests::overwriteDropsNamesUnmappableStreams() {
+    ffmpeg::VideoInfo info;
+    info.path = QStringLiteral("messy.mkv");
+    info.ok = true;
+
+    ffmpeg::StreamInfo video;
+    video.index = 0;
+    video.codecType = QStringLiteral("video");
+    video.codecName = QStringLiteral("h264");
+    ffmpeg::StreamInfo pgs;
+    pgs.index = 1;
+    pgs.codecType = QStringLiteral("subtitle");
+    pgs.codecName = QStringLiteral("hdmv_pgs_subtitle");
+    ffmpeg::StreamInfo cover;
+    cover.index = 2;
+    cover.codecType = QStringLiteral("attachment");
+    cover.fileName = QStringLiteral("cover.png");
+    // The MP4 chapter track: codec_type "data" + codec_tag_string "text".
+    // Chapters ride -map_chapters, so this must NOT produce a warning.
+    ffmpeg::StreamInfo chapterTrack;
+    chapterTrack.index = 3;
+    chapterTrack.codecType = QStringLiteral("data");
+    chapterTrack.codecName = QStringLiteral("bin_data");
+    chapterTrack.codecTag = QStringLiteral("text");
+    ffmpeg::StreamInfo extraVideo;
+    extraVideo.index = 4;
+    extraVideo.codecType = QStringLiteral("video");
+    extraVideo.codecName = QStringLiteral("h264");
+    info.streams = {video, pgs, cover, chapterTrack, extraVideo};
+
+    const QStringList drops = ffmpeg::overwriteDrops(info);
+    const QString text = drops.join(QLatin1Char('\n'));
+    QCOMPARE(drops.size(), 3);
+    QVERIFY2(text.contains(QStringLiteral("hdmv_pgs_subtitle")), qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("cover.png")), qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("video")), qPrintable(text));
+    QVERIFY2(!text.contains(QStringLiteral("bin_data"))
+                 && !text.contains(QStringLiteral("data stream")),
+             qPrintable(text));
+
+    // The same classifier drives the map: only the primary video survives.
+    const QStringList args = ffmpeg::overwriteArgs(info, QStringLiteral("out.mp4"),
+                                                   0.0, 1.0);
+    QCOMPARE(args.count(QStringLiteral("-map")), 1);
+}
+
+void BackendTests::qmlDropWarnMustBeConfirmed() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    backend.drops = {QStringLiteral("subtitle stream (hdmv_pgs_subtitle)")};
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QTRY_VERIFY_WITH_TIMEOUT(window->property("audioOutputReady").toBool(), 3000);
+
+    backend.announceInfo();
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+
+    // Drops open the warning instead of calling overwriteOriginal; the save
+    // prompt stays open underneath.
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(),
+                              true, 3000);
+    QTest::keyClick(window, Qt::Key_Left);
+    QTest::keyClick(window, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("dropWarnVisible").toBool(),
+                              true, 3000);
+    QCOMPARE(backend.overwriteCount, 0);
+    QCOMPARE(window->property("savePromptVisible").toBool(), true);
+
+    // Escape peels only the warning.
+    QTest::keyClick(window, Qt::Key_Escape);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("dropWarnVisible").toBool(),
+                              false, 3000);
+    QCOMPARE(window->property("savePromptVisible").toBool(), true);
+    QCOMPARE(backend.overwriteCount, 0);
+
+    // Re-open the warning and Cancel back to the save prompt — the warning
+    // opens focused on Cancel.
+    QQuickItem *overwriteButton =
+        dialogButton(window, QStringLiteral("Overwrite original"));
+    QVERIFY(overwriteButton);
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                      itemCenter(overwriteButton));
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("dropWarnVisible").toBool(),
+                              true, 3000);
+    QTest::keyClick(window, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("dropWarnVisible").toBool(),
+                              false, 3000);
+    QCOMPARE(window->property("savePromptVisible").toBool(), true);
+    QCOMPARE(backend.overwriteCount, 0);
+
+    // "Overwrite anyway" finally encodes and closes both overlays.
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                      itemCenter(overwriteButton));
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("dropWarnVisible").toBool(),
+                              true, 3000);
+    QTest::keyClick(window, Qt::Key_Right);
+    QTest::keyClick(window, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.overwriteCount, 1, 3000);
+    QCOMPARE(window->property("dropWarnVisible").toBool(), false);
+    QCOMPARE(window->property("savePromptVisible").toBool(), false);
+}
+
+void BackendTests::overwritePreservesStreamsEndToEnd() {
+    const QString targetPath = m_dir.filePath(QStringLiteral("multi-overwrite.mp4"));
+    QVERIFY(QFile::copy(m_multiPath, targetPath));
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::overwriteDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(targetPath)));
+    waitForBackgroundWork(backend);
+
+    // Every stream in the fixture is MP4-carryable — no drop warning.
+    QVERIFY(backend.overwriteDrops().isEmpty());
+
+    backend.overwriteOriginal(1.0, 3.0);
+
+    QVERIFY(backend.busy());
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 30000);
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 1);
+
+    const ffmpeg::VideoInfo reprobe = ffmpeg::probe(targetPath);
+    QVERIFY2(reprobe.ok, qPrintable(reprobe.error));
+
+    // One re-encoded h264 video, two bit-exact aac audio copies, and one
+    // mov_text subtitle — nothing MP4-safe was lost.
+    int videos = 0;
+    int audios = 0;
+    int subtitles = 0;
+    for (const ffmpeg::StreamInfo &stream : reprobe.streams) {
+        if (stream.codecType == QStringLiteral("video")) {
+            ++videos;
+            QCOMPARE(stream.codecName, QStringLiteral("h264"));
+        } else if (stream.codecType == QStringLiteral("audio")) {
+            ++audios;
+            QCOMPARE(stream.codecName, QStringLiteral("aac"));
+        } else if (stream.codecType == QStringLiteral("subtitle")) {
+            ++subtitles;
+            QCOMPARE(stream.codecName, QStringLiteral("mov_text"));
+        }
+    }
+    QCOMPARE(videos, 1);
+    QCOMPARE(audios, 2);
+    QCOMPARE(subtitles, 1);
+
+    // Chapters were copied and re-based into the trim range: none may start
+    // before 0 or end past the new duration.
+    const QList<QPair<double, double>> chapters = chapterRanges(targetPath);
+    QVERIFY2(!chapters.isEmpty(), "chapters were preserved");
+    for (const QPair<double, double> &range : chapters)
+        QVERIFY2(range.first >= -0.001 && range.second <= reprobe.duration + 0.05,
+                 qPrintable(QStringLiteral("chapter %1-%2 outside %3")
+                                .arg(range.first)
+                                .arg(range.second)
+                                .arg(reprobe.duration)));
+
+    // Format-level metadata carried through the overwrite.
+    QCOMPARE(formatTag(targetPath, QStringLiteral("title")),
+             QStringLiteral("omacut fixture"));
 }
 
 void BackendTests::trimArgsReencodeForPreciseCuts() {
