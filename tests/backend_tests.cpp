@@ -17,6 +17,8 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
+#include <unistd.h>
+
 #include "backend.h"
 #include "filepicker.h"
 #include "thumbprovider.h"
@@ -110,7 +112,15 @@ public:
     }
     Q_INVOKABLE QStringList overwriteDrops() const { return drops; }
     Q_INVOKABLE QString overwriteTargetName() const {
-        return QFileInfo(m_source.toLocalFile()).fileName();
+        const QFileInfo file(m_source.toLocalFile());
+        if (sourceIsMp4())
+            return file.fileName();
+        // Mirror the sibling resolution: non-MP4 sources name the .mp4 that
+        // would be written next to them.
+        const QString base = file.completeBaseName().isEmpty()
+            ? file.fileName()
+            : file.completeBaseName();
+        return base + QStringLiteral(".mp4");
     }
     Q_INVOKABLE bool sourceIsMp4() const {
         return m_source.toLocalFile().endsWith(QStringLiteral(".mp4"),
@@ -230,6 +240,13 @@ private slots:
     void overwriteDropsNamesUnmappableStreams();
     void qmlDropWarnMustBeConfirmed();
     void overwritePreservesStreamsEndToEnd();
+    void nextFreeMp4SiblingAutoNumbers();
+    void sourceChangedOnDiskDetectsModification();
+    void overwriteNonMp4WritesSiblingAndTrashes();
+    void secondOverwriteAfterNonMp4IsInPlace();
+    void overwriteWarnsOnChangedSource();
+    void qmlNonMp4SavePromptOffersTrashWrite();
+    void trashFailureStillLoadsSibling();
     void trimArgsReencodeForPreciseCuts();
     void trimArgsScaleTheShorterSide();
     void exportHeightsNeverUpscale();
@@ -248,6 +265,7 @@ private:
     QString m_videoPath;
     QString m_longPath;
     QString m_multiPath;
+    QString m_multiMkvPath;
 };
 
 void BackendTests::initTestCase() {
@@ -349,6 +367,42 @@ void BackendTests::initTestCase() {
     QCOMPARE(multiProc.exitStatus(), QProcess::NormalExit);
     QCOMPARE(multiProc.exitCode(), 0);
     QVERIFY(QFileInfo::exists(m_multiPath));
+
+    // The same stream set in a Matroska container — the non-MP4 overwrite arm
+    // exercises sibling-write + trash on it. Matroska muxes subrip directly,
+    // so the text subtitle gets -c:s copy instead of the mov_text conversion.
+    m_multiMkvPath = m_dir.filePath(QStringLiteral("multi.mkv"));
+    QProcess mkvProc;
+    mkvProc.start(ffmpeg, {
+        QStringLiteral("-hide_banner"),
+        QStringLiteral("-loglevel"),
+        QStringLiteral("error"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("testsrc=size=32x32:rate=10:duration=4"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("sine=frequency=440:duration=4"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("sine=frequency=880:duration=4"),
+        QStringLiteral("-i"), subPath,
+        QStringLiteral("-f"), QStringLiteral("ffmetadata"),
+        QStringLiteral("-i"), metaPath,
+        QStringLiteral("-map"), QStringLiteral("0:v"),
+        QStringLiteral("-map"), QStringLiteral("1:a"),
+        QStringLiteral("-map"), QStringLiteral("2:a"),
+        QStringLiteral("-map"), QStringLiteral("3:s"),
+        QStringLiteral("-c:v"), QStringLiteral("libx264"),
+        QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"),
+        QStringLiteral("-c:a"), QStringLiteral("aac"),
+        QStringLiteral("-c:s"), QStringLiteral("copy"),
+        QStringLiteral("-map_metadata"), QStringLiteral("4"),
+        QStringLiteral("-map_chapters"), QStringLiteral("4"),
+        QStringLiteral("-y"), m_multiMkvPath,
+    });
+    QVERIFY2(mkvProc.waitForFinished(15000),
+             qPrintable(QString::fromUtf8(mkvProc.readAll())));
+    QCOMPARE(mkvProc.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(mkvProc.exitCode(), 0);
+    QVERIFY(QFileInfo::exists(m_multiMkvPath));
 }
 
 void BackendTests::waitForBackgroundWork(Backend &backend) {
@@ -444,6 +498,31 @@ bool BackendTests::installBrokenFfmpeg(const QString &dirPath) {
     fake.close();
     return fake.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner
                                | QFileDevice::ExeOwner);
+}
+
+// A successful moveToTrash leaves the fixture sitting in the FreeDesktop
+// trash — sweep it (and its .trashinfo metadata) back out so repeated test
+// runs don't pile test media up in the user's trash.
+static void removeFromTrash(const QString &fileName) {
+    const int dot = fileName.lastIndexOf(QLatin1Char('.'));
+    const QString base = dot < 0 ? fileName : fileName.left(dot);
+    const QStringList trashDirs = {
+        QDir::homePath() + QStringLiteral("/.local/share/Trash/files"),
+        QStringLiteral("/tmp/.Trash-") + QString::number(::getuid())
+            + QStringLiteral("/files"),
+    };
+    for (const QString &dirPath : trashDirs) {
+        const QDir files(dirPath);
+        const auto entries = files.entryList({base + QStringLiteral("*")}, QDir::Files);
+        for (const QString &entry : entries)
+            QFile::remove(files.filePath(entry));
+        const QString infoPath = dirPath.left(dirPath.lastIndexOf(QLatin1Char('/')))
+            + QStringLiteral("/info");
+        const QDir info(infoPath);
+        const auto infos = info.entryList({base + QStringLiteral("*")}, QDir::Files);
+        for (const QString &entry : infos)
+            QFile::remove(info.filePath(entry));
+    }
 }
 
 void BackendTests::openDialogDelegatesToFilePicker() {
@@ -1378,6 +1457,293 @@ void BackendTests::overwritePreservesStreamsEndToEnd() {
     // Format-level metadata carried through the overwrite.
     QCOMPARE(formatTag(targetPath, QStringLiteral("title")),
              QStringLiteral("omacut fixture"));
+}
+
+void BackendTests::nextFreeMp4SiblingAutoNumbers() {
+    const QString mkvPath = m_dir.filePath(QStringLiteral("numbered.mkv"));
+    const QString mp4Path = m_dir.filePath(QStringLiteral("numbered.mp4"));
+
+    QCOMPARE(Backend::nextFreeMp4Sibling(mkvPath), mp4Path);
+
+    // Each collision moves on to the next number — never refuses, and never
+    // returns a path that already exists (D-06).
+    {
+        QFile existing(mp4Path);
+        QVERIFY(existing.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    }
+    const QString first = m_dir.filePath(QStringLiteral("numbered-1.mp4"));
+    QCOMPARE(Backend::nextFreeMp4Sibling(mkvPath), first);
+    {
+        QFile existing(first);
+        QVERIFY(existing.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    }
+    QCOMPARE(Backend::nextFreeMp4Sibling(mkvPath),
+             m_dir.filePath(QStringLiteral("numbered-2.mp4")));
+    QVERIFY(!QFileInfo::exists(Backend::nextFreeMp4Sibling(mkvPath)));
+}
+
+void BackendTests::sourceChangedOnDiskDetectsModification() {
+    const QString sourcePath = m_dir.filePath(QStringLiteral("stale-source.mp4"));
+    QVERIFY(QFile::copy(m_videoPath, sourcePath));
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    QVERIFY(!backend.sourceChangedOnDisk());
+
+    // Any write after load() moves mtime+size — the save prompt warns instead
+    // of silently destroying the newer file (warn-and-allow).
+    QFile file(sourcePath);
+    QVERIFY(file.open(QIODevice::Append));
+    file.write("x");
+    file.close();
+    QVERIFY(backend.sourceChangedOnDisk());
+}
+
+void BackendTests::overwriteNonMp4WritesSiblingAndTrashes() {
+    const QString sourcePath = m_dir.filePath(QStringLiteral("nonmp4-source.mkv"));
+    QVERIFY(QFile::copy(m_multiMkvPath, sourcePath));
+    const QString siblingPath = m_dir.filePath(QStringLiteral("nonmp4-source.mp4"));
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::overwriteDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    QVERIFY(!backend.sourceIsMp4());
+    QCOMPARE(backend.overwriteTargetName(),
+             QStringLiteral("nonmp4-source.mp4"));
+    // Every stream in the fixture can carry into MP4 — no drop warning.
+    QVERIFY2(backend.overwriteDrops().isEmpty(),
+             qPrintable(backend.overwriteDrops().join(QLatin1Char(','))));
+
+    backend.overwriteOriginal(0.0, 0.5);
+
+    QVERIFY(backend.busy());
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 30000);
+
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 1);
+    QCOMPARE(doneSpy.first().at(0).toString(), siblingPath);
+    const QString trashError = doneSpy.first().at(1).toString();
+
+    // The sibling is a real MP4 carrying the fixture's streams: one
+    // re-encoded h264 video, two bit-exact aac copies, one mov_text subtitle.
+    const ffmpeg::VideoInfo reprobe = ffmpeg::probe(siblingPath);
+    QVERIFY2(reprobe.ok, qPrintable(reprobe.error));
+    int videos = 0;
+    int audios = 0;
+    int subtitles = 0;
+    for (const ffmpeg::StreamInfo &stream : reprobe.streams) {
+        if (stream.codecType == QStringLiteral("video")) {
+            ++videos;
+            QCOMPARE(stream.codecName, QStringLiteral("h264"));
+        } else if (stream.codecType == QStringLiteral("audio")) {
+            ++audios;
+            QCOMPARE(stream.codecName, QStringLiteral("aac"));
+        } else if (stream.codecType == QStringLiteral("subtitle")) {
+            ++subtitles;
+            QCOMPARE(stream.codecName, QStringLiteral("mov_text"));
+        }
+    }
+    QCOMPARE(videos, 1);
+    QCOMPARE(audios, 2);
+    QCOMPARE(subtitles, 1);
+
+    // Chapters were copied and re-based into the trim range.
+    const QList<QPair<double, double>> chapters = chapterRanges(siblingPath);
+    QVERIFY2(!chapters.isEmpty(), "chapters were preserved");
+    for (const QPair<double, double> &range : chapters)
+        QVERIFY2(range.first >= -0.001 && range.second <= reprobe.duration + 0.05,
+                 qPrintable(QStringLiteral("chapter %1-%2 outside %3")
+                                .arg(range.first)
+                                .arg(range.second)
+                                .arg(reprobe.duration)));
+
+    // The new sibling auto-loads regardless of the trash outcome (NMP4-03).
+    QCOMPARE(backend.source(), QUrl::fromLocalFile(siblingPath));
+    QVERIFY(backend.sourceIsMp4());
+    QVERIFY(qAbs(backend.duration() - 0.5) < 0.3);
+
+    // A clean trash removes the original; a failed move keeps it and reports
+    // the error on overwriteDone (D-08) — the save counts as done either way.
+    if (trashError.isEmpty())
+        QVERIFY(!QFileInfo::exists(sourcePath));
+    else
+        QVERIFY(QFileInfo::exists(sourcePath));
+    removeFromTrash(QFileInfo(sourcePath).fileName());
+}
+
+void BackendTests::secondOverwriteAfterNonMp4IsInPlace() {
+    const QString sourcePath = m_dir.filePath(QStringLiteral("second-overwrite.mkv"));
+    QVERIFY(QFile::copy(m_multiMkvPath, sourcePath));
+    const QString siblingPath = m_dir.filePath(QStringLiteral("second-overwrite.mp4"));
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::overwriteDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    backend.overwriteOriginal(0.0, 0.5);
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 30000);
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 1);
+    QCOMPARE(doneSpy.first().at(0).toString(), siblingPath);
+
+    // The auto-loaded sibling is an MP4 now — a second overwrite replaces it
+    // in place instead of numbering up to a fresh sibling (NMP4-03).
+    backend.overwriteOriginal(0.0, 0.2);
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 1, 30000);
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 2);
+    QCOMPARE(doneSpy.at(1).at(0).toString(), siblingPath);
+    QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral("second-overwrite-1.mp4"))));
+    QVERIFY(qAbs(backend.duration() - 0.2) < 0.3);
+    removeFromTrash(QFileInfo(sourcePath).fileName());
+}
+
+void BackendTests::overwriteWarnsOnChangedSource() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    backend.changedOnDisk = true;
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QTRY_VERIFY_WITH_TIMEOUT(window->property("audioOutputReady").toBool(), 3000);
+
+    backend.announceInfo();
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+
+    // warn-and-allow: a file changed since load() opens the staleness warning
+    // instead of overwriting; the save prompt stays open underneath.
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(),
+                              true, 3000);
+    QTest::keyClick(window, Qt::Key_Left);
+    QTest::keyClick(window, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("staleWarnVisible").toBool(),
+                              true, 3000);
+    QCOMPARE(backend.overwriteCount, 0);
+    QCOMPARE(window->property("savePromptVisible").toBool(), true);
+
+    // The warning opens focused on Cancel — Enter backs out to the prompt.
+    QTest::keyClick(window, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("staleWarnVisible").toBool(),
+                              false, 3000);
+    QCOMPARE(backend.overwriteCount, 0);
+    QCOMPARE(window->property("savePromptVisible").toBool(), true);
+
+    // Confirming is the only way through: Overwrite original → the warning
+    // again → "Overwrite anyway" finally calls the backend.
+    QQuickItem *overwriteButton =
+        dialogButton(window, QStringLiteral("Overwrite original"));
+    QVERIFY(overwriteButton);
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                      itemCenter(overwriteButton));
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("staleWarnVisible").toBool(),
+                              true, 3000);
+    QTest::keyClick(window, Qt::Key_Right);
+    QTest::keyClick(window, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.overwriteCount, 1, 3000);
+    QCOMPARE(window->property("staleWarnVisible").toBool(), false);
+    QCOMPARE(window->property("savePromptVisible").toBool(), false);
+}
+
+void BackendTests::qmlNonMp4SavePromptOffersTrashWrite() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mkv"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QTRY_VERIFY_WITH_TIMEOUT(window->property("audioOutputReady").toBool(), 3000);
+
+    backend.announceInfo();
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(),
+                              true, 3000);
+
+    // D-07: the destructive button bundles the trash action — it must say
+    // exactly what it does, and the MP4-only label must not be offered.
+    QQuickItem *writeButton =
+        dialogButton(window, QStringLiteral("Write MP4 + move original to trash"));
+    QVERIFY(writeButton);
+    QVERIFY(!dialogButton(window, QStringLiteral("Overwrite original")));
+
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                      itemCenter(writeButton));
+    QTRY_COMPARE_WITH_TIMEOUT(backend.overwriteCount, 1, 3000);
+    QCOMPARE(window->property("savePromptVisible").toBool(), false);
+}
+
+void BackendTests::trashFailureStillLoadsSibling() {
+    // For files under $HOME the FreeDesktop trash is $XDG_DATA_HOME/Trash —
+    // pointing it at an unwritable directory forces the moveToTrash failure
+    // path (D-08). If the environment trashes anyway there is nothing to test.
+    QTemporaryDir homeDir(QDir::homePath() + QStringLiteral("/omacut-test-XXXXXX"));
+    QVERIFY2(homeDir.isValid(), "could not create a test dir under $HOME");
+    QTemporaryDir blockedTrash;
+    QVERIFY(blockedTrash.isValid());
+    QVERIFY(QFile::setPermissions(blockedTrash.path(), QFileDevice::Permissions()));
+
+    EnvVarGuard xdgGuard("XDG_DATA_HOME");
+    qputenv("XDG_DATA_HOME", QFile::encodeName(blockedTrash.path()));
+
+    const QString sourcePath = homeDir.filePath(QStringLiteral("trash-fail.mkv"));
+    QVERIFY(QFile::copy(m_multiMkvPath, sourcePath));
+    const QString siblingPath = homeDir.filePath(QStringLiteral("trash-fail.mp4"));
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::overwriteDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    backend.overwriteOriginal(0.0, 0.5);
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 30000);
+
+    // Restore before any terminal check so the temp dir can clean itself up.
+    QVERIFY(QFile::setPermissions(blockedTrash.path(),
+                                QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                    | QFileDevice::ExeOwner));
+
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 1);
+    QCOMPARE(doneSpy.first().at(0).toString(), siblingPath);
+    const QString trashError = doneSpy.first().at(1).toString();
+    if (trashError.isEmpty()) {
+        removeFromTrash(QFileInfo(sourcePath).fileName());
+        QSKIP("environment moved the original to the trash despite the blocked XDG_DATA_HOME");
+    }
+
+    // The original stays put and the trash failure is reported, but the save
+    // still counts as done and the sibling auto-loads (D-08/NMP4-03).
+    QVERIFY2(trashError.contains(QStringLiteral("trash")), qPrintable(trashError));
+    QVERIFY(QFileInfo::exists(sourcePath));
+    QVERIFY(QFileInfo::exists(siblingPath));
+    QCOMPARE(backend.source(), QUrl::fromLocalFile(siblingPath));
 }
 
 void BackendTests::trimArgsReencodeForPreciseCuts() {
