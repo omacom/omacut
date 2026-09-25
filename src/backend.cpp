@@ -9,7 +9,9 @@
 #include <QUuid>
 
 #include <cstdio>
+#include <fcntl.h>
 #include <memory>
+#include <unistd.h>
 
 #include "filepicker.h"
 #include "portalfilepicker.h"
@@ -43,7 +45,23 @@ QString mp4PathFor(const QString &path) {
 bool replaceWithTemp(const QString &tmpPath, const QString &outPath) {
     const QByteArray tmpName = QFile::encodeName(tmpPath);
     const QByteArray outName = QFile::encodeName(outPath);
-    return std::rename(tmpName.constData(), outName.constData()) == 0;
+    // A replaced file keeps the owner's mode bits — the encode temp was
+    // created with umask defaults, which would silently loosen e.g. a 0600
+    // source.
+    if (QFileInfo::exists(outPath))
+        QFile::setPermissions(tmpPath, QFile::permissions(outPath));
+    if (std::rename(tmpName.constData(), outName.constData()) != 0)
+        return false;
+    // fsync the containing directory so the rename itself is durable across a
+    // crash — best-effort, filesystems that don't support it just fail here.
+    const int fd = ::open(
+        QFile::encodeName(QFileInfo(outPath).dir().absolutePath()).constData(),
+        O_RDONLY | O_DIRECTORY);
+    if (fd >= 0) {
+        ::fsync(fd);
+        ::close(fd);
+    }
+    return true;
 }
 }
 

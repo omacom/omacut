@@ -288,7 +288,9 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+O"
         context: Qt.ApplicationShortcut
-        enabled: !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible && !backend.busy
+        // Stays enabled while busy so the refusal reaches openVideo()'s
+        // notice — a disabled shortcut would swallow the key silently.
+        enabled: !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: openVideo()
     }
 
