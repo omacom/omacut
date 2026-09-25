@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QTextStream>
+#include <QUuid>
 
 #include <cstdio>
 #include <memory>
@@ -410,4 +411,50 @@ void Backend::failExport(const QString &tmpPath, const QString &message) {
     setStatus(QString());
     QFile::remove(tmpPath);
     emit exportFailed(message);
+}
+
+QString Backend::tempPathFor(const QString &outPath) {
+    return outPath + QStringLiteral(".omacut-")
+        + QUuid::createUuid().toString(QUuid::WithoutBraces)
+        + QStringLiteral(".mp4");
+}
+
+QString Backend::nextFreeMp4Sibling(const QString &path) {
+    const QFileInfo file(path);
+    const QString baseName = file.completeBaseName().isEmpty()
+        ? file.fileName()
+        : file.completeBaseName();
+    const QDir dir = file.dir();
+    QString candidate = dir.filePath(baseName + QStringLiteral(".mp4"));
+    for (int n = 1; QFileInfo::exists(candidate); ++n)
+        candidate = dir.filePath(baseName + QStringLiteral("-%1.mp4").arg(n));
+    return candidate;
+}
+
+bool Backend::sourceIsMp4() const {
+    return !m_path.isEmpty() && mp4PathFor(m_path) == m_path;
+}
+
+QString Backend::overwriteTargetName() const {
+    if (m_path.isEmpty())
+        return {};
+    return QFileInfo(sourceIsMp4() ? m_path : nextFreeMp4Sibling(m_path)).fileName();
+}
+
+bool Backend::sourceChangedOnDisk() const {
+    if (m_path.isEmpty())
+        return false;
+    const QFileInfo current(m_path);
+    return current.lastModified() != m_sourceMtime
+        || current.size() != m_sourceSize;
+}
+
+QStringList Backend::overwriteDrops() const {
+    return {};
+}
+
+void Backend::overwriteOriginal(double start, double end) {
+    Q_UNUSED(start);
+    Q_UNUSED(end);
+    emit exportFailed(QStringLiteral("Overwrite failed."));
 }

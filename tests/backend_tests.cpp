@@ -100,9 +100,27 @@ public:
         lastThumbStart = start;
         lastThumbEnd = end;
     }
+    Q_INVOKABLE void overwriteOriginal(double start, double end) {
+        ++overwriteCount;
+        lastOverwriteStart = start;
+        lastOverwriteEnd = end;
+    }
+    Q_INVOKABLE QStringList overwriteDrops() const { return drops; }
+    Q_INVOKABLE QString overwriteTargetName() const {
+        return QFileInfo(m_source.toLocalFile()).fileName();
+    }
+    Q_INVOKABLE bool sourceIsMp4() const {
+        return m_source.toLocalFile().endsWith(QStringLiteral(".mp4"),
+                                               Qt::CaseInsensitive);
+    }
+    Q_INVOKABLE bool sourceChangedOnDisk() const { return changedOnDisk; }
 
     void announceInfo() { emit infoChanged(); }
     void announceExportDone() { emit exportDone(QStringLiteral("/tmp/exported.mp4")); }
+    void announceOverwriteDone() {
+        emit overwriteDone(QStringLiteral("/tmp/overwritten.mp4"), QString());
+    }
+    void setSource(const QUrl &url) { m_source = url; }
 
     int openCount = 0;
     int exportCount = 0;
@@ -111,6 +129,11 @@ public:
     int thumbRequestCount = 0;
     double lastThumbStart = 0;
     double lastThumbEnd = 0;
+    int overwriteCount = 0;
+    double lastOverwriteStart = 0;
+    double lastOverwriteEnd = 0;
+    QStringList drops;
+    bool changedOnDisk = false;
 
 signals:
     void infoChanged();
@@ -121,6 +144,7 @@ signals:
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
     void loadError(const QString &message);
+    void overwriteDone(const QString &path, const QString &trashError);
 
 private:
     QUrl m_source;
@@ -194,6 +218,9 @@ private slots:
     void qmlSpaceChordsSetTheTrimEdges();
     void qmlZoomFocusesTheSelection();
     void qmlQuitConfirmsUnexportedTrim();
+    void overwriteArgsMapsAllStreamsByOutputIndex();
+    void overwriteOriginalReplacesMp4InPlace();
+    void qmlSavePromptOffersOverwriteOrExport();
     void trimArgsReencodeForPreciseCuts();
     void trimArgsScaleTheShorterSide();
     void exportHeightsNeverUpscale();
@@ -851,6 +878,179 @@ void BackendTests::qmlQuitConfirmsUnexportedTrim() {
     QTest::keyClick(window, Qt::Key_Return);
     QTRY_VERIFY_WITH_TIMEOUT(!window->isVisible(), 3000);
     QCOMPARE(quitSpy.count(), 1);
+}
+
+void BackendTests::overwriteArgsMapsAllStreamsByOutputIndex() {
+    ffmpeg::VideoInfo info;
+    info.path = QStringLiteral("multi.mkv");
+    info.ok = true;
+
+    ffmpeg::StreamInfo video;
+    video.index = 0;
+    video.codecType = QStringLiteral("video");
+    video.codecName = QStringLiteral("h264");
+    ffmpeg::StreamInfo aacAudio;
+    aacAudio.index = 1;
+    aacAudio.codecType = QStringLiteral("audio");
+    aacAudio.codecName = QStringLiteral("aac");
+    ffmpeg::StreamInfo vorbisAudio;
+    vorbisAudio.index = 2;
+    vorbisAudio.codecType = QStringLiteral("audio");
+    vorbisAudio.codecName = QStringLiteral("vorbis");
+    ffmpeg::StreamInfo subrip;
+    subrip.index = 3;
+    subrip.codecType = QStringLiteral("subtitle");
+    subrip.codecName = QStringLiteral("subrip");
+    info.streams = {video, aacAudio, vorbisAudio, subrip};
+
+    const QStringList args = ffmpeg::overwriteArgs(info, QStringLiteral("out.mp4"),
+                                                   1.0, 4.0);
+
+    // Every MP4-safe stream is mapped by absolute input index, in order.
+    const int map0 = args.indexOf(QStringLiteral("0:0"));
+    const int map1 = args.indexOf(QStringLiteral("0:1"));
+    const int map2 = args.indexOf(QStringLiteral("0:2"));
+    const int map3 = args.indexOf(QStringLiteral("0:3"));
+    QVERIFY(map0 >= 0);
+    QVERIFY(map1 > map0 && map2 > map1 && map3 > map2);
+    QCOMPARE(args.value(map0 - 1), QStringLiteral("-map"));
+
+    // -c:<N> addresses the output position, not the input index: the primary
+    // video re-encodes, whitelisted audio copies, vorbis re-encodes to aac,
+    // and the text subtitle converts to mov_text.
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-c:0")) + 1),
+             QStringLiteral("libx264"));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-c:1")) + 1),
+             QStringLiteral("copy"));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-c:2")) + 1),
+             QStringLiteral("aac"));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-c:3")) + 1),
+             QStringLiteral("mov_text"));
+
+    // Chapters and global metadata ride along; the overwrite never scales.
+    QVERIFY(args.contains(QStringLiteral("-map_metadata")));
+    QVERIFY(args.contains(QStringLiteral("-map_chapters")));
+    QVERIFY(!args.contains(QStringLiteral("-vf")));
+    QCOMPARE(args.last(), QStringLiteral("out.mp4"));
+
+    // Cover art maps and copies bit-exact — it can't be re-encoded to h264.
+    ffmpeg::VideoInfo withPic;
+    withPic.path = QStringLiteral("cover.mkv");
+    withPic.ok = true;
+    ffmpeg::StreamInfo picAudio = aacAudio;
+    picAudio.index = 2;
+    ffmpeg::StreamInfo art;
+    art.index = 1;
+    art.codecType = QStringLiteral("video");
+    art.codecName = QStringLiteral("mjpeg");
+    art.attachedPic = true;
+    withPic.streams = {video, art, picAudio};
+
+    const QStringList picArgs = ffmpeg::overwriteArgs(withPic,
+                                                      QStringLiteral("out.mp4"), 0.0, 2.0);
+    QCOMPARE(picArgs.count(QStringLiteral("-map")), 3);
+    QCOMPARE(picArgs.value(picArgs.indexOf(QStringLiteral("-c:0")) + 1),
+             QStringLiteral("libx264"));
+    QCOMPARE(picArgs.value(picArgs.indexOf(QStringLiteral("-c:1")) + 1),
+             QStringLiteral("copy"));
+    QCOMPARE(picArgs.value(picArgs.indexOf(QStringLiteral("-c:2")) + 1),
+             QStringLiteral("copy"));
+}
+
+void BackendTests::overwriteOriginalReplacesMp4InPlace() {
+    const QString sourcePath = m_dir.filePath(QStringLiteral("replace-in-place.mp4"));
+    QVERIFY(QFile::copy(m_videoPath, sourcePath));
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::overwriteDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    backend.overwriteOriginal(0.0, 0.5);
+
+    QVERIFY(backend.busy());
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 20000);
+
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 1);
+    QCOMPARE(doneSpy.first().at(0).toString(), sourcePath);
+    QCOMPARE(doneSpy.first().at(1).toString(), QString());
+
+    // The trimmed file replaced the original and re-probes cleanly.
+    const ffmpeg::VideoInfo reprobe = ffmpeg::probe(sourcePath);
+    QVERIFY2(reprobe.ok, qPrintable(reprobe.error));
+    QVERIFY2(reprobe.duration > 0.2 && reprobe.duration < 0.8,
+             qPrintable(QString::number(reprobe.duration)));
+    QVERIFY2(formatName(sourcePath).contains(QStringLiteral("mp4")),
+             qPrintable(formatName(sourcePath)));
+
+    // The reload already happened before overwriteDone fired — duration()
+    // describes the new file, not the unlinked pre-trim inode.
+    QCOMPARE(backend.duration(), reprobe.duration);
+    QVERIFY(qAbs(backend.duration() - 0.5) < 0.3);
+
+    // The UUID temp file is renamed away — no litter next to the target.
+    QVERIFY(QDir(m_dir.path())
+                .entryList({QStringLiteral("*.omacut-*")}, QDir::Files)
+                .isEmpty());
+}
+
+void BackendTests::qmlSavePromptOffersOverwriteOrExport() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QTRY_VERIFY_WITH_TIMEOUT(window->property("audioOutputReady").toBool(), 3000);
+
+    backend.announceInfo();
+    QQuickItem *trimBar = harness.trimBar();
+    QVERIFY(trimBar);
+
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+
+    // Ctrl+S opens the save prompt instead of going straight to the portal.
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(),
+                              true, 3000);
+    QCOMPARE(backend.exportCount, 0);
+    QCOMPARE(backend.overwriteCount, 0);
+
+    // Enter presses the focused "Export as new…" — the unchanged portal path.
+    QTest::keyClick(window, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 1, 3000);
+    QCOMPARE(backend.lastStart, 0.0);
+    QCOMPARE(backend.lastEnd, 20.0);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(),
+                              false, 3000);
+
+    // Re-open and arrow left off the safe default onto "Overwrite original".
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(),
+                              true, 3000);
+    QTest::keyClick(window, Qt::Key_Left);
+    QTest::keyClick(window, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.overwriteCount, 1, 3000);
+    QCOMPARE(backend.lastOverwriteStart, 0.0);
+    QCOMPARE(backend.lastOverwriteEnd, 20.0);
+    QCOMPARE(window->property("savePromptVisible").toBool(), false);
+
+    // Escape dismisses the prompt without touching either path.
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(),
+                              true, 3000);
+    QTest::keyClick(window, Qt::Key_Escape);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(),
+                              false, 3000);
+    QCOMPARE(backend.exportCount, 1);
+    QCOMPARE(backend.overwriteCount, 1);
 }
 
 void BackendTests::trimArgsReencodeForPreciseCuts() {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDateTime>
 #include <QFileSystemWatcher>
 #include <QImage>
 #include <QObject>
@@ -70,6 +71,35 @@ public:
     // below the source's shorter side, so exports never upscale.
     static QList<int> exportHeights(int width, int height);
 
+    // A unique sibling "<dst>.omacut-<uuid>.mp4" for the encode temp file —
+    // unpredictable so a pre-planted file can't redirect the write, and two
+    // consecutive saves never share a temp name.
+    static QString tempPathFor(const QString &outPath);
+
+    // The first non-existing "<base>[-N].mp4" next to path — the overwrite
+    // path auto-numbers on collision instead of refusing like the portal flow.
+    static QString nextFreeMp4Sibling(const QString &path);
+
+    // Write [start, end] (seconds) over the loaded file itself, always at
+    // Original quality. MP4 sources are replaced in place; other containers
+    // get an auto-numbered sibling .mp4 and the original moves to the trash.
+    Q_INVOKABLE void overwriteOriginal(double start, double end);
+
+    // Human-readable names for streams the overwrite can't carry into MP4
+    // (bitmap subtitles, attachments, extra tracks). Empty means lossless.
+    Q_INVOKABLE QStringList overwriteDrops() const;
+
+    // The file name the save prompt tells the user will be overwritten.
+    Q_INVOKABLE QString overwriteTargetName() const;
+
+    // Whether the loaded file is already an MP4 (in-place overwrite) or gets
+    // a sibling .mp4 written next to it.
+    Q_INVOKABLE bool sourceIsMp4() const;
+
+    // Whether the file on disk changed (mtime or size) since load() read it —
+    // overwriting then destroys a newer file than the one being previewed.
+    Q_INVOKABLE bool sourceChangedOnDisk() const;
+
     // Regenerate the filmstrip for [start, end] (seconds) — used by zoom.
     // The full-length strip is cached, so zooming back out restores instantly.
     Q_INVOKABLE void requestThumbs(double start, double end);
@@ -83,11 +113,23 @@ signals:
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
     void loadError(const QString &message);
+    // trashError is empty on a clean save; a non-empty message means the
+    // overwrite succeeded but the original couldn't be moved to the trash.
+    void overwriteDone(const QString &path, const QString &trashError);
 
 private:
     void setBusy(bool busy);
     void setStatus(const QString &status);
     void failExport(const QString &tmpPath, const QString &message);
+    // Shared encode tail for exportClip/overwriteOriginal: spawn ffmpeg,
+    // report progress, atomically rename tmpPath onto outPath on success.
+    // isOverwrite selects the post-encode branch — the reload/trash
+    // orchestration and overwriteDone signal instead of exportDone. It is an
+    // explicit flag (not `outPath == m_path`) because the portal path can
+    // legitimately write onto m_path and must still emit exportDone.
+    void startEncode(const QString &ffmpegBin, const QStringList &args,
+                     const QString &tmpPath, const QString &outPath,
+                     double clipLen, bool isOverwrite, const QString &trashPath);
     void startThumbs();
     void stopThumbs();
     void revealNextThumb();
@@ -112,6 +154,10 @@ private:
     bool m_thumbWorkerDone = false;
     bool m_busy = false;
     QString m_status;
+    // File identity snapshot taken at load() — sourceChangedOnDisk() re-stats
+    // before an overwrite so a file changed externally never dies silently.
+    QDateTime m_sourceMtime;
+    qint64 m_sourceSize = -1;
     QString m_themeAccent;
     QTimer m_thumbRevealTimer;
     QFileSystemWatcher m_themeWatcher;

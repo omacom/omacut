@@ -147,4 +147,8 @@ QStringList trimArgs(const QString &src, const QString &dst, double start, doubl
     return args;
 }
 
+QStringList overwriteArgs(const VideoInfo &, const QString &, double, double) {
+    return {};
+}
+
 }  // namespace ffmpeg
