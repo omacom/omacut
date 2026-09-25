@@ -152,10 +152,13 @@ private:
 };
 
 // Finds a DialogButton by its label ("primary" tells them apart from Labels).
+// Must be visible — several overlays carry a "Cancel" button, and an
+// invisible one would click through to whatever is underneath.
 static QQuickItem *dialogButton(QQuickWindow *window, const QString &text) {
     const auto items = window->findChildren<QQuickItem *>();
     for (QQuickItem *item : items) {
-        if (item->property("primary").isValid() && item->property("text").toString() == text)
+        if (item->isVisible() && item->property("primary").isValid()
+                && item->property("text").toString() == text)
             return item;
     }
     return nullptr;
@@ -235,6 +238,7 @@ private:
 
     QTemporaryDir m_dir;
     QString m_videoPath;
+    QString m_longPath;
 };
 
 void BackendTests::initTestCase() {
@@ -264,6 +268,28 @@ void BackendTests::initTestCase() {
     QCOMPARE(proc.exitStatus(), QProcess::NormalExit);
     QCOMPARE(proc.exitCode(), 0);
     QVERIFY(QFileInfo::exists(m_videoPath));
+
+    // A multi-frame clip for overwrite tests — trimming a 1-frame fixture
+    // can't change its duration, so nothing would prove the reload worked.
+    m_longPath = m_dir.filePath(QStringLiteral("clip4s.mp4"));
+    QProcess longProc;
+    longProc.start(ffmpeg, {
+        QStringLiteral("-hide_banner"),
+        QStringLiteral("-loglevel"),
+        QStringLiteral("error"),
+        QStringLiteral("-f"),
+        QStringLiteral("lavfi"),
+        QStringLiteral("-i"),
+        QStringLiteral("testsrc=size=32x32:rate=10:duration=4"),
+        QStringLiteral("-pix_fmt"),
+        QStringLiteral("yuv420p"),
+        QStringLiteral("-y"), m_longPath,
+    });
+    QVERIFY2(longProc.waitForFinished(10000),
+             qPrintable(QString::fromUtf8(longProc.readAll())));
+    QCOMPARE(longProc.exitStatus(), QProcess::NormalExit);
+    QCOMPARE(longProc.exitCode(), 0);
+    QVERIFY(QFileInfo::exists(m_longPath));
 }
 
 void BackendTests::waitForBackgroundWork(Backend &backend) {
@@ -643,8 +669,15 @@ void BackendTests::qmlShortcutsTriggerBackendActions() {
     window->requestActivate();
     QTest::qWait(100);
 
+    // Ctrl+S opens the save prompt; Enter presses the focused "Export as
+    // new…", which delegates to the portal export path.
     QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(),
+                              true, 3000);
+    QTest::keyClick(window, Qt::Key_Return);
     QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 1, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(),
+                              false, 3000);
 
     QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.openCount, 1, 3000);
@@ -837,14 +870,19 @@ void BackendTests::qmlQuitConfirmsUnexportedTrim() {
     QCOMPARE(backend.exportCount, 0);
     QCOMPARE(trimBar->property("playheadSec").toDouble(), 5.0);
 
-    // Enter on the default Export focus exports, as does Ctrl+S.
+    // Enter on the default Export focus routes into the save prompt, where
+    // Enter again presses the focused "Export as new…".
     QTest::keyClick(window, Qt::Key_Q);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
     QTest::keyClick(window, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), false, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(), true, 3000);
+    QTest::keyClick(window, Qt::Key_Return);
     QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 1, 3000);
-    QCOMPARE(window->property("quitConfirmVisible").toBool(), false);
+    QCOMPARE(window->property("savePromptVisible").toBool(), false);
 
-    // The buttons work with the mouse too: Cancel dismisses, Export exports.
+    // The buttons work with the mouse too: Cancel dismisses, Export opens the
+    // save prompt, and "Export as new…" exports.
     QTest::keyClick(window, Qt::Key_Q);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
     QQuickItem *cancelButton = dialogButton(window, QStringLiteral("Cancel"));
@@ -858,8 +896,12 @@ void BackendTests::qmlQuitConfirmsUnexportedTrim() {
     QQuickItem *exportButton = dialogButton(window, QStringLiteral("Export"));
     QVERIFY(exportButton);
     QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, itemCenter(exportButton));
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("savePromptVisible").toBool(), true, 3000);
+    QQuickItem *exportNewButton = dialogButton(window, QStringLiteral("Export as new…"));
+    QVERIFY(exportNewButton);
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, itemCenter(exportNewButton));
     QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 2, 3000);
-    QCOMPARE(window->property("quitConfirmVisible").toBool(), false);
+    QCOMPARE(window->property("savePromptVisible").toBool(), false);
 
     // A completed export cleans the trim; changing it again re-dirties.
     backend.announceExportDone();
@@ -959,7 +1001,7 @@ void BackendTests::overwriteArgsMapsAllStreamsByOutputIndex() {
 
 void BackendTests::overwriteOriginalReplacesMp4InPlace() {
     const QString sourcePath = m_dir.filePath(QStringLiteral("replace-in-place.mp4"));
-    QVERIFY(QFile::copy(m_videoPath, sourcePath));
+    QVERIFY(QFile::copy(m_longPath, sourcePath));
 
     ThumbProvider provider;
     auto *picker = new FakeFilePicker;

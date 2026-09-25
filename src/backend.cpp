@@ -158,6 +158,12 @@ void Backend::watchTheme() {
 }
 
 bool Backend::load(const QUrl &url) {
+    // A blocked open must never be silent — the QML layer surfaces loadError
+    // as a notice.
+    if (m_busy) {
+        emit loadError(QStringLiteral("An export is still running."));
+        return false;
+    }
     const QString path = url.toLocalFile();
     const ffmpeg::VideoInfo info = ffmpeg::probe(path);
     if (!info.ok) {
@@ -167,6 +173,18 @@ bool Backend::load(const QUrl &url) {
 
     m_info = info;
     m_path = path;
+    // Snapshot the file's identity so an overwrite can tell whether the file
+    // on disk still matches the one being previewed.
+    const QFileInfo loaded(path);
+    m_sourceMtime = loaded.lastModified();
+    m_sourceSize = loaded.size();
+
+    // Re-loading the same URL (in-place save) must still kick the player —
+    // an unchanged source keeps decoding the old unlinked inode on POSIX.
+    if (url == m_source) {
+        m_source = QUrl();
+        emit infoChanged();
+    }
     m_source = url;
 
     // New video: drop the old filmstrip and bump the revision so QML reloads.
@@ -191,6 +209,10 @@ bool Backend::load(const QUrl &url) {
 }
 
 void Backend::openVideoDialog() {
+    if (m_busy) {
+        emit loadError(QStringLiteral("An export is still running."));
+        return;
+    }
     m_filePicker->openVideo();
 }
 
@@ -341,21 +363,25 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
         return;
     }
 
+    // Encode to a unique sibling temp file and atomically replace the target
+    // only after success, so failed/cancelled exports preserve any existing
+    // file.
+    const QString tmpPath = tempPathFor(outPath);
+    startEncode(ffmpegBin, ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight),
+                tmpPath, outPath, end - start, false, QString());
+}
+
+void Backend::startEncode(const QString &ffmpegBin, const QStringList &args,
+                          const QString &tmpPath, const QString &outPath,
+                          double clipLen, bool isOverwrite, const QString &trashPath) {
     setBusy(true);
     setStatus(QStringLiteral("Exporting 0%"));
-
-    // Encode to a sibling temp file and atomically replace the target only after
-    // success, so failed/cancelled exports preserve any existing file.
-    const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
-    QFile::remove(tmpPath);
-    const QStringList args = ffmpeg::trimArgs(m_path, tmpPath, start, end, scaleHeight);
 
     auto *proc = new QProcess(this);
     auto completed = std::make_shared<bool>(false);
 
     // ffmpeg -progress writes key=value blocks to stdout as it encodes;
     // out_time_us against the clip length gives the percentage.
-    const double clipLen = end - start;
     auto progressBuf = std::make_shared<QByteArray>();
     connect(proc, &QProcess::readyReadStandardOutput, this,
             [this, proc, progressBuf, clipLen, completed] {
@@ -376,7 +402,7 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
             });
 
     connect(proc, &QProcess::finished, this,
-            [this, proc, outPath, tmpPath, completed](int code, QProcess::ExitStatus exitStatus) {
+            [this, proc, outPath, tmpPath, isOverwrite, trashPath, completed](int code, QProcess::ExitStatus exitStatus) {
                 if (*completed)
                     return;
                 *completed = true;
@@ -390,9 +416,24 @@ void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHei
                     failExport(tmpPath, QStringLiteral("Could not write the exported file."));
                     return;
                 }
+                // Busy must clear before the internal reload — load() refuses
+                // while an encode is marked running. The done signal comes
+                // after load() because onInfoChanged clears the notice text.
                 setBusy(false);
                 setStatus(QString());
-                emit exportDone(outPath);
+                if (!isOverwrite) {
+                    emit exportDone(outPath);
+                    return;
+                }
+                load(QUrl::fromLocalFile(outPath));
+                QString trashError;
+                if (!trashPath.isEmpty()) {
+                    QString inTrash;
+                    if (!QFile::moveToTrash(trashPath, &inTrash))
+                        trashError = QStringLiteral("Could not move %1 to the trash.")
+                                         .arg(QFileInfo(trashPath).fileName());
+                }
+                emit overwriteDone(outPath, trashError);
             });
     connect(proc, &QProcess::errorOccurred, this,
             [this, proc, tmpPath, completed](QProcess::ProcessError error) {
@@ -450,11 +491,30 @@ bool Backend::sourceChangedOnDisk() const {
 }
 
 QStringList Backend::overwriteDrops() const {
-    return {};
+    return ffmpeg::overwriteDrops(m_info);
 }
 
 void Backend::overwriteOriginal(double start, double end) {
-    Q_UNUSED(start);
-    Q_UNUSED(end);
-    emit exportFailed(QStringLiteral("Overwrite failed."));
+    if (m_path.isEmpty() || !m_info.ok || m_busy)
+        return;
+
+    if (end - start <= 0.0) {
+        emit exportFailed(QStringLiteral("The selected clip has no length."));
+        return;
+    }
+
+    const QString ffmpegBin = ffmpeg::toolPath("ffmpeg");
+    if (ffmpegBin.isEmpty()) {
+        emit exportFailed(QStringLiteral("`ffmpeg` was not found on your PATH."));
+        return;
+    }
+
+    // MP4 replaces in place; any other container can't receive an MP4 write,
+    // so it gets an auto-numbered sibling .mp4 and the original is trashed
+    // only after a successful write.
+    const QString outPath = sourceIsMp4() ? m_path : nextFreeMp4Sibling(m_path);
+    const QString trashPath = sourceIsMp4() ? QString() : m_path;
+    const QString tmpPath = tempPathFor(outPath);
+    const QStringList args = ffmpeg::overwriteArgs(m_info, tmpPath, start, end);
+    startEncode(ffmpegBin, args, tmpPath, outPath, end - start, true, trashPath);
 }

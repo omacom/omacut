@@ -54,6 +54,11 @@ QStringList trimArgs(const QString &src, const QString &dst, double start, doubl
 // quality — there is no scale option on the overwrite path.
 QStringList overwriteArgs(const VideoInfo &info, const QString &dst, double start, double end);
 
+// Human-readable names for the streams overwriteArgs would drop — the same
+// classifier drives both, so the pre-flight warning and the -map list can
+// never disagree.
+QStringList overwriteDrops(const VideoInfo &info);
+
 // Locate a tool on PATH; returns empty string if missing.
 QString toolPath(const QString &tool);
 

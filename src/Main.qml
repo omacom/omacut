@@ -21,6 +21,8 @@ ApplicationWindow {
     property string noticeText: ""
     property bool helpVisible: false
     property bool quitConfirmVisible: false
+    property bool savePromptVisible: false
+    property bool staleWarnVisible: false
     readonly property string statusText: noticeText !== "" ? noticeText : backend.status
 
     // What the last export wrote, so quitting only warns about unexported work.
@@ -46,14 +48,34 @@ ApplicationWindow {
         noticeTimer.restart();
     }
     function openVideo() {
+        if (backend.busy) {
+            showNotice("An export is still running.");
+            return;
+        }
         backend.openVideoDialog();
     }
+    // Every save entry point funnels through the save prompt — no path writes
+    // without the user choosing overwrite vs export-as-new first (D-01).
     function exportVideo() {
         if (!win.hasVideo || backend.duration <= 0 || backend.busy)
             return;
         pendingExportStartSec = trimBar.startSec;
         pendingExportEndSec = trimBar.endSec;
-        backend.exportDialog(trimBar.startSec, trimBar.endSec);
+        win.savePromptVisible = true;
+    }
+    // "Overwrite original" gates: a file that changed on disk since load()
+    // warns first — overwriting would destroy a newer file than the one being
+    // previewed (warn-and-allow policy).
+    function confirmOverwrite() {
+        if (backend.sourceChangedOnDisk()) {
+            win.staleWarnVisible = true;
+            return;
+        }
+        overwriteNow();
+    }
+    function overwriteNow() {
+        win.savePromptVisible = false;
+        backend.overwriteOriginal(win.pendingExportStartSec, win.pendingExportEndSec);
     }
     function ensureAudioOutput() {
         if (audioOutput === null && win.hasVideo)
@@ -117,6 +139,10 @@ ApplicationWindow {
     }
     property bool quitting: false
     function requestQuit() {
+        if (backend.busy) {
+            showNotice("An export is still running.");
+            return;
+        }
         if (trimDirty) {
             if (player.playbackState === MediaPlayer.PlayingState)
                 player.pause();
@@ -148,6 +174,11 @@ ApplicationWindow {
     onClosing: (close) => {
         if (win.quitting)
             return;
+        if (backend.busy) {
+            close.accepted = false;
+            showNotice("An export is still running.");
+            return;
+        }
         if (win.trimDirty) {
             close.accepted = false;
             if (player.playbackState === MediaPlayer.PlayingState)
@@ -164,70 +195,70 @@ ApplicationWindow {
     Shortcut {
         sequence: "Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: togglePlay()
     }
 
     Shortcut {
         sequence: "Ctrl+Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: moveTrimStartTo(trimBar.playheadSec)
     }
 
     Shortcut {
         sequence: "Alt+Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: moveTrimEndTo(trimBar.playheadSec)
     }
 
     Shortcut {
         sequence: "Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: seekBy(-1)
     }
 
     Shortcut {
         sequence: "Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: seekBy(1)
     }
 
     Shortcut {
         sequence: "Shift+Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: seekBy(-5)
     }
 
     Shortcut {
         sequence: "Shift+Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: seekBy(5)
     }
 
     Shortcut {
         sequence: "Alt+Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: seekBy(-0.2)
     }
 
     Shortcut {
         sequence: "Alt+Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: seekBy(0.2)
     }
 
     Shortcut {
         sequence: "Z"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && backend.duration > 0 && !win.quitConfirmVisible
+        enabled: win.hasVideo && backend.duration > 0 && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: {
             trimBar.toggleZoom();
             backend.requestThumbs(trimBar.windowStart, trimBar.windowEnd);
@@ -237,7 +268,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+S"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && backend.duration > 0 && !backend.busy
+        enabled: win.hasVideo && backend.duration > 0 && !backend.busy && !win.savePromptVisible && !win.staleWarnVisible
         onActivated: {
             win.quitConfirmVisible = false;
             exportVideo();
@@ -247,7 +278,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+O"
         context: Qt.ApplicationShortcut
-        enabled: !win.quitConfirmVisible
+        enabled: !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !backend.busy
         onActivated: openVideo()
     }
 
@@ -255,7 +286,7 @@ ApplicationWindow {
         sequence: "Q"
         context: Qt.ApplicationShortcut
         onActivated: {
-            if (!win.quitConfirmVisible)
+            if (!win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible)
                 requestQuit();
         }
     }
@@ -264,16 +295,22 @@ ApplicationWindow {
         sequence: "?"
         context: Qt.ApplicationShortcut
         onActivated: {
-            if (!win.quitConfirmVisible)
+            if (!win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible)
                 win.helpVisible = !win.helpVisible;
         }
     }
 
+    // Escape peels the topmost overlay only — the save prompt sits above the
+    // quit confirmation, and the warnings sit above the save prompt.
     Shortcut {
         sequence: "Escape"
         context: Qt.ApplicationShortcut
         onActivated: {
-            if (win.quitConfirmVisible)
+            if (win.staleWarnVisible)
+                win.staleWarnVisible = false;
+            else if (win.savePromptVisible)
+                win.savePromptVisible = false;
+            else if (win.quitConfirmVisible)
                 win.quitConfirmVisible = false;
             else if (win.helpVisible)
                 win.helpVisible = false;
@@ -761,6 +798,171 @@ ApplicationWindow {
         }
     }
 
+    // --- save prompt ---
+    Rectangle {
+        visible: win.savePromptVisible
+        anchors.fill: parent
+        color: "#000000cc"
+        onVisibleChanged: {
+            if (visible)
+                saveExportButton.forceActiveFocus();
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: win.savePromptVisible = false
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: saveColumn.width + 64
+            height: saveColumn.height + 48
+            radius: 12
+            color: "#1c1c1e"
+
+            MouseArea {
+                anchors.fill: parent
+            }
+
+            Column {
+                id: saveColumn
+                anchors.centerIn: parent
+                spacing: 8
+
+                Label {
+                    text: "Save trimmed video"
+                    color: "white"
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                }
+
+                Label {
+                    text: "Overwrite \"" + backend.overwriteTargetName() + "\" with the trimmed video, or export it as a new file?"
+                    color: "#d6d6da"
+                    font.pixelSize: 13
+                    bottomPadding: 12
+                }
+
+                Row {
+                    anchors.right: parent.right
+                    spacing: 10
+
+                    DialogButton {
+                        id: saveCancelButton
+                        text: "Cancel"
+                        KeyNavigation.left: saveExportButton
+                        KeyNavigation.right: saveOverwriteButton
+                        KeyNavigation.tab: saveOverwriteButton
+                        KeyNavigation.backtab: saveExportButton
+                        onClicked: win.savePromptVisible = false
+                    }
+                    DialogButton {
+                        id: saveOverwriteButton
+                        text: "Overwrite original"
+                        // Non-MP4 sources get a different label once the
+                        // sibling-write path lands; only MP4 overwrites in
+                        // place.
+                        visible: backend.sourceIsMp4()
+                        KeyNavigation.left: saveCancelButton
+                        KeyNavigation.right: saveExportButton
+                        KeyNavigation.tab: saveExportButton
+                        KeyNavigation.backtab: saveCancelButton
+                        onClicked: confirmOverwrite()
+                    }
+                    DialogButton {
+                        id: saveExportButton
+                        text: "Export as new…"
+                        primary: true
+                        KeyNavigation.left: saveOverwriteButton
+                        KeyNavigation.right: saveCancelButton
+                        KeyNavigation.tab: saveCancelButton
+                        KeyNavigation.backtab: saveOverwriteButton
+                        onClicked: {
+                            win.savePromptVisible = false;
+                            backend.exportDialog(win.pendingExportStartSec,
+                                                 win.pendingExportEndSec);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- changed-on-disk warning ---
+    Rectangle {
+        visible: win.staleWarnVisible
+        anchors.fill: parent
+        color: "#000000cc"
+        onVisibleChanged: {
+            if (visible)
+                staleCancelButton.forceActiveFocus();
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: win.staleWarnVisible = false
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: staleColumn.width + 64
+            height: staleColumn.height + 48
+            radius: 12
+            color: "#1c1c1e"
+
+            MouseArea {
+                anchors.fill: parent
+            }
+
+            Column {
+                id: staleColumn
+                anchors.centerIn: parent
+                spacing: 8
+
+                Label {
+                    text: "File changed on disk"
+                    color: "white"
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                }
+
+                Label {
+                    text: "\"" + backend.overwriteTargetName() + "\" changed on disk since it was opened. Overwriting replaces the newer file — the saved clip comes from what's on disk now, not what you see."
+                    color: "#d6d6da"
+                    font.pixelSize: 13
+                    bottomPadding: 12
+                }
+
+                Row {
+                    anchors.right: parent.right
+                    spacing: 10
+
+                    DialogButton {
+                        id: staleCancelButton
+                        text: "Cancel"
+                        KeyNavigation.left: staleAnywayButton
+                        KeyNavigation.right: staleAnywayButton
+                        KeyNavigation.tab: staleAnywayButton
+                        KeyNavigation.backtab: staleAnywayButton
+                        onClicked: win.staleWarnVisible = false
+                    }
+                    DialogButton {
+                        id: staleAnywayButton
+                        text: "Overwrite anyway"
+                        KeyNavigation.left: staleCancelButton
+                        KeyNavigation.right: staleCancelButton
+                        KeyNavigation.tab: staleCancelButton
+                        KeyNavigation.backtab: staleCancelButton
+                        onClicked: {
+                            win.staleWarnVisible = false;
+                            overwriteNow();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Connections {
         target: backend
         function onInfoChanged() {
@@ -782,6 +984,9 @@ ApplicationWindow {
             win.exportedStartSec = win.pendingExportStartSec;
             win.exportedEndSec = win.pendingExportEndSec;
             win.showNotice("Saved " + path);
+        }
+        function onOverwriteDone(path, trashError) {
+            win.showNotice("Saved " + path + (trashError ? " — " + trashError : ""));
         }
         function onExportFailed(message) {
             win.showNotice("Export failed: " + message);
