@@ -804,8 +804,15 @@ ApplicationWindow {
         anchors.fill: parent
         color: "#000000cc"
         onVisibleChanged: {
-            if (visible)
+            if (visible) {
+                // Invokable calls can't be binding-tracked — refresh the copy
+                // and the overwrite button every time the prompt opens, or
+                // they'd freeze at the startup (empty-source) state.
+                saveBodyLabel.text = "Overwrite \"" + backend.overwriteTargetName()
+                    + "\" with the trimmed video, or export it as a new file?";
+                saveOverwriteButton.visible = backend.sourceIsMp4();
                 saveExportButton.forceActiveFocus();
+            }
         }
 
         MouseArea {
@@ -837,7 +844,7 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: "Overwrite \"" + backend.overwriteTargetName() + "\" with the trimmed video, or export it as a new file?"
+                    id: saveBodyLabel
                     color: "#d6d6da"
                     font.pixelSize: 13
                     bottomPadding: 12
@@ -861,8 +868,7 @@ ApplicationWindow {
                         text: "Overwrite original"
                         // Non-MP4 sources get a different label once the
                         // sibling-write path lands; only MP4 overwrites in
-                        // place.
-                        visible: backend.sourceIsMp4()
+                        // place. Set imperatively when the prompt opens.
                         KeyNavigation.left: saveCancelButton
                         KeyNavigation.right: saveExportButton
                         KeyNavigation.tab: saveExportButton
@@ -894,8 +900,11 @@ ApplicationWindow {
         anchors.fill: parent
         color: "#000000cc"
         onVisibleChanged: {
-            if (visible)
+            if (visible) {
+                staleBodyLabel.text = "\"" + backend.overwriteTargetName()
+                    + "\" changed on disk since it was opened. Overwriting replaces the newer file — the saved clip comes from what's on disk now, not what you see.";
                 staleCancelButton.forceActiveFocus();
+            }
         }
 
         MouseArea {
@@ -927,7 +936,7 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: "\"" + backend.overwriteTargetName() + "\" changed on disk since it was opened. Overwriting replaces the newer file — the saved clip comes from what's on disk now, not what you see."
+                    id: staleBodyLabel
                     color: "#d6d6da"
                     font.pixelSize: 13
                     bottomPadding: 12
