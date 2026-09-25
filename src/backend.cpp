@@ -459,7 +459,7 @@ void Backend::startEncode(const QString &ffmpegBin, const QStringList &args,
                     emit exportDone(finalPath);
                     return;
                 }
-                load(QUrl::fromLocalFile(finalPath));
+                const bool reloaded = load(QUrl::fromLocalFile(finalPath));
                 QString trashError;
                 if (!trashPath.isEmpty()) {
                     QString inTrash;
@@ -468,6 +468,11 @@ void Backend::startEncode(const QString &ffmpegBin, const QStringList &args,
                                          .arg(QFileInfo(trashPath).fileName());
                 }
                 emit overwriteDone(finalPath, trashError);
+                // A failed reload emits loadError inside load() — but the
+                // overwriteDone "Saved" notice would clobber it. Re-signal so
+                // the failure is the last notice standing.
+                if (!reloaded)
+                    emit loadError(QStringLiteral("The saved file could not be re-opened."));
             });
     connect(proc, &QProcess::errorOccurred, this,
             [this, proc, tmpPath, completed](QProcess::ProcessError error) {

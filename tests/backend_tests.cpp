@@ -257,6 +257,7 @@ private slots:
     void busyBlocksLoadAndOpenDuringEncode();
     void qmlBusyBlocksOpenAndQuit();
     void qmlBusySaveShowsNotice();
+    void overwriteReloadFailureKeepsErrorVisible();
     void failedOverwriteLeavesSourceUntouched();
     void overwriteKeepsSourcePermissions();
     void tempPathForNamesAreUniqueAndSibling();
@@ -1878,6 +1879,44 @@ void BackendTests::qmlBusySaveShowsNotice() {
     QCOMPARE(window->property("savePromptVisible").toBool(), false);
     QCOMPARE(backend.overwriteCount, 0);
     QCOMPARE(backend.exportCount, 0);
+}
+
+void BackendTests::overwriteReloadFailureKeepsErrorVisible() {
+    const QString sourcePath = m_dir.filePath(QStringLiteral("reload-fail.mp4"));
+    QVERIFY(QFile::copy(m_longPath, sourcePath));
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::overwriteDone);
+    QSignalSpy loadErrSpy(&backend, &Backend::loadError);
+
+    QStringList order;
+    connect(&backend, &Backend::overwriteDone, this,
+            [&] { order << QStringLiteral("done"); });
+    connect(&backend, &Backend::loadError, this,
+            [&] { order << QStringLiteral("loadError"); });
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    backend.overwriteOriginal(0.0, 0.5);
+    QVERIFY(backend.busy());
+
+    // Break PATH before the finished handler runs so the post-rename
+    // reload's ffprobe lookup fails. Deterministic: QProcess::finished is
+    // delivered on the event loop, and PATH is only read inside load().
+    EnvVarGuard pathGuard("PATH");
+    QTemporaryDir emptyPath;
+    QVERIFY(emptyPath.isValid());
+    qputenv("PATH", QFile::encodeName(emptyPath.path()));
+
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() == 1, 30000);
+    QVERIFY(!backend.busy());
+    // load() emits loadError internally, overwriteDone follows, and the
+    // re-signal must land last so the Saved notice never masks the failure.
+    QCOMPARE(order.last(), QStringLiteral("loadError"));
+    QCOMPARE(loadErrSpy.count(), 2);
 }
 
 void BackendTests::failedOverwriteLeavesSourceUntouched() {
