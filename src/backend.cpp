@@ -235,6 +235,11 @@ void Backend::openVideoDialog() {
 }
 
 void Backend::exportDialog(double start, double end) {
+    // A refused export is never silent — same notice surface as a refused open.
+    if (m_busy) {
+        emit exportFailed(QStringLiteral("An export is still running."));
+        return;
+    }
     if (m_path.isEmpty() || !m_info.ok)
         return;
 
@@ -356,7 +361,11 @@ QUrl Backend::suggestedExportUrl() const {
 }
 
 void Backend::exportClip(const QUrl &dst, double start, double end, int scaleHeight) {
-    if (m_path.isEmpty() || !m_info.ok || m_busy)
+    if (m_busy) {
+        emit exportFailed(QStringLiteral("An export is still running."));
+        return;
+    }
+    if (m_path.isEmpty() || !m_info.ok)
         return;
 
     if (end - start <= 0.0) {
@@ -520,7 +529,11 @@ QStringList Backend::overwriteDrops() const {
 }
 
 void Backend::overwriteOriginal(double start, double end) {
-    if (m_path.isEmpty() || !m_info.ok || m_busy)
+    if (m_busy) {
+        emit exportFailed(QStringLiteral("An export is still running."));
+        return;
+    }
+    if (m_path.isEmpty() || !m_info.ok)
         return;
 
     if (end - start <= 0.0) {

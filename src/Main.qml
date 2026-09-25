@@ -58,7 +58,12 @@ ApplicationWindow {
     // Every save entry point funnels through the save prompt — no path writes
     // without the user choosing overwrite vs export-as-new first (D-01).
     function exportVideo() {
-        if (!win.hasVideo || backend.duration <= 0 || backend.busy)
+        // A refused save must never be silent — same notice as a refused open.
+        if (backend.busy) {
+            showNotice("An export is still running.");
+            return;
+        }
+        if (!win.hasVideo || backend.duration <= 0)
             return;
         pendingExportStartSec = trimBar.startSec;
         pendingExportEndSec = trimBar.endSec;
@@ -278,7 +283,9 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+S"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && backend.duration > 0 && !backend.busy && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
+        // Stays enabled while busy so the refusal reaches exportVideo()'s
+        // notice — a disabled shortcut would swallow the key silently.
+        enabled: win.hasVideo && backend.duration > 0 && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: {
             win.quitConfirmVisible = false;
             exportVideo();

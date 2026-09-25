@@ -256,6 +256,7 @@ private slots:
     void trashFailureStillLoadsSibling();
     void busyBlocksLoadAndOpenDuringEncode();
     void qmlBusyBlocksOpenAndQuit();
+    void qmlBusySaveShowsNotice();
     void failedOverwriteLeavesSourceUntouched();
     void overwriteKeepsSourcePermissions();
     void tempPathForNamesAreUniqueAndSibling();
@@ -1786,6 +1787,23 @@ void BackendTests::busyBlocksLoadAndOpenDuringEncode() {
     QCOMPARE(picker->openCount, 0);
     QCOMPARE(loadErrSpy.count(), 2);
 
+    // Export-path refusals are never silent either: exportDialog must not
+    // reach the picker, and every refused export emits exportFailed.
+    backend.exportDialog(0.0, 1.0);
+    QCOMPARE(picker->exportCount, 0);
+    QCOMPARE(failedSpy.count(), 1);
+
+    backend.exportClip(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("busy-out.mp4"))),
+                       0.0, 1.0, 0);
+    QCOMPARE(failedSpy.count(), 2);
+
+    backend.overwriteOriginal(0.0, 1.0);
+    QCOMPARE(failedSpy.count(), 3);
+    for (int i = 0; i < failedSpy.count(); ++i)
+        QCOMPARE(failedSpy.at(i).at(0).toString(),
+                 QStringLiteral("An export is still running."));
+    failedSpy.clear();
+
     // Drain the encode before the fixture dir goes away.
     QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 30000);
     QCOMPARE(failedSpy.count(), 0);
@@ -1833,6 +1851,33 @@ void BackendTests::qmlBusyBlocksOpenAndQuit() {
     QVERIFY2(window->property("noticeText").toString()
                  .contains(QStringLiteral("still running")),
              qPrintable(window->property("noticeText").toString()));
+}
+
+void BackendTests::qmlBusySaveShowsNotice() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    backend.setBusy(true);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QTRY_VERIFY_WITH_TIMEOUT(window->property("audioOutputReady").toBool(), 3000);
+
+    backend.announceInfo();
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+
+    // Ctrl+S mid-encode is refused — but never silently (SAVE-05): the
+    // enabled gate must not swallow the key, exportVideo() shows the notice.
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        window->property("noticeText").toString()
+            .contains(QStringLiteral("still running")),
+        3000);
+    QCOMPARE(window->property("savePromptVisible").toBool(), false);
+    QCOMPARE(backend.overwriteCount, 0);
+    QCOMPARE(backend.exportCount, 0);
 }
 
 void BackendTests::failedOverwriteLeavesSourceUntouched() {
