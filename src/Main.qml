@@ -818,11 +818,24 @@ ApplicationWindow {
         onVisibleChanged: {
             if (visible) {
                 // Invokable calls can't be binding-tracked — refresh the copy
-                // and the overwrite button every time the prompt opens, or
-                // they'd freeze at the startup (empty-source) state.
-                saveBodyLabel.text = "Overwrite \"" + backend.overwriteTargetName()
-                    + "\" with the trimmed video, or export it as a new file?";
-                saveOverwriteButton.visible = backend.sourceIsMp4();
+                // and the destructive button's label every time the prompt
+                // opens, or they'd freeze at the startup (empty-source) state.
+                // Non-MP4 sources can't be rewritten in place: the overwrite
+                // bundles writing a sibling .mp4 with trashing the original
+                // (D-07), so the button says exactly that.
+                if (backend.sourceIsMp4()) {
+                    saveBodyLabel.text = "Overwrite \"" + backend.overwriteTargetName()
+                        + "\" with the trimmed video, or export it as a new file?";
+                    saveOverwriteButton.text = "Overwrite original";
+                } else {
+                    saveBodyLabel.text = "Write \"" + backend.overwriteTargetName()
+                        + "\" as a new MP4 next to the original, move the original to the trash, or export the trim as a new file?";
+                    saveOverwriteButton.text = "Write MP4 + move original to trash";
+                }
+                // The Row positions children from the widths it saw at its
+                // last layout pass — a button that changed label while hidden
+                // would overlap its neighbor, so force the positioner again.
+                saveButtonsRow.forceLayout();
                 saveExportButton.forceActiveFocus();
             }
         }
@@ -863,6 +876,7 @@ ApplicationWindow {
                 }
 
                 Row {
+                    id: saveButtonsRow
                     anchors.right: parent.right
                     spacing: 10
 
@@ -877,10 +891,9 @@ ApplicationWindow {
                     }
                     DialogButton {
                         id: saveOverwriteButton
-                        text: "Overwrite original"
-                        // Non-MP4 sources get a different label once the
-                        // sibling-write path lands; only MP4 overwrites in
-                        // place. Set imperatively when the prompt opens.
+                        // "Overwrite original" for MP4 sources, "Write MP4 +
+                        // move original to trash" otherwise (D-07). Label is
+                        // set imperatively when the prompt opens.
                         KeyNavigation.left: saveCancelButton
                         KeyNavigation.right: saveExportButton
                         KeyNavigation.tab: saveExportButton
@@ -913,7 +926,9 @@ ApplicationWindow {
         color: "#000000cc"
         onVisibleChanged: {
             if (visible) {
-                staleBodyLabel.text = "\"" + backend.overwriteTargetName()
+                // The changed file is the loaded source — for a non-MP4
+                // source that's not the sibling the overwrite will write.
+                staleBodyLabel.text = "\"" + fileName(backend.source)
                     + "\" changed on disk since it was opened. Overwriting replaces the newer file — the saved clip comes from what's on disk now, not what you see.";
                 staleCancelButton.forceActiveFocus();
             }

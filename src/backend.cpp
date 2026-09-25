@@ -412,7 +412,14 @@ void Backend::startEncode(const QString &ffmpegBin, const QStringList &args,
                     failExport(tmpPath, err.isEmpty() ? QStringLiteral("ffmpeg trim failed.") : err);
                     return;
                 }
-                if (!replaceWithTemp(tmpPath, outPath)) {
+                // The sibling target was resolved when the overwrite was
+                // clicked — a same-named file appearing during the encode
+                // must not be clobbered, so re-resolve right before renaming.
+                // The temp is a sibling of the directory, not of outPath, so
+                // re-numbering is free.
+                const QString finalPath =
+                    (!trashPath.isEmpty()) ? nextFreeMp4Sibling(m_path) : outPath;
+                if (!replaceWithTemp(tmpPath, finalPath)) {
                     failExport(tmpPath, QStringLiteral("Could not write the exported file."));
                     return;
                 }
@@ -422,10 +429,10 @@ void Backend::startEncode(const QString &ffmpegBin, const QStringList &args,
                 setBusy(false);
                 setStatus(QString());
                 if (!isOverwrite) {
-                    emit exportDone(outPath);
+                    emit exportDone(finalPath);
                     return;
                 }
-                load(QUrl::fromLocalFile(outPath));
+                load(QUrl::fromLocalFile(finalPath));
                 QString trashError;
                 if (!trashPath.isEmpty()) {
                     QString inTrash;
@@ -433,7 +440,7 @@ void Backend::startEncode(const QString &ffmpegBin, const QStringList &args,
                         trashError = QStringLiteral("Could not move %1 to the trash.")
                                          .arg(QFileInfo(trashPath).fileName());
                 }
-                emit overwriteDone(outPath, trashError);
+                emit overwriteDone(finalPath, trashError);
             });
     connect(proc, &QProcess::errorOccurred, this,
             [this, proc, tmpPath, completed](QProcess::ProcessError error) {
