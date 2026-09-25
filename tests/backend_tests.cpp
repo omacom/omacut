@@ -86,7 +86,7 @@ public:
     int thumbCount() const { return 0; }
     int thumbReadyCount() const { return 0; }
     int thumbRevision() const { return 0; }
-    bool busy() const { return false; }
+    bool busy() const { return m_busy; }
     QString status() const { return {}; }
     QString themeAccent() const { return QStringLiteral("#FFD60A"); }
     QString themeAccentForeground() const { return QStringLiteral("black"); }
@@ -134,6 +134,12 @@ public:
         emit overwriteDone(QStringLiteral("/tmp/overwritten.mp4"), QString());
     }
     void setSource(const QUrl &url) { m_source = url; }
+    void setBusy(bool busy) {
+        if (m_busy == busy)
+            return;
+        m_busy = busy;
+        emit busyChanged();
+    }
 
     int openCount = 0;
     int exportCount = 0;
@@ -162,6 +168,7 @@ signals:
 private:
     QUrl m_source;
     double m_duration;
+    bool m_busy = false;
 };
 
 // Finds a DialogButton by its label ("primary" tells them apart from Labels).
@@ -247,6 +254,12 @@ private slots:
     void overwriteWarnsOnChangedSource();
     void qmlNonMp4SavePromptOffersTrashWrite();
     void trashFailureStillLoadsSibling();
+    void busyBlocksLoadAndOpenDuringEncode();
+    void qmlBusyBlocksOpenAndQuit();
+    void failedOverwriteLeavesSourceUntouched();
+    void overwriteKeepsSourcePermissions();
+    void tempPathForNamesAreUniqueAndSibling();
+    void overwriteZeroLengthRefused();
     void trimArgsReencodeForPreciseCuts();
     void trimArgsScaleTheShorterSide();
     void exportHeightsNeverUpscale();
@@ -1744,6 +1757,202 @@ void BackendTests::trashFailureStillLoadsSibling() {
     QVERIFY(QFileInfo::exists(sourcePath));
     QVERIFY(QFileInfo::exists(siblingPath));
     QCOMPARE(backend.source(), QUrl::fromLocalFile(siblingPath));
+}
+
+void BackendTests::busyBlocksLoadAndOpenDuringEncode() {
+    const QString sourcePath = m_dir.filePath(QStringLiteral("busy-source.mkv"));
+    QVERIFY(QFile::copy(m_multiMkvPath, sourcePath));
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::overwriteDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+    QSignalSpy loadErrSpy(&backend, &Backend::loadError);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    backend.overwriteOriginal(0.0, 3.0);
+    QVERIFY(backend.busy());
+
+    // A blocked open is refused — but never silently (SAVE-05).
+    QVERIFY(!backend.load(videoUrl()));
+    QCOMPARE(loadErrSpy.count(), 1);
+    QCOMPARE(loadErrSpy.first().at(0).toString(),
+             QStringLiteral("An export is still running."));
+
+    backend.openVideoDialog();
+    QCOMPARE(picker->openCount, 0);
+    QCOMPARE(loadErrSpy.count(), 2);
+
+    // Drain the encode before the fixture dir goes away.
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 30000);
+    QCOMPARE(failedSpy.count(), 0);
+    QVERIFY(!backend.busy());
+    removeFromTrash(QFileInfo(sourcePath).fileName());
+}
+
+void BackendTests::qmlBusyBlocksOpenAndQuit() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("shortcut-placeholder.mp4"))),
+                            20.0);
+    backend.setBusy(true);
+    QmlHarness harness(backend);
+
+    QVERIFY2(harness.window(), qPrintable(mainQmlPath()));
+    QQuickWindow *window = harness.window();
+    QTRY_VERIFY_WITH_TIMEOUT(window->property("audioOutputReady").toBool(), 3000);
+
+    backend.announceInfo();
+    window->show();
+    window->requestActivate();
+    QTest::qWait(100);
+
+    // Ctrl+O can't open mid-encode — the refusal shows a notice.
+    QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        window->property("noticeText").toString()
+            .contains(QStringLiteral("still running")),
+        3000);
+    QCOMPARE(backend.openCount, 0);
+
+    // Q and window-close are refused the same way — no quit prompt, no close.
+    window->setProperty("noticeText", QString());
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        window->property("noticeText").toString()
+            .contains(QStringLiteral("still running")),
+        3000);
+    QCOMPARE(window->property("quitConfirmVisible").toBool(), false);
+    QVERIFY(window->isVisible());
+
+    window->setProperty("noticeText", QString());
+    window->close();
+    QTest::qWait(200);
+    QVERIFY(window->isVisible());
+    QVERIFY2(window->property("noticeText").toString()
+                 .contains(QStringLiteral("still running")),
+             qPrintable(window->property("noticeText").toString()));
+}
+
+void BackendTests::failedOverwriteLeavesSourceUntouched() {
+    const QString sourcePath = m_dir.filePath(QStringLiteral("failed-overwrite.mkv"));
+    QVERIFY(QFile::copy(m_multiMkvPath, sourcePath));
+    QByteArray original;
+    {
+        QFile file(sourcePath);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        original = file.readAll();
+    }
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::overwriteDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    // Force ffmpeg to fail to start, the same way exportStartFailureClearsBusy does.
+    QTemporaryDir pathDir;
+    QVERIFY(pathDir.isValid());
+    QVERIFY(installBrokenFfmpeg(pathDir.path()));
+
+    EnvVarGuard pathGuard("PATH");
+    qputenv("PATH", QFile::encodeName(pathDir.path()) + ':' + qgetenv("PATH"));
+
+    backend.overwriteOriginal(0.0, 0.5);
+    QVERIFY(backend.busy());
+    QTRY_COMPARE_WITH_TIMEOUT(failedSpy.count(), 1, 5000);
+
+    // A failed overwrite must not write, move, or trash anything: the source
+    // is byte-identical and no temp litter is left behind.
+    QCOMPARE(doneSpy.count(), 0);
+    QVERIFY(!backend.busy());
+    QVERIFY(backend.status().isEmpty());
+    QFile check(sourcePath);
+    QVERIFY(check.open(QIODevice::ReadOnly));
+    QCOMPARE(check.readAll(), original);
+    QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral("failed-overwrite.mp4"))));
+    QVERIFY(QDir(m_dir.path())
+                .entryList({QStringLiteral("*.omacut-*")}, QDir::Files)
+                .isEmpty());
+}
+
+void BackendTests::overwriteKeepsSourcePermissions() {
+    const QString sourcePath = m_dir.filePath(QStringLiteral("mode-0600.mp4"));
+    QVERIFY(QFile::copy(m_longPath, sourcePath));
+    // QFile::permissions returns the octal 0600 expanded to both the Owner
+    // and legacy User bits (0x6600).
+    const QFileDevice::Permissions wanted =
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner
+        | QFileDevice::ReadUser | QFileDevice::WriteUser;
+    QVERIFY(QFile::setPermissions(sourcePath, wanted));
+    QCOMPARE(QFile::permissions(sourcePath), wanted);
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::overwriteDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    backend.overwriteOriginal(0.0, 0.5);
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 30000);
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 1);
+
+    // The replaced file keeps the owner's mode bits — the encode temp's umask
+    // defaults must not loosen them.
+    QCOMPARE(QFile::permissions(sourcePath), wanted);
+}
+
+void BackendTests::tempPathForNamesAreUniqueAndSibling() {
+    const QString outPath = m_dir.filePath(QStringLiteral("temp-name.mp4"));
+
+    const QString first = Backend::tempPathFor(outPath);
+    const QString second = Backend::tempPathFor(outPath);
+    QVERIFY(first != second);
+
+    // Temps sit next to the target (same filesystem keeps rename atomic), end
+    // in .mp4, and the generated suffix is pure ASCII — overwrite behaves
+    // identically under any locale or filename encoding.
+    QCOMPARE(QFileInfo(first).dir().absolutePath(),
+             QFileInfo(outPath).dir().absolutePath());
+    QVERIFY(first.endsWith(QStringLiteral(".mp4")));
+    QVERIFY(first.startsWith(outPath + QStringLiteral(".omacut-")));
+    for (const QChar c : first.sliced(outPath.size()))
+        QVERIFY2(c.unicode() < 128,
+                 qPrintable(QStringLiteral("non-ASCII char in %1").arg(first)));
+}
+
+void BackendTests::overwriteZeroLengthRefused() {
+    const QString sourcePath = m_dir.filePath(QStringLiteral("zero-length.mp4"));
+    QVERIFY(QFile::copy(m_videoPath, sourcePath));
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::overwriteDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForBackgroundWork(backend);
+
+    backend.overwriteOriginal(0.5, 0.5);
+
+    // Refused before any temp file is created or busy flag is raised.
+    QCOMPARE(failedSpy.count(), 1);
+    QCOMPARE(failedSpy.first().at(0).toString(),
+             QStringLiteral("The selected clip has no length."));
+    QCOMPARE(doneSpy.count(), 0);
+    QVERIFY(!backend.busy());
+    QVERIFY(QDir(m_dir.path())
+                .entryList({QStringLiteral("*.omacut-*")}, QDir::Files)
+                .isEmpty());
 }
 
 void BackendTests::trimArgsReencodeForPreciseCuts() {
