@@ -23,6 +23,7 @@ ApplicationWindow {
     property bool quitConfirmVisible: false
     property bool savePromptVisible: false
     property bool staleWarnVisible: false
+    property bool dropWarnVisible: false
     readonly property string statusText: noticeText !== "" ? noticeText : backend.status
 
     // What the last export wrote, so quitting only warns about unexported work.
@@ -69,6 +70,15 @@ ApplicationWindow {
     function confirmOverwrite() {
         if (backend.sourceChangedOnDisk()) {
             win.staleWarnVisible = true;
+            return;
+        }
+        warnDropsOrOverwrite();
+    }
+    // Streams the overwrite can't carry into MP4 are named in a pre-flight
+    // warning before anything is written (D-10) — never drop silently.
+    function warnDropsOrOverwrite() {
+        if (backend.overwriteDrops().length > 0) {
+            win.dropWarnVisible = true;
             return;
         }
         overwriteNow();
@@ -195,70 +205,70 @@ ApplicationWindow {
     Shortcut {
         sequence: "Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: togglePlay()
     }
 
     Shortcut {
         sequence: "Ctrl+Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: moveTrimStartTo(trimBar.playheadSec)
     }
 
     Shortcut {
         sequence: "Alt+Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: moveTrimEndTo(trimBar.playheadSec)
     }
 
     Shortcut {
         sequence: "Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: seekBy(-1)
     }
 
     Shortcut {
         sequence: "Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: seekBy(1)
     }
 
     Shortcut {
         sequence: "Shift+Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: seekBy(-5)
     }
 
     Shortcut {
         sequence: "Shift+Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: seekBy(5)
     }
 
     Shortcut {
         sequence: "Alt+Left"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: seekBy(-0.2)
     }
 
     Shortcut {
         sequence: "Alt+Right"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: seekBy(0.2)
     }
 
     Shortcut {
         sequence: "Z"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && backend.duration > 0 && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && backend.duration > 0 && !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: {
             trimBar.toggleZoom();
             backend.requestThumbs(trimBar.windowStart, trimBar.windowEnd);
@@ -268,7 +278,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+S"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && backend.duration > 0 && !backend.busy && !win.savePromptVisible && !win.staleWarnVisible
+        enabled: win.hasVideo && backend.duration > 0 && !backend.busy && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible
         onActivated: {
             win.quitConfirmVisible = false;
             exportVideo();
@@ -278,7 +288,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+O"
         context: Qt.ApplicationShortcut
-        enabled: !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !backend.busy
+        enabled: !win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible && !backend.busy
         onActivated: openVideo()
     }
 
@@ -286,7 +296,7 @@ ApplicationWindow {
         sequence: "Q"
         context: Qt.ApplicationShortcut
         onActivated: {
-            if (!win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible)
+            if (!win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible)
                 requestQuit();
         }
     }
@@ -295,7 +305,7 @@ ApplicationWindow {
         sequence: "?"
         context: Qt.ApplicationShortcut
         onActivated: {
-            if (!win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible)
+            if (!win.quitConfirmVisible && !win.savePromptVisible && !win.staleWarnVisible && !win.dropWarnVisible)
                 win.helpVisible = !win.helpVisible;
         }
     }
@@ -308,6 +318,8 @@ ApplicationWindow {
         onActivated: {
             if (win.staleWarnVisible)
                 win.staleWarnVisible = false;
+            else if (win.dropWarnVisible)
+                win.dropWarnVisible = false;
             else if (win.savePromptVisible)
                 win.savePromptVisible = false;
             else if (win.quitConfirmVisible)
@@ -964,6 +976,88 @@ ApplicationWindow {
                         KeyNavigation.backtab: staleCancelButton
                         onClicked: {
                             win.staleWarnVisible = false;
+                            warnDropsOrOverwrite();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- stream drop warning ---
+    Rectangle {
+        visible: win.dropWarnVisible
+        anchors.fill: parent
+        color: "#000000cc"
+        onVisibleChanged: {
+            if (visible) {
+                // Invokable calls can't be binding-tracked — refresh the drop
+                // list every time the warning opens.
+                dropBodyLabel.text = "The following will be lost when overwriting \""
+                    + backend.overwriteTargetName() + "\":\n"
+                    + backend.overwriteDrops().join("\n");
+                dropCancelButton.forceActiveFocus();
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: win.dropWarnVisible = false
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: dropColumn.width + 64
+            height: dropColumn.height + 48
+            radius: 12
+            color: "#1c1c1e"
+
+            MouseArea {
+                anchors.fill: parent
+            }
+
+            Column {
+                id: dropColumn
+                anchors.centerIn: parent
+                spacing: 8
+
+                Label {
+                    text: "Some content can't be saved"
+                    color: "white"
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                }
+
+                Label {
+                    id: dropBodyLabel
+                    color: "#d6d6da"
+                    font.pixelSize: 13
+                    bottomPadding: 12
+                }
+
+                Row {
+                    anchors.right: parent.right
+                    spacing: 10
+
+                    DialogButton {
+                        id: dropCancelButton
+                        text: "Cancel"
+                        KeyNavigation.left: dropAnywayButton
+                        KeyNavigation.right: dropAnywayButton
+                        KeyNavigation.tab: dropAnywayButton
+                        KeyNavigation.backtab: dropAnywayButton
+                        // Back to the save prompt underneath — nothing written.
+                        onClicked: win.dropWarnVisible = false
+                    }
+                    DialogButton {
+                        id: dropAnywayButton
+                        text: "Overwrite anyway"
+                        KeyNavigation.left: dropCancelButton
+                        KeyNavigation.right: dropCancelButton
+                        KeyNavigation.tab: dropCancelButton
+                        KeyNavigation.backtab: dropCancelButton
+                        onClicked: {
+                            win.dropWarnVisible = false;
                             overwriteNow();
                         }
                     }
