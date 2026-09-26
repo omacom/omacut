@@ -18,4 +18,4 @@ cd "$BUILD_DIR"
 
 "$QMAKE" "$ROOT/tests/backend_tests.pro"
 make
-./backend_tests
+./backend_tests "$@"
