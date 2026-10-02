@@ -23,14 +23,25 @@ class FakeFilePicker : public FilePicker {
     Q_OBJECT
 
 public:
+    FakeFilePicker() {
+        connect(this, &FilePicker::openSelected, this, [this] { pending = false; });
+        connect(this, &FilePicker::exportSelected, this, [this] { pending = false; });
+        connect(this, &FilePicker::failed, this, [this] { pending = false; });
+    }
+
+    bool pending = false;
     int openCount = 0;
     int exportCount = 0;
     QUrl lastSuggestedUrl;
     QList<int> lastScaleHeights;
 
+    bool isPending() const override { return pending; }
     void openVideo() override { ++openCount; }
 
     void exportVideo(const QUrl &suggestedUrl, const QList<int> &scaleHeights) override {
+        if (pending)
+            return;
+        pending = true;
         ++exportCount;
         lastSuggestedUrl = suggestedUrl;
         lastScaleHeights = scaleHeights;
@@ -64,6 +75,8 @@ class ShortcutBackend : public QObject {
     Q_PROPERTY(int thumbRevision READ thumbRevision NOTIFY thumbsChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
+    Q_PROPERTY(int exportProgress READ exportProgress NOTIFY exportProgressChanged)
+    Q_PROPERTY(QVariantList exportJobs READ exportJobs NOTIFY exportJobsChanged)
     Q_PROPERTY(QString themeAccent READ themeAccent NOTIFY themeAccentChanged)
     Q_PROPERTY(QString themeAccentForeground READ themeAccentForeground NOTIFY themeAccentChanged)
     Q_PROPERTY(QObject *timeline READ timelineObject CONSTANT)
@@ -79,8 +92,12 @@ public:
     int thumbCount() const { return 0; }
     int thumbReadyCount() const { return 0; }
     int thumbRevision() const { return 0; }
-    bool busy() const { return false; }
-    QString status() const { return {}; }
+    bool busy() const { return exporting; }
+    QString status() const { return exporting ? QStringLiteral("Exporting 25%") : QString(); }
+    int exportProgress() const { return exporting ? 25 : -1; }
+    QVariantList exportJobs() const { return jobEntries; }
+    Q_INVOKABLE void clearFinishedExports() {}
+    Q_INVOKABLE void cancelExport(int) {}
     QString themeAccent() const { return QStringLiteral("#FFD60A"); }
     QString themeAccentForeground() const { return QStringLiteral("black"); }
     QObject *timelineObject() { return &timeline; }
@@ -107,6 +124,8 @@ public:
         emit exportDone(QStringLiteral("/tmp/exported.mp4"));
     }
 
+    bool exporting = false;
+    QVariantList jobEntries;
     Timeline timeline;
     edit::Clips exportedClips;
     int openCount = 0;
@@ -120,6 +139,8 @@ signals:
     void thumbsChanged();
     void busyChanged();
     void statusChanged();
+    void exportProgressChanged();
+    void exportJobsChanged();
     void themeAccentChanged();
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
@@ -186,6 +207,18 @@ private slots:
     void exportDialogDelegatesSuggestedUrl();
     void suggestedExportUrlAlwaysUsesMp4();
     void exportClipWritesMp4();
+    void exportQueueKeepsSourceAndEditSnapshots();
+    void repeatedExportDialogKeepsOriginalSnapshot();
+    void exportRejectsAliasedPendingDestinations();
+    void exportPreservesDestinationCreatedWhileQueued_data();
+    void exportPreservesDestinationCreatedWhileQueued();
+    void qmlExportFilenamesPreserveLiteralPercentSigns();
+    void exportCompletionDoesNotMarkReloadedSource();
+    void exportRejectsConflictingPendingFiles();
+    void exportCancellationPreservesDestinationAndContinuesQueue();
+    void exportFailureContinuesQueue();
+    void exportShutdownRemovesPartialFiles();
+    void qmlAllowsEditingAndExportingWhileBusy();
     void exportKeepsOnlyTheClipsFromTheDialog();
     void exportClipCanReplaceSourceFile();
     void exportZeroLengthClipFails();
@@ -216,7 +249,7 @@ private:
     QUrl videoUrl() const { return QUrl::fromLocalFile(m_videoPath); }
     QString formatName(const QString &path) const;
     // A test pattern, with a tone when audio is set, written into m_dir.
-    QString makeVideo(const QString &name, double duration, bool audio);
+    QString makeVideo(const QString &name, double duration, bool audio, int rate = 1);
     void waitForBackgroundWork(Backend &backend);
     bool installBrokenFfmpeg(const QString &dirPath);
 
@@ -427,6 +460,7 @@ void BackendTests::exportClipWritesMp4() {
     backend.exportClips(QUrl::fromLocalFile(selectedPath), edit::whole(1.0));
 
     QVERIFY(backend.busy());
+    QCOMPARE(backend.exportProgress(), 0);
     QCOMPARE(backend.status(), QStringLiteral("Exporting 0%"));
     QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 20000);
 
@@ -435,6 +469,7 @@ void BackendTests::exportClipWritesMp4() {
     // ffmpeg's -progress stream drove the status to a completed percentage.
     QVERIFY2(statuses.contains(QStringLiteral("Exporting 100%")),
              qPrintable(statuses.join(QStringLiteral(" | "))));
+    QCOMPARE(backend.exportProgress(), -1);
     QCOMPARE(doneSpy.count(), 1);
     QCOMPARE(doneSpy.first().at(0).toString(), mp4Path);
     QVERIFY(!backend.busy());
@@ -445,12 +480,270 @@ void BackendTests::exportClipWritesMp4() {
              qPrintable(formatName(mp4Path)));
 }
 
-QString BackendTests::makeVideo(const QString &name, double duration, bool audio) {
+void BackendTests::exportQueueKeepsSourceAndEditSnapshots() {
+    const QString sourceA = makeVideo(QStringLiteral("queue-a.mp4"), 3.0, true);
+    QVERIFY(!sourceA.isEmpty());
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy done(&backend, &Backend::exportDone);
+    QSignalSpy failed(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourceA)));
+    backend.timeline()->trimTo(2.0, false);
+    backend.exportDialog();
+
+    // The save dialog must retain the source too, not only its cut ranges.
+    const QString sourceB = makeVideo(QStringLiteral("queue-b.mp4"), 1.0, false, 30);
+    QVERIFY(!sourceB.isEmpty());
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourceB)));
+    const QString outA = m_dir.filePath(QStringLiteral("queued-a.mp4"));
+    emit picker->exportSelected(QUrl::fromLocalFile(outA), 0);
+    backend.timeline()->trimTo(0.5, true);
+    const QString outB = m_dir.filePath(QStringLiteral("queued-b.mp4"));
+    backend.exportClips(QUrl::fromLocalFile(outB), backend.timeline()->clips());
+    QCOMPARE(backend.exportJobs().size(), 2);
+    QCOMPARE(backend.exportJobs()[0].toMap()["state"].toString(), QStringLiteral("running"));
+    QCOMPARE(backend.exportJobs()[1].toMap()["state"].toString(), QStringLiteral("queued"));
+    // Editing the next clip while both exports are pending leaves it dirty.
+    backend.timeline()->trimTo(0.75, true);
+    QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 20000);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(done.count(), 2);
+    QCOMPARE(done[0][0].toString(), outA);
+    QCOMPARE(done[1][0].toString(), outB);
+    const auto a = ffmpeg::probe(outA), b = ffmpeg::probe(outB);
+    QVERIFY(a.ok && b.ok);
+    QVERIFY(a.audio);
+    QVERIFY(!b.audio);
+    QVERIFY(qAbs(a.duration - 2.0) < 0.15);
+    QVERIFY(qAbs(b.duration - 0.5) < 0.1);
+    QVERIFY(backend.timeline()->unexported());
+    backend.timeline()->undo();
+    QVERIFY(!backend.timeline()->unexported());
+    backend.clearFinishedExports();
+    QVERIFY(backend.exportJobs().isEmpty());
+}
+
+void BackendTests::repeatedExportDialogKeepsOriginalSnapshot() {
+    const QString source = makeVideo(QStringLiteral("dialog-snapshot.mp4"), 3.0, false);
+    QVERIFY(!source.isEmpty());
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy done(&backend, &Backend::exportDone);
+    QSignalSpy failed(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(QUrl::fromLocalFile(source)));
+    backend.timeline()->trimTo(2.0, false);
+    backend.exportDialog();
+    backend.timeline()->trimTo(1.0, false);
+    backend.exportDialog();
+    QCOMPARE(picker->exportCount, 1);
+    const QString out = m_dir.filePath(QStringLiteral("dialog-snapshot-export.mp4"));
+    emit picker->exportSelected(QUrl::fromLocalFile(out), 0);
+    QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 20000);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(done.count(), 1);
+    const auto info = ffmpeg::probe(out);
+    QVERIFY(info.ok);
+    QVERIFY2(qAbs(info.duration - 2.0) < 0.15, qPrintable(QString::number(info.duration)));
+    QVERIFY(backend.timeline()->unexported());
+    backend.exportDialog();
+    QCOMPARE(picker->exportCount, 2);
+}
+
+void BackendTests::exportRejectsAliasedPendingDestinations() {
+    QTemporaryDir outputs;
+    QVERIFY(outputs.isValid());
+    QVERIFY(QDir(outputs.path()).mkdir(QStringLiteral("real")));
+    QVERIFY(QFile::link(outputs.filePath(QStringLiteral("real")),
+                        outputs.filePath(QStringLiteral("alias"))));
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QSignalSpy failed(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(videoUrl()));
+    backend.exportClips(QUrl::fromLocalFile(outputs.filePath(QStringLiteral("real/out.mp4"))), edit::whole(1.0));
+    backend.exportClips(QUrl::fromLocalFile(outputs.filePath(QStringLiteral("alias/out.mp4"))), edit::whole(1.0));
+    QCOMPARE(failed.count(), 1);
+    QCOMPARE(backend.exportJobs().size(), 1);
+    QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 20000);
+}
+
+void BackendTests::exportPreservesDestinationCreatedWhileQueued_data() {
+    QTest::addColumn<QString>("suffix");
+    QTest::newRow("selected-mp4") << QStringLiteral(".mp4");
+    QTest::newRow("forced-mp4") << QStringLiteral(".webm");
+}
+
+void BackendTests::exportPreservesDestinationCreatedWhileQueued() {
+    QFETCH(QString, suffix);
+    QTemporaryDir outputs;
+    QVERIFY(outputs.isValid());
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QSignalSpy done(&backend, &Backend::exportDone);
+    QSignalSpy failed(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(videoUrl()));
+    backend.exportClips(QUrl::fromLocalFile(outputs.filePath(QStringLiteral("first.mp4"))), edit::whole(1.0));
+    backend.exportClips(QUrl::fromLocalFile(outputs.filePath(QStringLiteral("later") + suffix)), edit::whole(1.0));
+    QCOMPARE(backend.exportJobs()[1].toMap()["state"].toString(), QStringLiteral("queued"));
+    QFile destination(outputs.filePath(QStringLiteral("later.mp4")));
+    const QByteArray original("created after the save dialog closed");
+    QVERIFY(destination.open(QIODevice::WriteOnly));
+    QCOMPARE(destination.write(original), original.size());
+    destination.close();
+    QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 20000);
+    QCOMPARE(done.count(), 1);
+    QCOMPARE(failed.count(), 1);
+    QVERIFY(destination.open(QIODevice::ReadOnly));
+    QCOMPARE(destination.readAll(), original);
+    QVERIFY(QDir(outputs.path()).entryList({QStringLiteral("*.omacut-*.mp4")}).isEmpty());
+}
+
+void BackendTests::qmlExportFilenamesPreserveLiteralPercentSigns() {
+    ShortcutBackend backend({}, 0);
+    backend.jobEntries = {QVariantMap{{"id", 1}, {"path", "/tmp/100% %25.mp4"},
+                                    {"state", "done"}, {"progress", 100}, {"error", ""}}};
+    QmlHarness harness(backend);
+    auto *window = harness.window();
+    QVERIFY(window);
+    // ListView delegates belong to its visual tree, not the window's QObject tree.
+    auto hasFilename = [](auto &&self, QQuickItem *item) -> bool {
+        if (item->property("text").toString() == QStringLiteral("100% %25.mp4 · Saved"))
+            return true;
+        for (auto *child : item->childItems()) {
+            if (self(self, child))
+                return true;
+        }
+        return false;
+    };
+    QTRY_VERIFY(hasFilename(hasFilename, window->contentItem()));
+}
+
+void BackendTests::exportCompletionDoesNotMarkReloadedSource() {
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QSignalSpy done(&backend, &Backend::exportDone);
+    QVERIFY(backend.load(videoUrl()));
+    backend.timeline()->trimTo(0.25, true);
+    backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("old-session.mp4"))),
+                        backend.timeline()->clips());
+    QVERIFY(backend.load(videoUrl()));
+    backend.timeline()->trimTo(0.25, true);
+    QTRY_COMPARE_WITH_TIMEOUT(done.count(), 1, 20000);
+    QVERIFY(backend.timeline()->unexported());
+}
+
+void BackendTests::exportRejectsConflictingPendingFiles() {
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QSignalSpy failed(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(videoUrl()));
+    const QUrl out = QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("reserved.mp4")));
+    backend.exportClips(out, edit::whole(1.0));
+    backend.exportClips(out, edit::whole(1.0));
+    backend.exportClips(videoUrl(), edit::whole(1.0));
+    QCOMPARE(failed.count(), 2);
+    QCOMPARE(backend.exportJobs().size(), 1);
+    QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 20000);
+}
+
+void BackendTests::exportCancellationPreservesDestinationAndContinuesQueue() {
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QSignalSpy done(&backend, &Backend::exportDone);
+    QSignalSpy failed(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(videoUrl()));
+    const QString out = m_dir.filePath(QStringLiteral("cancel-existing.mp4"));
+    const QByteArray original("preserve this destination");
+    QFile existing(out);
+    QVERIFY(existing.open(QIODevice::WriteOnly));
+    existing.write(original);
+    existing.close();
+    backend.exportClips(QUrl::fromLocalFile(out), edit::whole(1.0));
+    backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("after-cancel.mp4"))), edit::whole(1.0));
+    backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("cancel-queued.mp4"))), edit::whole(1.0));
+    const QVariantList jobs = backend.exportJobs();
+    backend.cancelExport(jobs[2].toMap()["id"].toInt());
+    backend.cancelExport(jobs[0].toMap()["id"].toInt());
+    QVERIFY(backend.busy());
+    QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 20000);
+    QCOMPARE(done.count(), 1);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(backend.exportJobs()[0].toMap()["state"].toString(), QStringLiteral("cancelled"));
+    QCOMPARE(backend.exportJobs()[2].toMap()["state"].toString(), QStringLiteral("cancelled"));
+    QVERIFY(existing.open(QIODevice::ReadOnly));
+    QCOMPARE(existing.readAll(), original);
+    QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral("cancel-queued.mp4"))));
+    QVERIFY(QDir(m_dir.path()).entryList({QStringLiteral("*.omacut-*.mp4")}).isEmpty());
+}
+
+void BackendTests::exportFailureContinuesQueue() {
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QSignalSpy done(&backend, &Backend::exportDone);
+    QSignalSpy failed(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(videoUrl()));
+    waitForBackgroundWork(backend);
+    QTemporaryDir pathDir;
+    QVERIFY(installBrokenFfmpeg(pathDir.path()));
+    const QByteArray oldPath = qgetenv("PATH");
+    {
+        EnvVarGuard guard("PATH");
+        qputenv("PATH", QFile::encodeName(pathDir.path()) + ':' + oldPath);
+        backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("queue-failure.mp4"))), edit::whole(1.0));
+        backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("after-failure.mp4"))), edit::whole(1.0));
+    }
+    QTRY_VERIFY_WITH_TIMEOUT(!backend.busy(), 20000);
+    QCOMPARE(failed.count(), 1);
+    QCOMPARE(done.count(), 1);
+    QVERIFY(ffmpeg::probe(done[0][0].toString()).ok);
+    QVERIFY(!backend.exportJobs()[0].toMap()["error"].toString().isEmpty());
+}
+
+void BackendTests::exportShutdownRemovesPartialFiles() {
+    QTemporaryDir outputs;
+    QVERIFY(outputs.isValid());
+    ThumbProvider provider;
+    {
+        Backend backend(&provider, new FakeFilePicker);
+        QVERIFY(backend.load(videoUrl()));
+        backend.exportClips(QUrl::fromLocalFile(outputs.filePath(QStringLiteral("running.mp4"))), edit::whole(1.0));
+        backend.exportClips(QUrl::fromLocalFile(outputs.filePath(QStringLiteral("queued.mp4"))), edit::whole(1.0));
+        QVERIFY(backend.busy());
+    }
+    QVERIFY(QDir(outputs.path()).entryList(QDir::Files).isEmpty());
+}
+
+void BackendTests::qmlAllowsEditingAndExportingWhileBusy() {
+    ShortcutBackend backend(videoUrl(), 10.0);
+    backend.exporting = true;
+    QmlHarness harness(backend);
+    auto *window = harness.window();
+    QVERIFY(window);
+    window->requestActivate();
+    QTest::qWait(100);
+    QTest::keyClick(window, Qt::Key_Right);
+    QTest::keyClick(window, Qt::Key_S);
+    QCOMPARE(backend.timeline.clips().size(), 2);
+    QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+    QCOMPARE(backend.exportCount, 1);
+    emit backend.loadError(QStringLiteral("Missing file"));
+    QCOMPARE(window->property("statusText").toString(),
+             QStringLiteral("Cannot open video: Missing file"));
+    QTest::keyClick(window, Qt::Key_Q);
+    QVERIFY(window->property("quitConfirmVisible").toBool());
+    auto *keepEditing = dialogButton(window, QStringLiteral("Keep editing"));
+    QVERIFY(keepEditing);
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, itemCenter(keepEditing));
+    QVERIFY(!window->property("quitConfirmVisible").toBool());
+}
+
+QString BackendTests::makeVideo(const QString &name, double duration, bool audio, int rate) {
     const QString path = m_dir.filePath(name);
     QStringList args = {
         QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"), QStringLiteral("error"),
         QStringLiteral("-f"), QStringLiteral("lavfi"),
-        QStringLiteral("-i"), QStringLiteral("testsrc=size=32x32:rate=1:duration=%1").arg(duration),
+        QStringLiteral("-i"), QStringLiteral("testsrc=size=32x32:rate=%1:duration=%2").arg(rate).arg(duration),
     };
     if (audio)
         args << QStringLiteral("-f") << QStringLiteral("lavfi")

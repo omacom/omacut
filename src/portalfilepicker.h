@@ -10,6 +10,7 @@ class PortalFilePicker : public FilePicker {
 public:
     explicit PortalFilePicker(QObject *parent = nullptr);
 
+    bool isPending() const override { return m_pendingAction != Action::None; }
     void openVideo() override;
     void exportVideo(const QUrl &suggestedUrl, const QList<int> &scaleHeights) override;
 

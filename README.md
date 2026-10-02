@@ -44,6 +44,8 @@ Install via the Omarchy Package Repository via the `omacut` package. It's instal
 - `xdg-desktop-portal` and a portal backend for the file picker
 - `ffmpeg` and `ffprobe` on your PATH (used at runtime)
 
+Exports run in the background: keep editing, previewing, or opening another recording while they encode. Each export keeps the source and clips selected when its save dialog opened. Further exports queue and run one at a time; the export panel shows progress, saved files, errors, and cancellation. Keep Omacut open until the queue finishes. Closing with exports pending asks before cancelling them.
+
 Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio.
 
 ## Build

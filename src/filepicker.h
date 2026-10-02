@@ -11,6 +11,8 @@ public:
     explicit FilePicker(QObject *parent = nullptr) : QObject(parent) {}
     virtual ~FilePicker() = default;
 
+    // A pending chooser ignores new requests; callers must retain its snapshot.
+    virtual bool isPending() const = 0;
     virtual void openVideo() = 0;
     // scaleHeights are the downscale choices to offer besides "Original"
     // (e.g. {1080, 720}), matched by min(width, height) of the source.

@@ -6,7 +6,9 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QTextStream>
+#include <QTemporaryFile>
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 
@@ -39,7 +41,23 @@ QString mp4PathFor(const QString &path) {
     return file.dir().filePath(baseName + QStringLiteral(".mp4"));
 }
 
-bool replaceWithTemp(const QString &tmpPath, const QString &outPath) {
+QString fileIdentity(const QString &path) {
+    const QFileInfo file(path);
+    const QString canonical = file.canonicalFilePath();
+    if (!canonical.isEmpty())
+        return canonical;
+    // A new destination has no canonical file path yet, but its parent can
+    // resolve symlinks so aliases still reserve the same pending output.
+    const QString directory = file.dir().canonicalPath();
+    return directory.isEmpty() ? QDir::cleanPath(file.absoluteFilePath())
+                               : QDir(directory).filePath(file.fileName());
+}
+
+bool replaceWithTemp(const QString &tmpPath, const QString &outPath, bool overwriteAllowed) {
+    // QFile::rename refuses an existing destination. Only replace a file that
+    // was already present at the exact path selected in the save dialog.
+    if (!overwriteAllowed)
+        return QFile::rename(tmpPath, outPath);
     const QByteArray tmpName = QFile::encodeName(tmpPath);
     const QByteArray outName = QFile::encodeName(outPath);
     return std::rename(tmpName.constData(), outName.constData()) == 0;
@@ -71,13 +89,25 @@ Backend::Backend(ThumbProvider *provider, FilePicker *filePicker, QObject *paren
 }
 
 Backend::~Backend() {
+    m_shuttingDown = true;
+    if (m_exportProcess) {
+        m_exportProcess->disconnect(this);
+        if (m_exportProcess->state() == QProcess::Starting)
+            m_exportProcess->waitForStarted(3000);
+        m_exportProcess->kill();
+        m_exportProcess->waitForFinished(5000);
+    }
+    for (const Job &job : m_exportJobs) {
+        if (!job->tmpPath.isEmpty())
+            QFile::remove(job->tmpPath);
+    }
     stopThumbs();
 }
 
 void Backend::wireFilePicker() {
     connect(m_filePicker, &FilePicker::openSelected, this, &Backend::load);
     connect(m_filePicker, &FilePicker::exportSelected, this, [this](const QUrl &url, int scaleHeight) {
-        exportClips(url, m_exportDialogClips, scaleHeight);
+        enqueueExport(url, m_exportDialogRequest, scaleHeight);
     });
     connect(m_filePicker, &FilePicker::failed, this, &Backend::loadError);
 }
@@ -87,6 +117,7 @@ void Backend::setBusy(bool busy) {
         return;
     m_busy = busy;
     emit busyChanged();
+    emit statusChanged();
 }
 
 void Backend::setStatus(const QString &status) {
@@ -94,6 +125,18 @@ void Backend::setStatus(const QString &status) {
         return;
     m_status = status;
     emit statusChanged();
+}
+
+void Backend::setExportProgress(int percent) {
+    if (m_exportProgress == percent)
+        return;
+    m_exportProgress = percent;
+    emit exportProgressChanged();
+    emit statusChanged();
+}
+
+QString Backend::status() const {
+    return m_busy ? QStringLiteral("Exporting %1%").arg(qMax(0, m_exportProgress)) : m_status;
 }
 
 QString Backend::accentFromColorsFile(const QString &path, const QString &fallback) {
@@ -169,6 +212,7 @@ bool Backend::load(const QUrl &url) {
     m_info = info;
     m_path = path;
     m_source = url;
+    ++m_sourceRevision;
     m_timeline.reset(m_info.duration);
 
     // New video: drop the old filmstrip and bump the revision so QML reloads.
@@ -197,10 +241,10 @@ void Backend::openVideoDialog() {
 }
 
 void Backend::exportDialog() {
-    if (m_path.isEmpty() || !m_info.ok)
+    if (m_path.isEmpty() || !m_info.ok || m_filePicker->isPending())
         return;
 
-    m_exportDialogClips = m_timeline.clips();
+    m_exportDialogRequest = currentExportRequest(m_timeline.clips());
     m_filePicker->exportVideo(suggestedExportUrl(), exportHeights(m_info.width, m_info.height));
 }
 
@@ -317,102 +361,213 @@ QUrl Backend::suggestedExportUrl() const {
     return QUrl::fromLocalFile(target);
 }
 
-void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight) {
-    if (m_path.isEmpty() || !m_info.ok || m_busy)
-        return;
-
-    const QList<edit::Range> ranges = edit::kept(clips);
-    const double clipLen = edit::keptDuration(clips);
-    if (clipLen <= 0.0) {
-        emit exportFailed("The selected clip has no length.");
-        return;
-    }
-
-    // Forcing the .mp4 suffix can redirect the write to a file the save
-    // dialog never asked the user about overwriting — refuse rather than
-    // silently replace it.
-    const QString selectedPath = dst.toLocalFile();
-    const QString outPath = mp4PathFor(selectedPath);
-    if (outPath != selectedPath && QFileInfo::exists(outPath)) {
-        emit exportFailed(QStringLiteral("%1 already exists.")
-                              .arg(QFileInfo(outPath).fileName()));
-        return;
-    }
-
-    const QString ffmpegBin = ffmpeg::toolPath("ffmpeg");
-    if (ffmpegBin.isEmpty()) {
-        emit exportFailed("`ffmpeg` was not found on your PATH.");
-        return;
-    }
-
-    setBusy(true);
-    setStatus(QStringLiteral("Exporting 0%"));
-
-    // Encode to a sibling temp file and atomically replace the target only after
-    // success, so failed/cancelled exports preserve any existing file.
-    const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
-    QFile::remove(tmpPath);
-    const QStringList args = ffmpeg::trimArgs(m_path, tmpPath, ranges, m_info.audio, scaleHeight);
-
-    auto *proc = new QProcess(this);
-    auto completed = std::make_shared<bool>(false);
-
-    // ffmpeg -progress writes key=value blocks to stdout as it encodes;
-    // out_time_us against the kept length gives the percentage.
-    auto progressBuf = std::make_shared<QByteArray>();
-    connect(proc, &QProcess::readyReadStandardOutput, this,
-            [this, proc, progressBuf, clipLen, completed] {
-                progressBuf->append(proc->readAllStandardOutput());
-                int newline;
-                while ((newline = progressBuf->indexOf('\n')) >= 0) {
-                    const QByteArray line = progressBuf->left(newline).trimmed();
-                    progressBuf->remove(0, newline + 1);
-                    if (*completed || !line.startsWith("out_time_us="))
-                        continue;
-                    bool ok = false;
-                    const double outSecs = line.mid(line.indexOf('=') + 1).toLongLong(&ok) / 1e6;
-                    if (!ok)
-                        continue;
-                    const int percent = qBound(0, qRound(outSecs / clipLen * 100.0), 100);
-                    setStatus(QStringLiteral("Exporting %1%").arg(percent));
-                }
-            });
-
-    connect(proc, &QProcess::finished, this,
-            [this, proc, outPath, tmpPath, completed, clips](int code, QProcess::ExitStatus exitStatus) {
-                if (*completed)
-                    return;
-                *completed = true;
-                const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
-                proc->deleteLater();
-                if (exitStatus != QProcess::NormalExit || code != 0) {
-                    failExport(tmpPath, err.isEmpty() ? QStringLiteral("ffmpeg trim failed.") : err);
-                    return;
-                }
-                if (!replaceWithTemp(tmpPath, outPath)) {
-                    failExport(tmpPath, QStringLiteral("Could not write the exported file."));
-                    return;
-                }
-                setBusy(false);
-                setStatus(QString());
-                m_timeline.markExported(clips);
-                emit exportDone(outPath);
-            });
-    connect(proc, &QProcess::errorOccurred, this,
-            [this, proc, tmpPath, completed](QProcess::ProcessError error) {
-                if (error != QProcess::FailedToStart || *completed)
-                    return;
-                *completed = true;
-                const QString err = proc->errorString();
-                proc->deleteLater();
-                failExport(tmpPath, err.isEmpty() ? QStringLiteral("Could not start ffmpeg.") : err);
-            });
-    proc->start(ffmpegBin, args);
+Backend::ExportRequest Backend::currentExportRequest(const edit::Clips &clips) const {
+    return {m_path, m_info, clips, m_sourceRevision};
 }
 
-void Backend::failExport(const QString &tmpPath, const QString &message) {
-    setBusy(false);
-    setStatus(QString());
-    QFile::remove(tmpPath);
-    emit exportFailed(message);
+QVariantList Backend::exportJobs() const {
+    QVariantList result;
+    for (const Job &job : m_exportJobs) {
+        result.append(QVariantMap{{"id", job->id}, {"path", job->outPath},
+                                 {"state", job->state}, {"progress", job->progress},
+                                 {"error", job->error}});
+    }
+    return result;
+}
+
+void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight) {
+    enqueueExport(dst, currentExportRequest(clips), scaleHeight);
+}
+
+void Backend::enqueueExport(const QUrl &dst, const ExportRequest &request, int scaleHeight) {
+    if (m_shuttingDown || request.sourcePath.isEmpty() || !request.info.ok)
+        return;
+    if (edit::keptDuration(request.clips) <= 0.0) {
+        emit exportFailed(QStringLiteral("The selected clip has no length."));
+        return;
+    }
+    if (!dst.isLocalFile() || dst.toLocalFile().isEmpty()) {
+        emit exportFailed(QStringLiteral("Choose a local export destination."));
+        return;
+    }
+
+    // Do not silently overwrite a different path after forcing the MP4 suffix.
+    const QString selectedPath = QFileInfo(dst.toLocalFile()).absoluteFilePath();
+    const QString outPath = mp4PathFor(selectedPath);
+    if (outPath != selectedPath && QFileInfo::exists(outPath)) {
+        emit exportFailed(QStringLiteral("%1 already exists.").arg(QFileInfo(outPath).fileName()));
+        return;
+    }
+    const auto sameFile = [](const QString &a, const QString &b) {
+        return fileIdentity(a) == fileIdentity(b);
+    };
+    for (const Job &job : m_exportJobs) {
+        if (job->state != "queued" && job->state != "running" && job->state != "cancelling")
+            continue;
+        // A job must not overwrite a file another pending job is reading.
+        if (sameFile(outPath, job->outPath)
+                || sameFile(outPath, job->request.sourcePath)
+                || sameFile(request.sourcePath, job->outPath)) {
+            emit exportFailed(QStringLiteral("This file is already used by a pending export. Choose another destination or wait for it to finish."));
+            return;
+        }
+    }
+    if (ffmpeg::toolPath("ffmpeg").isEmpty()) {
+        emit exportFailed(QStringLiteral("`ffmpeg` was not found on your PATH."));
+        return;
+    }
+
+    auto job = std::make_shared<ExportJob>();
+    job->id = m_nextExportId++;
+    job->request = request;
+    job->outPath = outPath;
+    job->overwriteAllowed = outPath == selectedPath && QFileInfo::exists(outPath);
+    job->scaleHeight = scaleHeight;
+    m_exportJobs.append(job);
+    refreshExportState();
+    startNextExport();
+}
+
+void Backend::refreshExportState() {
+    bool pending = false;
+    for (const Job &job : m_exportJobs)
+        pending |= job->state == "queued" || job->state == "running" || job->state == "cancelling";
+    setExportProgress(m_activeExport ? m_activeExport->progress : -1);
+    setBusy(pending);
+    emit exportJobsChanged();
+}
+
+void Backend::startNextExport() {
+    if (m_shuttingDown || m_activeExport)
+        return;
+    Job job;
+    for (const Job &candidate : m_exportJobs) {
+        if (candidate->state == "queued") {
+            job = candidate;
+            break;
+        }
+    }
+    if (!job) {
+        refreshExportState();
+        return;
+    }
+    m_activeExport = job;
+    job->state = QStringLiteral("running");
+    refreshExportState();
+
+    // Unique sibling temp files allow separate Omacut windows to export safely.
+    QTemporaryFile temp(job->outPath + QStringLiteral(".omacut-XXXXXX.mp4"));
+    if (!temp.open()) {
+        finishExport(job, QStringLiteral("failed"), QStringLiteral("Could not create the export file: ") + temp.errorString());
+        return;
+    }
+    temp.setAutoRemove(false);
+    job->tmpPath = temp.fileName();
+    temp.close();
+
+    auto *proc = new QProcess(this);
+    m_exportProcess = proc;
+    connect(proc, &QProcess::readyReadStandardError, this, [proc, job] {
+        job->errorBuffer.append(proc->readAllStandardError());
+        // Keep useful diagnostics without buffering an unbounded ffmpeg log.
+        job->errorBuffer = job->errorBuffer.right(16384);
+    });
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc, job] {
+        job->progressBuffer.append(proc->readAllStandardOutput());
+        int newline;
+        while ((newline = job->progressBuffer.indexOf('\n')) >= 0) {
+            const QByteArray line = job->progressBuffer.left(newline).trimmed();
+            job->progressBuffer.remove(0, newline + 1);
+            if (job != m_activeExport || job->state != "running" || !line.startsWith("out_time_us="))
+                continue;
+            bool ok = false;
+            const double seconds = line.mid(12).toLongLong(&ok) / 1e6;
+            if (!ok)
+                continue;
+            job->progress = qMax(job->progress, qBound(0, qRound(seconds / edit::keptDuration(job->request.clips) * 100.0), 100));
+            refreshExportState();
+        }
+    });
+    connect(proc, &QProcess::finished, this, [this, proc, job](int code, QProcess::ExitStatus exitStatus) {
+        if (job != m_activeExport)
+            return;
+        job->errorBuffer.append(proc->readAllStandardError());
+        if (job->state == "cancelling") {
+            finishExport(job, QStringLiteral("cancelled"));
+        } else if (exitStatus != QProcess::NormalExit || code != 0) {
+            const QString error = QString::fromUtf8(job->errorBuffer).trimmed();
+            finishExport(job, QStringLiteral("failed"), error.isEmpty() ? QStringLiteral("ffmpeg trim failed.") : error);
+        } else if (!replaceWithTemp(job->tmpPath, job->outPath, job->overwriteAllowed)) {
+            finishExport(job, QStringLiteral("failed"),
+                         !job->overwriteAllowed && QFileInfo::exists(job->outPath)
+                         ? QStringLiteral("The destination was created after this export was queued. Choose another destination.")
+                         : QStringLiteral("Could not write the exported file."));
+        } else {
+            finishExport(job, QStringLiteral("done"));
+        }
+    });
+    connect(proc, &QProcess::errorOccurred, this, [this, proc, job](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart && job == m_activeExport)
+            finishExport(job, job->state == "cancelling" ? QStringLiteral("cancelled") : QStringLiteral("failed"), proc->errorString());
+    });
+    connect(proc, &QProcess::started, this, [proc, job] {
+        if (job->state == "cancelling")
+            proc->kill();
+    });
+    proc->start(ffmpeg::toolPath("ffmpeg"), ffmpeg::trimArgs(job->request.sourcePath, job->tmpPath,
+                edit::kept(job->request.clips), job->request.info.audio, job->scaleHeight));
+}
+
+void Backend::finishExport(const Job &job, const QString &state, const QString &error) {
+    if (job != m_activeExport)
+        return;
+    if (m_exportProcess) {
+        m_exportProcess->disconnect(this);
+        m_exportProcess->deleteLater();
+        m_exportProcess = nullptr;
+    }
+    if (!job->tmpPath.isEmpty())
+        QFile::remove(job->tmpPath);
+    job->tmpPath.clear();
+    job->state = state;
+    job->error = error;
+    if (state == "done") {
+        job->progress = 100;
+        setExportProgress(100);
+        // Loading even the same source again creates a different edit session.
+        if (job->request.sourceRevision == m_sourceRevision)
+            m_timeline.markExported(job->request.clips);
+    }
+    m_activeExport.reset();
+    refreshExportState();
+    if (state == "done")
+        emit exportDone(job->outPath);
+    else if (state == "failed")
+        emit exportFailed(QFileInfo(job->outPath).fileName() + QStringLiteral(": ") + error);
+    QTimer::singleShot(0, this, &Backend::startNextExport);
+}
+
+void Backend::cancelExport(int id) {
+    for (const Job &job : m_exportJobs) {
+        if (job->id != id)
+            continue;
+        if (job->state == "queued") {
+            job->state = QStringLiteral("cancelled");
+            refreshExportState();
+        } else if (job == m_activeExport && job->state == "running") {
+            job->state = QStringLiteral("cancelling");
+            // QProcess::kill is asynchronous; keep ownership until it exits.
+            if (m_exportProcess)
+                m_exportProcess->kill();
+            refreshExportState();
+        }
+        return;
+    }
+}
+
+void Backend::clearFinishedExports() {
+    m_exportJobs.erase(std::remove_if(m_exportJobs.begin(), m_exportJobs.end(), [](const Job &job) {
+        return job->state == "done" || job->state == "failed" || job->state == "cancelled";
+    }), m_exportJobs.end());
+    emit exportJobsChanged();
 }
