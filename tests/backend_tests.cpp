@@ -179,6 +179,9 @@ private slots:
     void initTestCase();
     void openDialogDelegatesToFilePicker();
     void pickerSelectionLoadsVideo();
+    void argumentsResolveLocalPathsAndUris();
+    void invalidOpenPreservesCurrentVideo();
+    void qmlLoadErrorStaysVisibleUntilSuccessfulOpen();
     void thumbnailSlotsAreExposedImmediately();
     void thumbProviderUsesRevisionPrefixedIds();
     void thumbProviderScalesHeightOnlyRequests();
@@ -283,6 +286,49 @@ void BackendTests::openDialogDelegatesToFilePicker() {
     backend.openVideoDialog();
 
     QCOMPARE(picker->openCount, 2);
+}
+
+void BackendTests::argumentsResolveLocalPathsAndUris() {
+    const QString path = m_dir.filePath(QStringLiteral("stream #1 with spaces.mp4"));
+    const QUrl url = QUrl::fromLocalFile(path);
+    QCOMPARE(Backend::urlFromArgument(path, m_dir.path()), url);
+    QCOMPARE(Backend::urlFromArgument(QFileInfo(path).fileName(), m_dir.path()), url);
+    QCOMPARE(Backend::urlFromArgument(url.toString(QUrl::FullyEncoded), m_dir.path()), url);
+    // A missing relative file still resolves locally so it produces a load error.
+    QCOMPARE(Backend::urlFromArgument(QStringLiteral("missing.mp4"), m_dir.path()),
+             QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("missing.mp4"))));
+}
+
+void BackendTests::invalidOpenPreservesCurrentVideo() {
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QSignalSpy errors(&backend, &Backend::loadError);
+    QVERIFY(backend.load(videoUrl()));
+    backend.timeline()->trimTo(0.5, true);
+    const auto clips = backend.timeline()->clips();
+    QVERIFY(!backend.load(QUrl(QStringLiteral("https://example.com/clip.mp4"))));
+    QVERIFY(!backend.load(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("missing.mp4")))));
+    QCOMPARE(errors.count(), 2);
+    QCOMPARE(backend.source(), videoUrl());
+    QCOMPARE(backend.timeline()->clips(), clips);
+}
+
+void BackendTests::qmlLoadErrorStaysVisibleUntilSuccessfulOpen() {
+    ShortcutBackend backend({}, 0);
+    QmlHarness harness(backend);
+    auto *window = harness.window();
+    QVERIFY(window);
+    emit backend.loadError(QStringLiteral("Missing video"));
+    QCOMPARE(window->property("noticeText").toString(),
+             QStringLiteral("Cannot open video: Missing video"));
+    emit backend.exportDone(QStringLiteral("/tmp/saved.mp4"));
+    emit backend.exportFailed(QStringLiteral("Another export failed"));
+    QCOMPARE(window->property("noticeText").toString(),
+             QStringLiteral("Cannot open video: Missing video"));
+    QTest::qWait(5500);
+    QVERIFY(!window->property("noticeText").toString().isEmpty());
+    backend.announceInfo();
+    QVERIFY(window->property("noticeText").toString().isEmpty());
 }
 
 void BackendTests::pickerSelectionLoadsVideo() {

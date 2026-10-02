@@ -54,6 +54,8 @@ public:
     // "black" or "white", whichever stays legible on the given color.
     static QString foregroundFor(const QString &color);
 
+    static QUrl urlFromArgument(const QString &argument, const QString &workingDirectory);
+
     // Load a video (probes it, then kicks off thumbnail generation).
     Q_INVOKABLE bool load(const QUrl &url);
 

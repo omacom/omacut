@@ -158,7 +158,15 @@ void Backend::watchTheme() {
         m_themeWatcher.addPath(omarchyColorsPath());
 }
 
+QUrl Backend::urlFromArgument(const QString &argument, const QString &workingDirectory) {
+    return QUrl::fromUserInput(argument, workingDirectory, QUrl::AssumeLocalFile);
+}
+
 bool Backend::load(const QUrl &url) {
+    if (!url.isValid() || !url.isLocalFile() || url.toLocalFile().isEmpty()) {
+        emit loadError(QStringLiteral("Choose a local video file."));
+        return false;
+    }
     const QString path = url.toLocalFile();
     const ffmpeg::VideoInfo info = ffmpeg::probe(path);
     if (!info.ok) {
