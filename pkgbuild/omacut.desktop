@@ -7,6 +7,5 @@ Exec=omacut %f
 Icon=omacut
 Terminal=false
 Categories=AudioVideo;Video;AudioVideoEditing;
-MimeType=video/mp4;video/x-matroska;video/quicktime;video/webm;video/x-msvideo;video/mpeg;
 Keywords=video;trim;cut;clip;ffmpeg;
 StartupWMClass=omacut
