@@ -2,6 +2,8 @@
 
 A dead-simple video trimmer. Open a video, trim either end, split it into clips and cut ranges out of the middle, preview the result, and export. On Omarchy, the interface follows your theme's accent color.
 
+Drop a local video anywhere in an open window to load it. If the current edit has unexported changes, Omacut asks before replacing it. Drop one file at a time; an invalid file leaves the current video and cuts intact.
+
 Built using **Qt Quick (QML)** UI with the Material style — the same Qt stack Quickshell builds on — and **ffmpeg** for the cut. The C++ side compiles to a single executable; the QML is embedded in it via Qt resources.
 
 <img width="3227" height="3227" alt="screenshot-2026-06-23_15-20-40" src="https://github.com/user-attachments/assets/c76047c8-618f-4c1c-91f9-e7024c4f953b" />

@@ -20,6 +20,7 @@ ApplicationWindow {
     property var audioOutput: null
     property string noticeText: ""
     property bool helpVisible: false
+    property url pendingDropUrl: ""
     property bool quitConfirmVisible: false
     readonly property string statusText: noticeText !== "" ? noticeText : backend.status
 
@@ -28,7 +29,7 @@ ApplicationWindow {
     // video are never dirty — that's just the source.
     readonly property bool unexported: hasVideo && timeline.unexported
     // Editing shortcuts go quiet while a dialog is up or a handle is dragged.
-    readonly property bool editing: hasVideo && backend.duration > 0 && !quitConfirmVisible && !editBar.interacting
+    readonly property bool editing: hasVideo && backend.duration > 0 && !quitConfirmVisible && !dropConfirm.visible && !editBar.interacting
 
     Material.theme: Material.Dark
     Material.accent: win.accent
@@ -44,6 +45,14 @@ ApplicationWindow {
     }
     function openVideo() {
         backend.openVideoDialog();
+    }
+    function openDroppedVideo(url) {
+        if (unexported) {
+            pendingDropUrl = url;
+            dropConfirm.open();
+            return true;
+        }
+        return backend.load(url);
     }
     function exportVideo() {
         if (!win.hasVideo || backend.duration <= 0 || backend.busy)
@@ -136,7 +145,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible
+        enabled: win.hasVideo && !win.quitConfirmVisible && !dropConfirm.visible
         onActivated: togglePlay()
     }
 
@@ -261,6 +270,8 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         enabled: win.hasVideo && backend.duration > 0 && !backend.busy
         onActivated: {
+            if (dropConfirm.visible)
+                return;
             win.quitConfirmVisible = false;
             exportVideo();
         }
@@ -269,13 +280,14 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+O"
         context: Qt.ApplicationShortcut
-        enabled: !win.quitConfirmVisible
+        enabled: !win.quitConfirmVisible && !dropConfirm.visible
         onActivated: openVideo()
     }
 
     Shortcut {
         sequence: "Q"
         context: Qt.ApplicationShortcut
+        enabled: !dropConfirm.visible
         onActivated: {
             if (!win.quitConfirmVisible)
                 requestQuit();
@@ -285,6 +297,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "?"
         context: Qt.ApplicationShortcut
+        enabled: !dropConfirm.visible
         onActivated: {
             if (!win.quitConfirmVisible)
                 win.helpVisible = !win.helpVisible;
@@ -294,6 +307,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Escape"
         context: Qt.ApplicationShortcut
+        enabled: !dropConfirm.visible
         onActivated: {
             if (win.quitConfirmVisible)
                 win.quitConfirmVisible = false;
@@ -614,6 +628,60 @@ ApplicationWindow {
                 font.family: "monospace"
             }
         }
+    }
+
+    DropArea {
+        id: videoDropArea
+        objectName: "videoDropArea"
+        anchors.fill: parent
+        z: 5
+        enabled: !win.quitConfirmVisible && !win.helpVisible && !dropConfirm.visible
+        onEntered: (drag) => {
+            drag.accepted = drag.hasUrls && drag.urls.length > 0
+                && drag.urls.every((url) => url.toString().toLowerCase().indexOf("file:") === 0);
+        }
+        onDropped: (drop) => {
+            if (drop.urls.length !== 1) {
+                win.showNotice("Drop one video at a time.");
+                return;
+            }
+            if (win.openDroppedVideo(drop.urls[0]))
+                drop.accept(Qt.CopyAction);
+        }
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 8
+            visible: videoDropArea.containsDrag
+            color: "#cc0e0e10"
+            border.color: win.accent
+            border.width: 2
+            radius: 12
+            Label {
+                anchors.centerIn: parent
+                text: "Drop a video to open it"
+                font.pixelSize: 20
+                color: win.accent
+            }
+        }
+    }
+
+    Dialog {
+        id: dropConfirm
+        objectName: "dropConfirm"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        title: "Open another video?"
+        standardButtons: Dialog.Open | Dialog.Cancel
+        Label {
+            text: "Your current edit has unexported changes.\nOpen the dropped video and discard those changes?"
+            wrapMode: Text.WordWrap
+        }
+        onAccepted: {
+            backend.load(win.pendingDropUrl);
+            win.pendingDropUrl = "";
+        }
+        onRejected: win.pendingDropUrl = ""
     }
 
     // --- subtle help toggle in the corner ---
