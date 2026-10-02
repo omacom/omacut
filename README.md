@@ -61,6 +61,32 @@ Requirements:
 - A C++17 compiler and Qt6: `qt6-base`, `qt6-declarative` (Qt Quick + Controls),
   `qt6-multimedia`
 
+## Linux release binaries
+
+Tagged releases include `omacut-<tag>-linux-x86_64.tar.gz` and
+`omacut-<tag>-linux-aarch64.tar.gz`, plus `SHA256SUMS`. Each archive contains the
+binary, desktop entry, icon, license, README, and build metadata. These are
+dynamically linked binaries built on Debian 13: install Qt 6.8 or newer, its Quick Controls and
+Multimedia modules, `ffmpeg`, and `xdg-desktop-portal` with a portal backend.
+On Arch/Omarchy these are the dependencies listed in the PKGBUILD.
+
+To verify and run a downloaded archive:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf omacut-<tag>-linux-aarch64.tar.gz
+./omacut-<tag>-linux-aarch64/omacut
+```
+
+The release workflow builds and tests each architecture in a Debian 13 container
+on a native Ubuntu 24.04 runner. Branches and pull requests produce downloadable workflow
+artifacts. Pushing a `v*` tag publishes both binaries only after both test jobs
+pass; tags containing a hyphen publish as prereleases. A failed run can be
+rerun before publication; rebuilt artifacts replace earlier attempts. To package
+an already built binary locally, run `./bin/release-artifact <version-or-tag>`.
+The packager requires GNU binutils and checks that the binary's ELF architecture
+matches the host before creating an archive.
+
 ## Test
 
 ```bash

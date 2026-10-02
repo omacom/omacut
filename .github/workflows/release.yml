@@ -1,0 +1,118 @@
+name: Linux release builds
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - '.github/workflows/release.yml'
+      - 'bin/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'pkgbuild/**'
+      - 'omacut.pro'
+      - 'README.md'
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'bin/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'pkgbuild/**'
+      - 'omacut.pro'
+      - 'README.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: debian:13
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 20
+    steps:
+      - name: Install build and runtime dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential git ca-certificates qt6-base-dev qt6-declarative-dev qt6-multimedia-dev \
+            ffmpeg desktop-file-utils \
+            qml6-module-qtqml qml6-module-qtqml-models qml6-module-qtqml-workerscript \
+            qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-controls \
+            qml6-module-qtquick-templates qml6-module-qtquick-layouts qml6-module-qtmultimedia
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: ./bin/build
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_QUICK_BACKEND: software
+        run: |
+          ./bin/test
+          ./tests/release_artifact_tests.sh
+          desktop-file-validate pkgbuild/omacut.desktop
+      - name: Package binary and checksum
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          if [[ "$REF_TYPE" == tag ]]; then
+            version="$REF_NAME"
+          else
+            version="snapshot-${GITHUB_SHA:0:12}"
+          fi
+          ./bin/release-artifact "$version"
+          readelf -h build/omacut
+          ldd build/omacut
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: omacut-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  publish:
+    name: Publish tagged release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: omacut-linux-*
+          path: dist
+          merge-multiple: true
+      - name: Verify checksums and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          cat ./*.tar.gz.sha256 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$TAG" ./*.tar.gz SHA256SUMS \
+            --verify-tag --title "Omacut $TAG" --generate-notes "${prerelease[@]}"

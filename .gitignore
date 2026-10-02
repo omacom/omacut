@@ -1,4 +1,5 @@
 /build/
+/dist/
 /pkg/
 /pkgbuild/pkg/
 /pkgbuild/src/

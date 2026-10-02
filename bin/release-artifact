@@ -1,0 +1,53 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT="$(CDPATH="" cd -- "$(dirname -- "$0")/.." && pwd)"
+VERSION="${1:-}"
+OUT_DIR="${2:-$ROOT/dist}"
+
+case "$VERSION" in
+  ''|*[!A-Za-z0-9._-]*)
+    echo "Usage: $0 <version-or-tag> [output-directory]" >&2
+    exit 1
+    ;;
+esac
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|aarch64) ;;
+  *) echo "Unsupported release architecture: $ARCH" >&2; exit 1 ;;
+esac
+
+if [ ! -x "$ROOT/build/omacut" ]; then
+  echo "Run ./bin/build before packaging a release." >&2
+  exit 1
+fi
+
+MACHINE="$(LC_ALL=C readelf -h "$ROOT/build/omacut" | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
+case "$ARCH:$MACHINE" in
+  'x86_64:Advanced Micro Devices X86-64'|'aarch64:AArch64') ;;
+  *)
+    echo "Binary architecture '$MACHINE' does not match release architecture '$ARCH'." >&2
+    exit 1
+    ;;
+esac
+
+BUILD_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
+BUILD_QT="$(qmake6 -query QT_VERSION)"
+
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(CDPATH="" cd -- "$OUT_DIR" && pwd)"
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
+
+NAME="omacut-$VERSION-linux-$ARCH"
+mkdir -p "$STAGE/$NAME"
+install -m755 "$ROOT/build/omacut" "$STAGE/$NAME/omacut"
+install -m644 "$ROOT/pkgbuild/omacut.desktop" "$ROOT/pkgbuild/omacut.svg" \
+  "$ROOT/LICENSE" "$ROOT/README.md" "$STAGE/$NAME/"
+printf 'Version: %s\nArchitecture: %s\nCommit: %s\nQt: %s\n' \
+  "$VERSION" "$ARCH" "$BUILD_COMMIT" "$BUILD_QT" > "$STAGE/$NAME/BUILDINFO"
+
+tar -C "$STAGE" -czf "$OUT_DIR/$NAME.tar.gz" "$NAME"
+(cd "$OUT_DIR" && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+echo "Packaged $OUT_DIR/$NAME.tar.gz"
