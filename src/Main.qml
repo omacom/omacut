@@ -104,6 +104,8 @@ ApplicationWindow {
         var t = editBar.playheadSec >= timeline.duration - 0.03 ? 0 : editBar.playheadSec;
         var i = timeline.clipAt(t), clip = timeline.clips[i];
         editBar.playheadSec = t;
+        if (audioOutput)
+            audioOutput.muted = clip.audio === false;
         player.show(i, clip.in + t - clip.start, true);
     }
     function seekTo(seconds) {
@@ -112,6 +114,8 @@ ApplicationWindow {
         var t = Math.max(0, Math.min(seconds, timeline.duration));
         var i = timeline.clipAt(t), clip = timeline.clips[i];
         editBar.playheadSec = t;
+        if (audioOutput)
+            audioOutput.muted = clip.audio === false;
         player.show(i, clip.in + t - clip.start, playing());
     }
     // Moves the clip under the playhead one place earlier or later, keeping
@@ -275,6 +279,14 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "M"
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: win.editing
+        onActivated: timeline.toggleAudio(timeline.clipAt(editBar.playheadSec))
+    }
+
+    Shortcut {
         sequence: "S"
         context: Qt.ApplicationShortcut
         autoRepeat: false
@@ -411,6 +423,8 @@ ApplicationWindow {
 
         // Shows sourceTime in clip index, and plays on from there if asked.
         function show(index, sourceTime, andPlay) {
+            if (win.audioOutput)
+                win.audioOutput.muted = timeline.clips[index].audio === false;
             var url = backend.videos[timeline.clips[index].source].url;
             var ms = Math.round(sourceTime * 1000);
             clip = index;
@@ -507,6 +521,8 @@ ApplicationWindow {
                 }
                 clip += 1;
                 c = next;
+                if (win.audioOutput)
+                    win.audioOutput.muted = c.audio === false;
             }
             if (!editBar.interacting)
                 editBar.playheadSec = c.start + Math.max(0, Math.min(t, c.out) - c.in);
@@ -527,6 +543,8 @@ ApplicationWindow {
         var t = Math.min(editBar.playheadSec, timeline.duration);
         var i = timeline.clipAt(t), clip = timeline.clips[i];
         var sourceTime = clip.in + t - clip.start;
+        if (audioOutput)
+            audioOutput.muted = clip.audio === false;
         // Edited while a video loads: aim the wait at the playhead's clip now,
         // not the one it was started for.
         if (player.pendingMs >= 0) {

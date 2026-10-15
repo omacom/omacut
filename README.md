@@ -29,6 +29,7 @@ Handles catch on neighbouring clip edges and the playhead.
 - *[ / ]*: Jump to the previous / next clip edge.
 - *S*: Split the clip at the playhead.
 - *X, Delete*: Remove the clip under the playhead.
+- *M*: Mute or unmute the clip under the playhead. A muted clip stays silent in playback and in the export.
 - *Alt+[ / Alt+]*: Move the clip under the playhead earlier / later.
 - *Ctrl+Space*: Move the start of the clip under the playhead to the playhead.
 - *Alt+Space*: Move the end of the clip under the playhead to the playhead.

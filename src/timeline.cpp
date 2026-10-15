@@ -12,7 +12,8 @@ QVariantList Timeline::clipList() const {
                                   {QStringLiteral("in"), clip.in},
                                   {QStringLiteral("out"), clip.out},
                                   {QStringLiteral("start"), start},
-                                  {QStringLiteral("end"), start + clip.length()}});
+                                  {QStringLiteral("end"), start + clip.length()},
+                                  {QStringLiteral("audio"), clip.audio}});
         start += clip.length();
     }
     return result;
@@ -94,7 +95,8 @@ double Timeline::edgeFrom(double t, int direction) const {
 bool Timeline::canJoin(int index) const {
     return index >= 0 && index + 1 < m_clips.size()
         && m_clips[index].source == m_clips[index + 1].source
-        && m_clips[index].out == m_clips[index + 1].in;
+        && m_clips[index].out == m_clips[index + 1].in
+        && m_clips[index].audio == m_clips[index + 1].audio;
 }
 
 void Timeline::split(double t) {
@@ -151,6 +153,14 @@ void Timeline::removeClip(int index) {
         return;
     edit::Clips next = m_clips;
     next.removeAt(index);
+    apply(next);
+}
+
+void Timeline::toggleAudio(int index) {
+    if (index < 0 || index >= m_clips.size())
+        return;
+    edit::Clips next = m_clips;
+    next[index].audio = !next[index].audio;
     apply(next);
 }
 

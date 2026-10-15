@@ -11,9 +11,11 @@ struct Clip {
     int source = 0;
     double in = 0.0;
     double out = 0.0;
+    // False drops this clip's audio on playback and in the export.
+    bool audio = true;
     double length() const { return out - in; }
     bool operator==(const Clip &other) const {
-        return source == other.source && in == other.in && out == other.out;
+        return source == other.source && in == other.in && out == other.out && audio == other.audio;
     }
 };
 using Clips = QList<Clip>;

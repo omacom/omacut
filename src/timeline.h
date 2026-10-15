@@ -55,6 +55,7 @@ public:
     // Moves the start or end of the clip under t to t.
     Q_INVOKABLE void trimTo(double t, bool start);
     Q_INVOKABLE void removeClip(int index);
+    Q_INVOKABLE void toggleAudio(int index);
     Q_INVOKABLE void removeAt(double t);
     // Moves clip from to position to, shifting the clips in between.
     Q_INVOKABLE void moveClip(int from, int to);
