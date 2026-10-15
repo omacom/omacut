@@ -275,6 +275,14 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "Ctrl+D"
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: win.editing
+        onActivated: timeline.duplicateClip(timeline.clipAt(editBar.playheadSec))
+    }
+
+    Shortcut {
         sequence: "S"
         context: Qt.ApplicationShortcut
         autoRepeat: false

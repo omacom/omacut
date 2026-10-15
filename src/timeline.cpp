@@ -175,6 +175,14 @@ void Timeline::joinClips(int index) {
     apply(next);
 }
 
+void Timeline::duplicateClip(int index) {
+    if (index < 0 || index >= m_clips.size())
+        return;
+    edit::Clips next = m_clips;
+    next.insert(index + 1, m_clips.at(index));
+    apply(next);
+}
+
 void Timeline::beginGesture() {
     if (m_clips.isEmpty())
         return;

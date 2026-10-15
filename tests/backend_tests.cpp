@@ -300,6 +300,7 @@ private slots:
     void qmlOpenConfirmsUnexportedEdit();
     void qmlHelpOverlayBlocksEditingKeys();
     void timelineSplitsTrimsAndJoins();
+    void timelineDuplicatesAClip();
     void timelineUndoesAGestureAsOneStep();
     void timelineTracksUnexportedCuts();
     void timelineAddsAndMovesVideos();
@@ -1752,6 +1753,18 @@ void BackendTests::qmlQuitConfirmsUnexportedEdit() {
     QTest::keyClick(window, Qt::Key_Return);
     QTRY_VERIFY_WITH_TIMEOUT(!window->isVisible(), 3000);
     QCOMPARE(quitSpy.count(), 1);
+}
+
+void BackendTests::timelineDuplicatesAClip() {
+    Timeline timeline;
+    timeline.reset(10.0);
+    timeline.split(4.0);
+    timeline.duplicateClip(0);
+    QCOMPARE(timeline.clips().size(), 3);
+    QCOMPARE(timeline.clips().at(0), timeline.clips().at(1));
+    QCOMPARE(timeline.duration(), 14.0);
+    timeline.undo();
+    QCOMPARE(timeline.clips().size(), 2);
 }
 
 void BackendTests::timelineSplitsTrimsAndJoins() {
