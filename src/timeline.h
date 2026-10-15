@@ -59,6 +59,8 @@ public:
     // Moves clip from to position to, shifting the clips in between.
     Q_INVOKABLE void moveClip(int from, int to);
     Q_INVOKABLE void joinClips(int index);
+    // 0.5, 1, or 2. Anything else is ignored.
+    Q_INVOKABLE void setSpeed(int index, double speed);
     Q_INVOKABLE void beginGesture();
     Q_INVOKABLE void endGesture();
     Q_INVOKABLE void undo();

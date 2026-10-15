@@ -506,7 +506,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
         if (frameSource < 0)
             frameSource = clip.source;
         const ffmpeg::VideoInfo &info = m_videos[clip.source].info;
-        segments.append({info.path, clip.in, clip.out, info.audio});
+        segments.append({info.path, clip.in, clip.out, info.audio, clip.speed});
     }
     const double clipLen = edit::duration(clips);
     if (segments.isEmpty() || clipLen <= 0.0) {

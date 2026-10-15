@@ -305,6 +305,7 @@ private slots:
     void timelineAddsAndMovesVideos();
     void timelineAnswersWhereTimesFall();
     void timelineEditsAtATime();
+    void halfSpeedHalvesTheTimeline();
     void trimArgsReencodeForPreciseCuts();
     void trimArgsConcatenateTheRanges();
     void trimArgsFitDifferentVideosTogether();
@@ -1916,6 +1917,21 @@ void BackendTests::timelineEditsAtATime() {
     QCOMPARE(timeline.clips().first(), (edit::Clip{0, 2.0, 2.0 + edit::minimumClip}));
 }
 
+void BackendTests::halfSpeedHalvesTheTimeline() {
+    Timeline timeline;
+    timeline.reset(10.0);
+    timeline.setSpeed(0, 2.0);
+    QCOMPARE(timeline.duration(), 5.0);
+    timeline.split(2.5);
+    QCOMPARE(timeline.clips().size(), 2);
+    QCOMPARE(timeline.clips().first().speed, 2.0);
+    QCOMPARE(timeline.clips().last().speed, 2.0);
+    timeline.setSpeed(0, 0.5);
+    QVERIFY(timeline.duration() > 5.0);
+    timeline.setSpeed(0, 3.0);
+    QCOMPARE(timeline.clips().first().speed, 0.5);
+}
+
 void BackendTests::trimArgsReencodeForPreciseCuts() {
     const QStringList args = ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.25, 0.75, true}},
                                               QStringLiteral("out.mp4"), 1920, 1080);
@@ -1934,6 +1950,12 @@ void BackendTests::trimArgsReencodeForPreciseCuts() {
     const int progressAt = args.indexOf(QStringLiteral("-progress"));
     QVERIFY(progressAt >= 0);
     QCOMPARE(args.value(progressAt + 1), QStringLiteral("pipe:1"));
+
+    const QStringList fast = ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 2.0, true, 2.0}},
+                                              QStringLiteral("out.mp4"), 1920, 1080);
+    const QString graph = fast.value(fast.indexOf(QStringLiteral("-filter_complex")) + 1);
+    QVERIFY(graph.contains(QStringLiteral("setpts=(PTS-STARTPTS)/2.000")));
+    QVERIFY(graph.contains(QStringLiteral("atempo=2.000")));
 }
 
 static QString filterGraph(const QStringList &args) {

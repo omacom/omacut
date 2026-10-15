@@ -263,9 +263,11 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
                      int width, int height, int scaleHeight) {
     bool audio = false;
     bool mixed = false;
+    bool paced = false;
     for (const Segment &segment : segments) {
         audio = audio || segment.audio;
         mixed = mixed || segment.path != segments.first().path;
+        paced = paced || segment.speed != 1.0;
     }
 
     // Machine-readable progress on stdout (errors stay on stderr), so the UI
@@ -281,22 +283,25 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
         const QString length = QString::number(qMax(segment.end - segment.start, 0.0), 'f', 3);
         args << "-ss" << QString::number(segment.start, 'f', 3) << "-t" << length
              << "-i" << segment.path;
-        if (!mixed) {
+        if (!mixed && !paced) {
             inputs += QString("[%1:V:0]").arg(i) + (audio ? QString("[%1:a:0]").arg(i) : QString());
             continue;
         }
+        const double speed = segment.speed > 0.0 ? segment.speed : 1.0;
+        const QString rate = QString::number(speed, 'f', 3);
         // Concat needs one frame size and one audio format throughout. Pixels
         // are squared first, so non-square video keeps its shape; -1 centres
-        // the padding; libx264 needs even sides.
+        // the padding; libx264 needs even sides. setpts applies a clip speed.
         graph += QString("[%1:V:0]scale='trunc(iw*sar/2)*2':ih,setsar=1,"
                          "scale=%2:%3:force_original_aspect_ratio=decrease,"
-                         "pad=%2:%3:-1:-1,setsar=1,format=yuv420p[v%1];")
-                     .arg(i).arg(width / 2 * 2).arg(height / 2 * 2);
+                         "pad=%2:%3:-1:-1,setsar=1,format=yuv420p,setpts=(PTS-STARTPTS)/%4[v%1];")
+                     .arg(i).arg(width / 2 * 2).arg(height / 2 * 2).arg(rate);
         if (segment.audio)
-            graph += QString("[%1:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a%1];").arg(i);
+            graph += QString("[%1:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,atempo=%2[a%1];")
+                         .arg(i).arg(rate);
         else if (audio)
             graph += QString("anullsrc=r=48000:cl=stereo,atrim=duration=%2,aformat=sample_fmts=fltp[a%1];")
-                         .arg(i).arg(length);
+                         .arg(i).arg(QString::number(qMax(segment.end - segment.start, 0.0) / speed, 'f', 3));
         inputs += QString("[v%1]").arg(i) + (audio ? QString("[a%1]").arg(i) : QString());
     }
     graph += inputs + QString("concat=n=%1:v=1:a=%2").arg(segments.size()).arg(audio ? 1 : 0);

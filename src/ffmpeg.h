@@ -58,6 +58,7 @@ struct Segment {
     double start = 0.0;
     double end = 0.0;
     bool audio = false;
+    double speed = 1.0;
 };
 
 // Build the ffmpeg argument list that writes the segments, back to back, to

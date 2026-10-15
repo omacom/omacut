@@ -275,6 +275,30 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: ","
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: win.editing
+        onActivated: {
+            const i = timeline.clipAt(editBar.playheadSec);
+            const speed = timeline.clips[i].speed;
+            timeline.setSpeed(i, speed <= 0.5 ? 0.5 : speed / 2);
+        }
+    }
+
+    Shortcut {
+        sequence: "."
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: win.editing
+        onActivated: {
+            const i = timeline.clipAt(editBar.playheadSec);
+            const speed = timeline.clips[i].speed;
+            timeline.setSpeed(i, speed >= 2 ? 2 : speed * 2);
+        }
+    }
+
+    Shortcut {
         sequence: "S"
         context: Qt.ApplicationShortcut
         autoRepeat: false

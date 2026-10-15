@@ -12,8 +12,9 @@ QVariantList Timeline::clipList() const {
                                   {QStringLiteral("in"), clip.in},
                                   {QStringLiteral("out"), clip.out},
                                   {QStringLiteral("start"), start},
-                                  {QStringLiteral("end"), start + clip.length()}});
-        start += clip.length();
+                                  {QStringLiteral("end"), start + clip.playLength()},
+                                  {QStringLiteral("speed"), clip.speed}});
+        start += clip.playLength();
     }
     return result;
 }
@@ -94,7 +95,8 @@ double Timeline::edgeFrom(double t, int direction) const {
 bool Timeline::canJoin(int index) const {
     return index >= 0 && index + 1 < m_clips.size()
         && m_clips[index].source == m_clips[index + 1].source
-        && m_clips[index].out == m_clips[index + 1].in;
+        && m_clips[index].out == m_clips[index + 1].in
+        && m_clips[index].speed == m_clips[index + 1].speed;
 }
 
 void Timeline::split(double t) {
@@ -102,12 +104,14 @@ void Timeline::split(double t) {
     if (i < 0)
         return;
     const edit::Clip clip = m_clips[i];
-    const double at = clip.in + (t - clipStart(i));
+    const double at = clip.in + (t - clipStart(i)) * clip.speed;
     if (at - clip.in < edit::minimumClip || clip.out - at < edit::minimumClip)
         return;
     edit::Clips next = m_clips;
     next[i].out = at;
-    next.insert(i + 1, {clip.source, at, clip.out});
+    edit::Clip right = clip;
+    right.in = at;
+    next.insert(i + 1, right);
     apply(next);
 }
 
@@ -139,7 +143,7 @@ void Timeline::trimTo(double t, bool start) {
     const int i = clipAt(t);
     if (i < 0)
         return;
-    const double at = m_clips[i].in + (t - clipStart(i));
+    const double at = m_clips[i].in + (t - clipStart(i)) * m_clips[i].speed;
     if (start)
         setClip(i, at, m_clips[i].out);
     else
@@ -172,6 +176,18 @@ void Timeline::joinClips(int index) {
     edit::Clips next = m_clips;
     next[index].out = next[index + 1].out;
     next.removeAt(index + 1);
+    apply(next);
+}
+
+void Timeline::setSpeed(int index, double speed) {
+    if (index < 0 || index >= m_clips.size())
+        return;
+    if (speed != 0.5 && speed != 1.0 && speed != 2.0)
+        return;
+    if (m_clips[index].speed == speed)
+        return;
+    edit::Clips next = m_clips;
+    next[index].speed = speed;
     apply(next);
 }
 

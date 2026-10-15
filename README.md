@@ -28,6 +28,7 @@ Handles catch on neighbouring clip edges and the playhead.
 - *Alt+Left/Right*: Move the playhead by 0.2 seconds.
 - *[ / ]*: Jump to the previous / next clip edge.
 - *S*: Split the clip at the playhead.
+- *,* / *.*: Play the clip under the playhead at half / double speed (0.5×, 1×, or 2×).
 - *X, Delete*: Remove the clip under the playhead.
 - *Alt+[ / Alt+]*: Move the clip under the playhead earlier / later.
 - *Ctrl+Space*: Move the start of the clip under the playhead to the playhead.
