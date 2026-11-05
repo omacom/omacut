@@ -531,18 +531,26 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
         return;
     }
 
-    setBusy(true);
-    setStatus(QStringLiteral("Exporting 0%"));
-
     // Encode to a sibling temp file and atomically replace the target only after
-    // success, so failed/cancelled exports preserve any existing file.
-    const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
-    QFile::remove(tmpPath);
+    // success. Reserve a unique name: a fixed sibling name might already be
+    // somebody's file, or belong to another running export.
+    auto part = std::make_unique<QTemporaryFile>(outPath + QStringLiteral(".omacut-XXXXXX.mp4"));
+    if (!part->open()) {
+        emit exportFailed(part->errorString());
+        return;
+    }
+    const QString tmpPath = part->fileName();
+    part->close();
     const ffmpeg::VideoInfo &frame = m_videos[frameSource].info;
     const QStringList args = ffmpeg::trimArgs(segments, tmpPath, frame.width, frame.height, scaleHeight);
 
     auto *proc = new QProcess(this);
+    // Remove an unfinished export when its process is destroyed, including quit.
+    part.release()->setParent(proc);
     auto completed = std::make_shared<bool>(false);
+
+    setBusy(true);
+    setStatus(QStringLiteral("Exporting 0%"));
 
     // ffmpeg -progress writes key=value blocks to stdout as it encodes;
     // out_time_us against the kept length gives the percentage.
