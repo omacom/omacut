@@ -9,6 +9,7 @@
 #include <QDragLeaveEvent>
 #include <QDropEvent>
 #include <QMimeData>
+#include <QMediaPlayer>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
@@ -230,10 +231,14 @@ static QString mainQmlPath() {
 // as the window is in use, so each shortcut test is just the key presses.
 class QmlHarness {
 public:
-    explicit QmlHarness(QObject &backend) {
+    explicit QmlHarness(QObject &backend, const QByteArray &source = {}) {
         m_engine.addImageProvider(QStringLiteral("thumbs"), new ThumbProvider);
         m_engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
-        m_engine.load(QUrl::fromLocalFile(mainQmlPath()));
+        const QUrl url = QUrl::fromLocalFile(mainQmlPath());
+        if (source.isEmpty())
+            m_engine.load(url);
+        else
+            m_engine.loadData(source, url);
         if (!m_engine.rootObjects().isEmpty())
             m_window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
     }
@@ -304,6 +309,8 @@ private slots:
     void timelineTracksUnexportedCuts();
     void timelineAddsAndMovesVideos();
     void timelineSeeksAcrossARealCut();
+    void playbackSeeksAcrossARealCut_data();
+    void playbackSeeksAcrossARealCut();
     void timelineAnswersWhereTimesFall();
     void timelineEditsAtATime();
     void trimArgsReencodeForPreciseCuts();
@@ -1805,6 +1812,47 @@ void BackendTests::timelineSeeksAcrossARealCut() {
     timeline.setClip(1, 5.04, 10.0);
     QVERIFY(!timeline.continues(0));
     QCOMPARE(edit::merged(timeline.clips()).size(), 2);
+}
+
+void BackendTests::playbackSeeksAcrossARealCut_data() {
+    QTest::addColumn<double>("gap");
+    QTest::addColumn<int>("expectedPosition");
+    QTest::newRow("exact split plays through") << 0.0 << 4980;
+    QTest::newRow("split float noise plays through") << 0.0004 << 4980;
+    QTest::newRow("40ms cut seeks forward") << 0.04 << 5040;
+    QTest::newRow("40ms overlap seeks backward") << -0.04 << 4960;
+}
+
+void BackendTests::playbackSeeksAcrossARealCut() {
+    QFETCH(double, gap);
+    QFETCH(int, expectedPosition);
+    ShortcutBackend backend(QUrl::fromLocalFile(m_videoPath), 10.0);
+    backend.timeline.split(5.0);
+    backend.timeline.setClip(1, 5.0 + gap, 10.0);
+
+    // Run the actual Main.qml position handler and show() method. Only the
+    // media clock/codec is replaced, so a restored 50ms check fails this test.
+    QFile main(mainQmlPath());
+    QVERIFY(main.open(QIODevice::ReadOnly));
+    QByteArray source = main.readAll();
+    QCOMPARE(source.count("    MediaPlayer {"), 1);
+    source.replace("    MediaPlayer {", "    PlaybackTest.FakeMediaPlayer {");
+    source.prepend("import \"../tests\" as PlaybackTest\n");
+    QmlHarness harness(backend, source);
+    QVERIFY(harness.window());
+    QObject *player = harness.window()->findChild<QObject *>(QStringLiteral("playbackTestPlayer"));
+    QVERIFY(player);
+    QVERIFY(player->setProperty("source", backend.source()));
+    QVERIFY(QMetaObject::invokeMethod(player, "show", Q_ARG(QVariant, 0),
+                                     Q_ARG(QVariant, 0.0), Q_ARG(QVariant, true)));
+    QCOMPARE(player->property("clip").toInt(), 0);
+
+    // A playback tick reaches the transition window. A split advances the
+    // clip without writing position; a cut must seek to the next in-point.
+    QVERIFY(player->setProperty("position", 4980));
+    QCOMPARE(player->property("clip").toInt(), 1);
+    QCOMPARE(player->property("position").toInt(), expectedPosition);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState));
 }
 
 void BackendTests::timelineAddsAndMovesVideos() {
