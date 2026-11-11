@@ -21,6 +21,7 @@ class Translator : public QTranslator {
 public:
     explicit Translator(const QString &languageFile = {}, const QString &catalogDirectory = ":/i18n",
                         QObject *parent = nullptr);
+    ~Translator() override;
 
     QString language() const;
     bool isEmpty() const override;
