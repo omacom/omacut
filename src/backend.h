@@ -100,6 +100,7 @@ signals:
     void frameStepFailed(const QString &message);
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
+    // A complete sentence, ready to show as it is.
     void loadError(const QString &message);
     // An addVideos batch settled with some videos loaded and this many
     // skipped, so the UI can summarize instead of stacking errors.

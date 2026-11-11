@@ -1215,8 +1215,7 @@ ApplicationWindow {
             win.showNotice("Could not step to the frame: " + message);
         }
         function onLoadError(message) {
-            // The export-reopen refusal is a complete sentence already.
-            win.showNotice(message.startsWith("Saved") ? message : "Cannot open video: " + message);
+            win.showNotice(message);
         }
         function onSkippedVideos(count) {
             win.showNotice(count === 1 ? "Skipped a file that won't open." : "Skipped " + count + " files that won't open.");

@@ -200,7 +200,7 @@ bool Backend::checkedPath(const QUrl &url, QString *path) {
     // as an option, and "file:http://..." as a network address.
     *path = url.toLocalFile();
     if (!url.isLocalFile() || !QDir::isAbsolutePath(*path)) {
-        emit loadError(QStringLiteral("Only local files can be opened."));
+        emit loadError(QStringLiteral("Cannot open video: Only local files can be opened."));
         return false;
     }
     return true;
@@ -240,7 +240,7 @@ void Backend::applyProbe(const PendingVideo &pending, const ffmpeg::VideoInfo &i
             emit exportDone(pending.path);
         emit loadError(pending.exportReload
             ? QStringLiteral("Saved, but couldn't reopen it, so the clips no longer match the file.")
-            : info.error);
+            : QStringLiteral("Cannot open video: ") + info.error);
         if (pending.batch)
             ++m_batchSkipped;
     } else {

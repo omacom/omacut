@@ -436,6 +436,8 @@ void BackendTests::loadRefusesAnythingButAbsoluteLocalPaths() {
     QVERIFY(!backend.load(QUrl(QStringLiteral("file:http://example.com/a.mp4"))));
     QVERIFY(!backend.load(QUrl(QStringLiteral("https://example.com/a.mp4"))));
     QCOMPARE(errorSpy.count(), 3);
+    // Each a sentence the window shows as it is.
+    QCOMPARE(errorSpy.first().first().toString(), QStringLiteral("Cannot open video: Only local files can be opened."));
     QVERIFY(backend.source().isEmpty());
 }
 
