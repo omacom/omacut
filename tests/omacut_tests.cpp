@@ -2543,6 +2543,7 @@ void BackendTests::catalogsMatchTheCode() {
             wanted.removeAll(QStringLiteral("%n"));
             for (const QString &form : given) {
                 const QString text = forms.value(form).toString();
+                QVERIFY2(!text.isEmpty(), qPrintable(where + " " + form + " needs a translation"));
                 QStringList found = placeholders(text);
                 const bool counted = found.removeAll(QStringLiteral("%n")) > 0;
                 QVERIFY2(found == wanted, qPrintable(where + " " + form + " has the wrong placeholders"));
