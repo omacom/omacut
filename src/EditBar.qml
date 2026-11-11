@@ -401,7 +401,9 @@ Item {
                 seek(root.timeline.clipStart(target))
             }
             mode = 0; clipIndex = -1
-            hover(mouseX, mouseY)
+            // A drag can end off the bar, and then no exit follows to clear it.
+            if (containsMouse) hover(mouseX, mouseY)
+            else unhover()
         }
         onCanceled: {
             hold.stop()
@@ -415,6 +417,7 @@ Item {
             else if (hit.clip >= 0 && !hit.handle) root.timeline.split(root.timeForX(mouse.x))
             hover(mouse.x, mouse.y)
         }
-        onExited: { clipHovered = -1; splitHovered = -1; removeHovered = false }
+        function unhover() { clipHovered = -1; splitHovered = -1; removeHovered = false; onHandle = false }
+        onExited: unhover()
     }
 }
