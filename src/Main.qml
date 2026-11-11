@@ -29,6 +29,9 @@ ApplicationWindow {
     // Quitting only warns about unexported edits. One clip spanning the whole
     // first video is never dirty — that's just the source.
     readonly property bool unexported: hasVideo && timeline.unexported
+    // Quitting mid-export would stop it, so that asks too, edited or not.
+    readonly property bool quitAsks: unexported || backend.exporting
+    onQuitAsksChanged: if (!quitAsks) quitConfirmVisible = false
     // Editing shortcuts go quiet while a dialog or the help overlay is up,
     // a probe is about to replace the timeline, or a handle is dragged.
     readonly property bool editing: hasVideo && timeline.duration > 0 && !quitConfirmVisible && !openConfirmVisible && !helpVisible && !backend.probing && !editBar.interacting
@@ -126,7 +129,7 @@ ApplicationWindow {
     }
     property bool quitting: false
     function requestQuit() {
-        if (unexported) {
+        if (quitAsks) {
             if (player.playbackState === MediaPlayer.PlayingState)
                 player.pause();
             quitConfirmVisible = true;
@@ -164,7 +167,7 @@ ApplicationWindow {
             win.openConfirmVisible = false;
             return;
         }
-        if (win.unexported) {
+        if (win.quitAsks) {
             close.accepted = false;
             if (player.playbackState === MediaPlayer.PlayingState)
                 player.pause();
@@ -1105,7 +1108,7 @@ ApplicationWindow {
         color: "#cc000000"
         onVisibleChanged: {
             if (visible)
-                quitExportButton.forceActiveFocus();
+                (backend.exporting ? quitCancelButton : quitExportButton).forceActiveFocus();
         }
 
         MouseArea {
@@ -1130,14 +1133,15 @@ ApplicationWindow {
                 spacing: 8
 
                 Label {
-                    text: "Unexported edit"
+                    text: backend.exporting ? "Exporting" : "Unexported edit"
                     color: "white"
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
                 }
 
                 Label {
-                    text: "Your edit hasn't been exported. Quit anyway?"
+                    text: backend.exporting ? "The export is still running, and quitting stops it. Quit anyway?"
+                                            : "Your edit hasn't been exported. Quit anyway?"
                     color: "#d6d6da"
                     font.pixelSize: 13
                     bottomPadding: 12
@@ -1150,18 +1154,18 @@ ApplicationWindow {
                     DialogButton {
                         id: quitCancelButton
                         text: "Cancel"
-                        KeyNavigation.left: quitExportButton
+                        KeyNavigation.left: quitExportButton.visible ? quitExportButton : quitQuitButton
                         KeyNavigation.right: quitQuitButton
                         KeyNavigation.tab: quitQuitButton
-                        KeyNavigation.backtab: quitExportButton
+                        KeyNavigation.backtab: quitExportButton.visible ? quitExportButton : quitQuitButton
                         onClicked: win.quitConfirmVisible = false
                     }
                     DialogButton {
                         id: quitQuitButton
                         text: "Quit"
                         KeyNavigation.left: quitCancelButton
-                        KeyNavigation.right: quitExportButton
-                        KeyNavigation.tab: quitExportButton
+                        KeyNavigation.right: quitExportButton.visible ? quitExportButton : quitCancelButton
+                        KeyNavigation.tab: quitExportButton.visible ? quitExportButton : quitCancelButton
                         KeyNavigation.backtab: quitCancelButton
                         onClicked: forceQuit()
                     }
@@ -1169,6 +1173,8 @@ ApplicationWindow {
                         id: quitExportButton
                         text: "Export"
                         primary: true
+                        // Already exporting: there's nothing to start.
+                        visible: !backend.exporting
                         KeyNavigation.left: quitQuitButton
                         KeyNavigation.right: quitCancelButton
                         KeyNavigation.tab: quitCancelButton
