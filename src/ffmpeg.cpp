@@ -160,29 +160,28 @@ VideoInfo probe(const QString &path) {
     return info;
 }
 
-QImage thumbnail(const QString &path, double time, int height,
-                 const std::function<bool()> &stopRequested) {
+namespace {
+
+// The frame at `time`, or with `before`, the last frame in the `before`
+// seconds up to it: decoded in order, then reversed to take the last.
+QImage frameAt(const QString &path, double time, int height, double before,
+               const QElapsedTimer &deadline, const std::function<bool()> &stopRequested) {
     const QString ffmpeg = toolPath("ffmpeg");
     if (ffmpeg.isEmpty())
         return {};
 
+    QStringList args = {"-loglevel", "error", "-ss", QString::number(qMax(time - before, 0.0), 'f', 3)};
+    if (before > 0.0)
+        args << "-t" << QString::number(qMin(before, time), 'f', 3);
+    args << "-i" << path << "-frames:v" << "1"
+         << "-vf" << QString("scale=-1:%1%2").arg(height).arg(before > 0.0 ? ",reverse" : "")
+         << "-f" << "image2pipe" << "-vcodec" << "mjpeg" << "pipe:1";
     QProcess proc;
-    proc.start(ffmpeg, {
-        "-loglevel", "error",
-        "-ss", QString::number(qMax(time, 0.0), 'f', 3),
-        "-i", path,
-        "-frames:v", "1",
-        "-vf", QString("scale=-1:%1").arg(height),
-        "-f", "image2pipe",
-        "-vcodec", "mjpeg",
-        "pipe:1",
-    });
+    proc.start(ffmpeg, args);
 
     // Poll instead of waitForFinished(-1) so a stop request can kill the child
     // promptly — otherwise a worker thread would block until ffmpeg finishes
     // on its own. The deadline bounds the wait even if nobody asks to stop.
-    QElapsedTimer deadline;
-    deadline.start();
     while (!proc.waitForFinished(kThumbPollMs)) {
         if (proc.state() == QProcess::NotRunning)
             break;  // failed to start, or exited between polls
@@ -201,6 +200,27 @@ QImage thumbnail(const QString &path, double time, int height,
     QImage img;
     img.loadFromData(data, "JPEG");
     return img;
+}
+
+}  // namespace
+
+QImage thumbnail(const QString &path, double time, int height,
+                 const std::function<bool()> &stopRequested) {
+    QElapsedTimer deadline;  // one for every attempt, so a stalled file costs one timeout
+    deadline.start();
+    QImage image = frameAt(path, time, height, 0.0, deadline, stopRequested);
+    // Past the last frame, which a video stream can end before the file does
+    // (or a slow frame rate leaves a while before the end), ffmpeg gives
+    // nothing: show the last frame before then rather than a blank. A second
+    // back covers any ordinary frame rate; 30 s, a recording's still last
+    // frame, held long past its start.
+    for (double before : {1.0, 30.0}) {
+        if (!image.isNull() || time <= 0.0 || deadline.elapsed() > kThumbTimeoutMs
+            || (stopRequested && stopRequested()))
+            break;
+        image = frameAt(path, time, height, before, deadline, stopRequested);
+    }
+    return image;
 }
 
 QList<double> frameTimes(const QString &path, double start) {
