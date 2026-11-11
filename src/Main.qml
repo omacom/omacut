@@ -501,7 +501,10 @@ ApplicationWindow {
                     return;
                 }
                 var next = timeline.clips[clip + 1];
-                if (next.source !== c.source || Math.abs(next.in - c.out) > 0.05) {
+                // A split's float noise still plays straight through. A real cut
+                // has to seek, or the frames between out and the next in stay
+                // on screen.
+                if (!timeline.continues(clip)) {
                     show(clip + 1, next.in, true);
                     return;
                 }

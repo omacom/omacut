@@ -45,6 +45,10 @@ public:
     // Whether clip index and the next can join: the next carries on where
     // index leaves off, in the same source.
     Q_INVOKABLE bool canJoin(int index) const;
+    // Whether playback can run from index into the next clip without a seek.
+    // A real cut returns false so the player jumps to the next in-point
+    // instead of showing the frames that were cut out.
+    Q_INVOKABLE bool continues(int index) const;
 
     Q_INVOKABLE void split(double t);
     // Clamps into the clip's source, keeping at least a minimum clip.
