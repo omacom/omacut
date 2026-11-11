@@ -1458,6 +1458,19 @@ void BackendTests::qmlArrowKeysMoveThePlayhead() {
     QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
     QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.0) < 0.000001, 3000);
 
+    // A step cancels a pending play on a source that's still loading, so
+    // playback can't start under the stepped frame.
+    auto *player = window->findChild<QMediaPlayer *>();
+    QVERIFY(player);
+    QVERIFY(player->setProperty("pendingPlay", true));
+    QTest::qWait(150);
+    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 5.96) < 0.000001, 3000);
+    QCOMPARE(player->property("pendingPlay").toBool(), false);
+    QTest::qWait(150);
+    QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.0) < 0.000001, 3000);
+
     QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 1.0, 3000);
 

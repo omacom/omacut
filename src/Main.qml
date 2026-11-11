@@ -239,7 +239,9 @@ ApplicationWindow {
         if (held) {
             seekTo(editBar.playheadSec + 0.2 * direction);
         } else {
+            // A source still loading must not start playing once it's in.
             player.pause();
+            player.pendingPlay = false;
             backend.stepFrame(editBar.playheadSec, direction);
         }
     }
