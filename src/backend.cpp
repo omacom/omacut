@@ -583,6 +583,12 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     // dialog never asked the user about overwriting — refuse rather than
     // silently replace it.
     const QString selectedPath = dst.toLocalFile();
+    // Anything but an absolute local path would leave an empty or relative
+    // one, which the .mp4 suffix turns into a file in the working directory.
+    if (!dst.isLocalFile() || !QDir::isAbsolutePath(selectedPath)) {
+        emit exportFailed(QStringLiteral("Only local files can be exported to."));
+        return;
+    }
     const QString outPath = mp4PathFor(selectedPath);
     if (outPath != selectedPath && QFileInfo::exists(outPath)) {
         emit exportFailed(QStringLiteral("%1 already exists.")
