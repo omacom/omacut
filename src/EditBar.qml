@@ -10,6 +10,9 @@ import "Format.js" as Format
 Item {
     id: root
     implicitHeight: 76
+    // Time runs left to right in every language, so the timeline isn't mirrored.
+    LayoutMirroring.enabled: false
+    LayoutMirroring.childrenInherit: true
 
     readonly property var timeline: backend.timeline
     readonly property var clips: timeline.clips
@@ -223,9 +226,9 @@ Item {
     // Hint above the timeline: the source time under a dragged handle, or what the pointer can do.
     Rectangle {
         readonly property bool dragging: root.trimming
-        readonly property string hint: area.splitHovered >= 0 ? "Double-click to join"
+        readonly property string hint: area.splitHovered >= 0 ? qsTr("Double-click to join")
                                       : area.clipHovered >= 0 && !area.onHandle
-                                        ? (root.clips.length > 1 ? "Double-click to split · hold to move" : "Double-click to split") : ""
+                                        ? (root.clips.length > 1 ? qsTr("Double-click to split · hold to move") : qsTr("Double-click to split")) : ""
         visible: root.enabled && (dragging || (area.mode === 0 && area.containsMouse && !area.removeHovered && hint !== ""))
         width: label.implicitWidth + 20; height: dragging ? 32 : 26
         radius: Math.min(4, theme.radius); color: "#2c2c2f"
