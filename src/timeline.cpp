@@ -34,6 +34,16 @@ void Timeline::reset(double duration) {
     emit changed();
 }
 
+void Timeline::restore(const QList<double> &sourceDurations, const edit::Clips &clips) {
+    m_sourceDurations = sourceDurations;
+    m_clips = clips;
+    m_exported.clear();
+    m_undo.clear();
+    m_redo.clear();
+    m_gesture = false;
+    emit changed();
+}
+
 int Timeline::addSource(double duration, double t) {
     m_sourceDurations.append(std::max(0.0, duration));
     const int source = m_sourceDurations.size() - 1;
@@ -134,10 +144,20 @@ void Timeline::moveEdge(int index, bool start, double sourceTime) {
     if (index < 0 || index >= m_clips.size())
         return;
     const edit::Clip clip = m_clips[index];
-    if (start)
+    // Whether b picks up later in a's video, sharing its stretch of the
+    // timeline: within a millisecond, as playback carries on.
+    const auto carriesOn = [](const edit::Clip &a, const edit::Clip &b) {
+        return a.source == b.source && b.in > a.out - 0.001;
+    };
+    if (start) {
+        if (index > 0 && carriesOn(m_clips[index - 1], clip))
+            sourceTime = std::max(sourceTime, m_clips[index - 1].out);
         setClip(index, std::min(sourceTime, clip.out - edit::minimumClip), clip.out);
-    else
+    } else {
+        if (index + 1 < m_clips.size() && carriesOn(clip, m_clips[index + 1]))
+            sourceTime = std::min(sourceTime, m_clips[index + 1].in);
         setClip(index, clip.in, std::max(sourceTime, clip.in + edit::minimumClip));
+    }
 }
 
 void Timeline::trimTo(double t, bool start) {

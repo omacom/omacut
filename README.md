@@ -8,7 +8,7 @@ Built using **Qt Quick (QML)** UI with the Material style — the same Qt stack 
 
 ## Editing
 
-The timeline shows your clips back to back, in the order they play, each framed with a handle at both ends over its own filmstrip. Whatever isn't in a clip is cut.
+The timeline shows your clips in the order they play, each framed with a handle at both ends over its own filmstrip. Clips sit over their own footage, so what you cut stays on the timeline, dimmed, between them, and nothing moves when you trim: dragging a handle back over the dimmed footage restores it. Playback and export skip whatever isn't in a clip. The timeline only changes scale when you zoom, or add, remove or reorder clips.
 
 - **Double-click a clip** to split it there.
 - **Drag a handle** to trim that clip. A trimmed clip can grow back into its video, up to either end.
@@ -73,6 +73,12 @@ bin/test
 ```
 
 Runs the Qt Test suite through `ctest`; it needs `ffmpeg` to make its sample videos. The tests run offscreen with Qt's software renderer, so no windows open and screenshots hold real pixels. Any QML warning fails the test that caused it.
+
+`qmlTimelineViewDependsOnlyOnTheEdit` makes random edits the way a person might (splits, trims, handle drags, joins, moves, removals, added videos, zooms, undo and redo) and after each one checks the timeline against a freshly opened editor showing the same edit, down to the pixel. It also checks that the zoomed-out track is covered end to end, that trimming a clip shorter moves no other clip, and that nothing in the filmstrip reloads or moves during a drag. When it fails, it prints the edits that led there and saves both pictures to `/tmp`. Run it longer, or against a real recording, before a release:
+
+```bash
+OMACUT_FUZZ_SEEDS=50 OMACUT_FUZZ_VIDEO=~/Videos/some-recording.mp4 build/tests/backend_tests qmlTimelineViewDependsOnlyOnTheEdit
+```
 
 Set `OMACUT_TEST_ON_SCREEN=1` to watch the tests in real windows instead.
 
