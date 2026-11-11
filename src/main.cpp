@@ -1,4 +1,4 @@
-// omacut — a dead-simple video length trimmer. Qt Quick (QML) UI, ffmpeg cuts.
+// omacut — a dead-simple video editor: cut, split and join clips from your videos. Qt Quick UI, ffmpeg cuts.
 
 #include <QGuiApplication>
 #include <QFileInfo>

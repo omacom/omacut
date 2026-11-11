@@ -17,7 +17,7 @@ class FilePicker;
 // videos and the clips cut from them, and drives export.
 class Backend : public QObject {
     Q_OBJECT
-    // The first video, which names the project and sets the export's frame.
+    // The first video, which names the project. The first clip's video sets the export's frame.
     Q_PROPERTY(QUrl source READ source NOTIFY infoChanged)
     // Each video a clip can come from, by source index: {url, thumbKey}.
     Q_PROPERTY(QVariantList videos READ videoList NOTIFY videosChanged)
@@ -109,8 +109,8 @@ private:
         int thumbKey = 0;
         QList<double> frameTimes;
     };
-    // The local path behind url, or an empty string (and a loadError) when
-    // it isn't an absolute local file ffprobe can safely be handed.
+    // Whether url is an absolute local file ffprobe can safely be handed,
+    // putting its path in path; if not, says why with a loadError.
     bool checkedPath(const QUrl &url, QString *path);
     struct PendingVideo {
         QUrl url;
@@ -129,7 +129,7 @@ private:
     void applyProbe(const PendingVideo &pending, const ffmpeg::VideoInfo &info);
     // One step of saving a frame: runs program, then done with its output.
     // A failure ends the save, removing partPath if given.
-    void runFrameStep(const QString &program, const QStringList &args,
+    void runSaveFrameStep(const QString &program, const QStringList &args,
                       std::function<void(const QByteArray &)> done,
                       const QString &partPath = QString());
     // Whether path is the file behind one of the loaded videos.

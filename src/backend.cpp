@@ -367,7 +367,7 @@ void Backend::saveFrame(double t) {
     // In the background, as a 4K frame takes long enough to stall the
     // window: first find the frame on screen, then write it.
     m_savingFrame = true;
-    runFrameStep(ffprobeBin, ffmpeg::shownFrameArgs(path, start + sourceTime),
+    runSaveFrameStep(ffprobeBin, ffmpeg::shownFrameArgs(path, start + sourceTime),
                  [this, path, start, sourceTime, ffmpegBin](const QByteArray &packetTimes) {
         const ffmpeg::ShownFrame shown = ffmpeg::shownFrame(packetTimes, start + sourceTime);
         const double frameTime = shown.time - start;
@@ -385,7 +385,7 @@ void Backend::saveFrame(double t) {
         const QString partPath = part.fileName();
         part.close();
         m_framePart = partPath;
-        runFrameStep(ffmpegBin, ffmpeg::frameArgs(path, frameTime, keyframeTime, partPath),
+        runSaveFrameStep(ffmpegBin, ffmpeg::frameArgs(path, frameTime, keyframeTime, partPath),
                      [this, source, partPath](const QByteArray &) {
             m_savingFrame = false;
             m_framePart.clear();
@@ -412,7 +412,7 @@ void Backend::saveFrame(double t) {
     });
 }
 
-void Backend::runFrameStep(const QString &program, const QStringList &args,
+void Backend::runSaveFrameStep(const QString &program, const QStringList &args,
                            std::function<void(const QByteArray &)> done, const QString &partPath) {
     auto *proc = new QProcess(this);
     // A stuck file (say, on a hung network mount) mustn't block F for good.
