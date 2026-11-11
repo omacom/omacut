@@ -221,13 +221,20 @@ static edit::Clips wholeVideo(double duration) {
 }
 
 // Finds a DialogButton by its label ("primary" tells them apart from Labels).
-static QQuickItem *dialogButton(QQuickWindow *window, const QString &text) {
-    const auto items = window->findChildren<QQuickItem *>();
-    for (QQuickItem *item : items) {
-        if (item->property("primary").isValid() && item->property("text").toString() == text)
-            return item;
+// A visible dialog button by its text. Walks the visual tree, since buttons
+// made by a Repeater aren't QObject children of the window.
+static QQuickItem *dialogButton(QQuickItem *item, const QString &text) {
+    for (QQuickItem *child : item->childItems()) {
+        if (child->isVisible() && child->property("primary").isValid() && child->property("text").toString() == text)
+            return child;
+        if (QQuickItem *found = dialogButton(child, text))
+            return found;
     }
     return nullptr;
+}
+
+static QQuickItem *dialogButton(QQuickWindow *window, const QString &text) {
+    return dialogButton(window->contentItem(), text);
 }
 
 static QPoint itemCenter(QQuickItem *item) {
@@ -356,6 +363,7 @@ private slots:
     void translatorFollowsTheLanguageFile();
     void translatorPicksPluralForms();
     void catalogsMatchTheCode();
+    void qmlDialogsAnswerFromTheKeyboard();
     void portalPickerReplacesAnUnansweredRequest();
 
 private:
@@ -1871,9 +1879,9 @@ void BackendTests::qmlQuitAsksWhileExporting() {
     QTest::keyClick(window, Qt::Key_Q);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
     QVERIFY(window->isVisible());
-    QQuickItem *exportButton = dialogButton(window, QStringLiteral("Export"));
-    QVERIFY(exportButton);
-    QVERIFY(!exportButton->isVisible());
+    // There's no Export to start: only Cancel and Quit.
+    QVERIFY(dialogButton(window, QStringLiteral("Cancel")));
+    QVERIFY(!dialogButton(window, QStringLiteral("Export")));
 
     // Arrows cycle Cancel and Quit only, starting from Cancel.
     QTest::keyClick(window, Qt::Key_Right);
@@ -2672,6 +2680,56 @@ void BackendTests::catalogsMatchTheCode() {
             }
         }
     }
+}
+
+void BackendTests::qmlDialogsAnswerFromTheKeyboard() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), true, 3000);
+    auto focused = [&] {
+        QQuickItem *item = window->activeFocusItem();
+        return item ? item->property("text").toString() : QString();
+    };
+
+    // Focus starts on Export; Tab and Shift+Tab walk the buttons, wrapping.
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(focused(), QStringLiteral("Export"), 3000);
+    QTest::keyClick(window, Qt::Key_Tab);
+    QCOMPARE(focused(), QStringLiteral("Cancel"));
+    QTest::keyClick(window, Qt::Key_Tab);
+    QCOMPARE(focused(), QStringLiteral("Quit"));
+    QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
+    QCOMPARE(focused(), QStringLiteral("Cancel"));
+    QTest::keyClick(window, Qt::Key_Left);
+    QCOMPARE(focused(), QStringLiteral("Export"));
+
+    // On Omarchy's default the corners are sharp, like the windows.
+    QQuickItem *cancel = dialogButton(window, QStringLiteral("Cancel"));
+    QVERIFY(cancel);
+    QCOMPARE(cancel->property("background").value<QQuickItem *>()->property("radius").toDouble(), 0.0);
+
+    // Alt and a button's underlined letter presses it, wherever focus is.
+    QTest::keyClick(window, Qt::Key_C, Qt::AltModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), false, 3000);
+    QCOMPARE(backend.exportCount, 0);
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
+    QTest::keyClick(window, Qt::Key_E, Qt::AltModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 1, 3000);
+    QCOMPARE(window->property("quitConfirmVisible").toBool(), false);
+
+    // The same in the open confirmation: focus on keeping the edit, Alt+O opens.
+    QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("openConfirmVisible").toBool(), true, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(focused(), QStringLiteral("Keep editing"), 3000);
+    QTest::keyClick(window, Qt::Key_O, Qt::AltModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.openCount, 1, 3000);
+    QCOMPARE(window->property("openConfirmVisible").toBool(), false);
 }
 
 static bool dropUrls(QQuickWindow *window, const QList<QUrl> &urls) {
