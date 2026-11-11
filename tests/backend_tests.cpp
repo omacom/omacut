@@ -1259,7 +1259,9 @@ void BackendTests::exportRefusesAnythingButAbsoluteLocalPaths() {
     backend.exportClips(QUrl(QStringLiteral("smb://server/share/out.mp4")), wholeVideo(1.0));
     backend.exportClips(QUrl(QStringLiteral("file:out.mp4")), wholeVideo(1.0));
     QVERIFY(QDir::setCurrent(cwd));
-    QCOMPARE(failedSpy.count(), 2);
+    // Nor a file URL naming a host, which would become "//server/share/out.mp4".
+    backend.exportClips(QUrl(QStringLiteral("file://server/share/out.mp4")), wholeVideo(1.0));
+    QCOMPARE(failedSpy.count(), 3);
     QVERIFY(!backend.busy());
     QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral(".mp4"))));
     QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral("out.mp4"))));

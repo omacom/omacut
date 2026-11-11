@@ -584,8 +584,9 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     // silently replace it.
     const QString selectedPath = dst.toLocalFile();
     // Anything but an absolute local path would leave an empty or relative
-    // one, which the .mp4 suffix turns into a file in the working directory.
-    if (!dst.isLocalFile() || !QDir::isAbsolutePath(selectedPath)) {
+    // one, which the .mp4 suffix turns into a file in the working directory,
+    // or, with a host, "//host/..." that Linux reads as a local path.
+    if (!dst.isLocalFile() || !dst.host().isEmpty() || !QDir::isAbsolutePath(selectedPath)) {
         emit exportFailed(QStringLiteral("Only local files can be exported to."));
         return;
     }
