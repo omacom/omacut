@@ -54,24 +54,23 @@ Exports are always written as MP4 files, regardless of the input video's contain
 
 ## Build
 
-Uses Qt's own build tool, `qmake6` (no cmake needed):
+Built with CMake:
 
 ```bash
-./bin/build
+bin/build
 ```
 
-This produces a single `omacut` binary in `build/`.
+This produces a single `omacut` binary in `build/`. `bin/install` builds and installs it as a package with `makepkg`, so it shows up in the app launcher.
 
-Requirements:
-
-- A C++17 compiler and Qt6: `qt6-base`, `qt6-declarative` (Qt Quick + Controls),
-  `qt6-multimedia`
+Requirements: a C++17 compiler, `cmake`, and Qt 6 (`qt6-base`, `qt6-declarative`, `qt6-multimedia`). `pkgbuild/PKGBUILD` lists everything, and CI installs from it.
 
 ## Test
 
 ```bash
-./bin/test
+bin/test
 ```
+
+Runs the Qt Test suite offscreen through `ctest`; it needs `ffmpeg` to make its sample videos.
 
 ## License
 
