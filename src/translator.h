@@ -47,8 +47,8 @@ private:
         QString language;
     };
 
-    // translate() also runs on worker threads (ffprobe's errors), while a
-    // language switch replaces the catalog on the GUI thread.
+    // translate() also runs on worker threads (an app's background errors),
+    // while a language switch replaces the catalog on the GUI thread.
     mutable QReadWriteLock m_lock;
     QString m_language;
     QHash<QString, Entry> m_strings;
