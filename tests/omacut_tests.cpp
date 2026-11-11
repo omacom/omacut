@@ -2418,6 +2418,16 @@ void BackendTests::translatorFollowsTheLanguageFile() {
     QVERIFY(writeFile(dir.filePath(QStringLiteral("language")), "en\n"));
     QTRY_COMPARE(translator.language(), QStringLiteral("en"));
     QVERIFY(translator.translate("Main", "Export").isNull());
+
+    // A first pick can create Omarchy's config directory, too.
+    const QString later = dir.filePath(QStringLiteral("config/omarchy/language"));
+    Translator fresh(later, dir.path());
+    QCOMPARE(fresh.language(), QStringLiteral("en"));
+    QVERIFY(QDir().mkpath(QFileInfo(later).absolutePath()));
+    QVERIFY(writeFile(later, "pt\n"));
+    QTRY_COMPARE(fresh.language(), QStringLiteral("pt"));
+    QCOMPARE(fresh.translate("Main", "Export"), QStringLiteral("Exportar"));
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
 }
 
 void BackendTests::translatorPicksPluralForms() {
@@ -2507,9 +2517,13 @@ void BackendTests::catalogsMatchTheCode() {
                  qPrintable(info.fileName() + " is not in resources.qrc"));
         if (language == QStringLiteral("en"))
             continue;
-        QSet<QString> categories{QStringLiteral("other")};
-        for (const long long n : {0LL, 1LL, 2LL, 3LL, 5LL, 7LL, 11LL, 21LL, 22LL, 25LL, 101LL, 102LL, 105LL, 1000000LL})
-            categories << Translator::pluralCategory(language, n);
+        // Each plural category the language uses, and how many counts reach it.
+        QHash<QString, int> reach{{QStringLiteral("other"), 2}};
+        for (long long n = 0; n <= 1000; ++n)
+            ++reach[Translator::pluralCategory(language, n)];
+        ++reach[Translator::pluralCategory(language, 1000000)];
+        const QList<QString> used = reach.keys();
+        const QSet<QString> categories(used.begin(), used.end());
         const QJsonObject catalog = readCatalog(info.filePath());
         QVERIFY2(!catalog.isEmpty(), qPrintable(info.fileName() + " is empty or not JSON"));
         for (auto it = catalog.begin(); it != catalog.end(); ++it) {
@@ -2523,8 +2537,17 @@ void BackendTests::catalogsMatchTheCode() {
             const QJsonObject forms = it.value().toObject();
             const QStringList given = forms.keys();
             QVERIFY2(QSet<QString>(given.begin(), given.end()) == categories, qPrintable(where + " has the wrong plural forms"));
-            for (const QString &form : given)
-                QVERIFY2(!forms.value(form).toString().isEmpty(), qPrintable(where + " " + form));
+            // Every form keeps the other placeholders, and only a form for a
+            // single count ("a file", "two files") may leave the number out.
+            QStringList wanted = placeholders(it.key());
+            wanted.removeAll(QStringLiteral("%n"));
+            for (const QString &form : given) {
+                const QString text = forms.value(form).toString();
+                QStringList found = placeholders(text);
+                const bool counted = found.removeAll(QStringLiteral("%n")) > 0;
+                QVERIFY2(found == wanted, qPrintable(where + " " + form + " has the wrong placeholders"));
+                QVERIFY2(counted || reach.value(form) == 1, qPrintable(where + " " + form + " leaves out the count"));
+            }
         }
     }
 }

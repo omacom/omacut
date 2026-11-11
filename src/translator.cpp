@@ -110,10 +110,12 @@ void Translator::reload() {
         m_watcher.removePaths(paths);
 
     // omarchy-language replaces the file, which drops it from the watch, and a
-    // first pick creates it; watch its directory too and re-arm every time.
-    const QString directory = QFileInfo(m_languageFile).absolutePath();
-    if (QFileInfo::exists(directory))
-        m_watcher.addPath(directory);
+    // first pick creates it, and maybe its directory; watch the nearest
+    // existing directory too and re-arm every time.
+    QString directory = QFileInfo(m_languageFile).absolutePath();
+    while (!QFileInfo::exists(directory) && directory != "/")
+        directory = QFileInfo(directory).absolutePath();
+    m_watcher.addPath(directory);
     if (QFileInfo::exists(m_languageFile))
         m_watcher.addPath(m_languageFile);
 
