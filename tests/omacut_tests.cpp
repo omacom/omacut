@@ -346,6 +346,7 @@ private slots:
     void trimArgsFitDifferentVideosTogether();
     void trimArgsScaleTheShorterSide();
     void exportHeightsNeverUpscale();
+    void thumbnailPastTheLastFrameShowsTheLastOne();
     void themeAccentReadsOmarchyColors();
     void themeAccentForegroundKeepsContrast();
     void themeFollowsOmarchyInstalledLater();
@@ -361,8 +362,10 @@ private:
     QUrl videoUrl() const { return QUrl::fromLocalFile(m_videoPath); }
     QString formatName(const QString &path) const;
     // A test pattern, with a tone when audio is set, written into m_dir.
+    // Its frames differ; `rate` is frames a second, as ffmpeg takes it ("1/5").
     QString makeVideo(const QString &name, double duration, bool audio,
-                      const QString &size = QStringLiteral("32x32"));
+                      const QString &size = QStringLiteral("32x32"),
+                      const QString &rate = QStringLiteral("1"));
     void waitForBackgroundWork(Backend &backend);
     // Probing finishes in the background now: wait until it has settled.
     void waitForProbe(Backend &backend);
@@ -1048,12 +1051,13 @@ void BackendTests::exportOddSizedWebmWritesEvenMp4() {
     QCOMPARE(info.height, 34);
 }
 
-QString BackendTests::makeVideo(const QString &name, double duration, bool audio, const QString &size) {
+QString BackendTests::makeVideo(const QString &name, double duration, bool audio, const QString &size,
+                                const QString &rate) {
     const QString path = m_dir.filePath(name);
     QStringList args = {
         QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"), QStringLiteral("error"),
         QStringLiteral("-f"), QStringLiteral("lavfi"),
-        QStringLiteral("-i"), QStringLiteral("testsrc=size=%1:rate=1:duration=%2").arg(size).arg(duration),
+        QStringLiteral("-i"), QStringLiteral("testsrc=size=%1:rate=%2:duration=%3").arg(size, rate).arg(duration),
     };
     if (audio)
         args << QStringLiteral("-f") << QStringLiteral("lavfi")
@@ -2322,6 +2326,23 @@ void BackendTests::exportHeightsNeverUpscale() {
     // At or below a target there's nothing to gain, so it isn't offered.
     QCOMPARE(Backend::exportHeights(1280, 720), QList<int>{});
     QCOMPARE(Backend::exportHeights(0, 0), QList<int>{});
+}
+
+void BackendTests::thumbnailPastTheLastFrameShowsTheLastOne() {
+    // Past a video's last frame ffmpeg finds nothing, which left the
+    // filmstrip blank at the end. At a frame a second the last of 3 s is at
+    // 2 s; at one every 5 s, the last of 10 s is at 5 s, too far back for a
+    // fixed step back to find.
+    const QString perSecond = makeVideo(QStringLiteral("slow.mp4"), 3.0, false);
+    const QString perFive = makeVideo(QStringLiteral("slower.mp4"), 10.0, false,
+                                      QStringLiteral("32x32"), QStringLiteral("1/5"));
+    QVERIFY(!perSecond.isEmpty() && !perFive.isEmpty());
+    const QImage last = ffmpeg::thumbnail(perSecond, 2.0, 36);
+    QVERIFY(!last.isNull());
+    QVERIFY(ffmpeg::thumbnail(perSecond, 1.0, 36) != last);
+    QCOMPARE(ffmpeg::thumbnail(perSecond, 2.9, 36), last);
+    QCOMPARE(ffmpeg::thumbnail(perFive, 9.9, 36), ffmpeg::thumbnail(perFive, 5.0, 36));
+    QVERIFY(ffmpeg::thumbnail(perFive, 9.9, 36) != ffmpeg::thumbnail(perFive, 0.0, 36));
 }
 
 void BackendTests::themeAccentReadsOmarchyColors() {
