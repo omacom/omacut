@@ -24,6 +24,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
+#include <cstdio>
 #include <memory>
 
 #include "backend.h"
@@ -327,6 +328,7 @@ private slots:
     void themeAccentReadsOmarchyColors();
     void themeAccentForegroundKeepsContrast();
     void themeFollowsOmarchyInstalledLater();
+    void themeFollowsASymlinkSwitch();
     void themeFollowsHyprlandRounding();
     void portalPickerReplacesAnUnansweredRequest();
 
@@ -2304,6 +2306,13 @@ void BackendTests::themeAccentForegroundKeepsContrast() {
     // Named colours are accents too, and get a foreground like any other.
     QVERIFY(writeFile(colors, "accent = teal\n"));
     QCOMPARE(Theme(dir.path()).accentForeground(), QStringLiteral("white"));
+
+    // Saturated red and green read better in black, by relative luminance,
+    // than the white a plain brightness cut-off would pick.
+    QVERIFY(writeFile(colors, "accent = \"#ff0000\"\n"));
+    QCOMPARE(Theme(dir.path()).accentForeground(), QStringLiteral("black"));
+    QVERIFY(writeFile(colors, "accent = \"#00a000\"\n"));
+    QCOMPARE(Theme(dir.path()).accentForeground(), QStringLiteral("black"));
 }
 
 void BackendTests::themeFollowsOmarchyInstalledLater() {
@@ -2329,6 +2338,30 @@ void BackendTests::themeFollowsOmarchyInstalledLater() {
     QVERIFY(QDir().mkpath(current + QStringLiteral("/theme")));
     QVERIFY(writeFile(current + QStringLiteral("/theme/colors.toml"), "accent = \"#778899\"\n"));
     QTRY_COMPARE(theme.accent(), QStringLiteral("#778899"));
+}
+
+void BackendTests::themeFollowsASymlinkSwitch() {
+    // A theme switch that swaps current/theme as a symlink between two theme
+    // directories, then an edit to the newly linked theme.
+    QTemporaryDir dir;
+    QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("themes/a")));
+    QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("themes/b")));
+    QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("current")));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("themes/a/colors.toml")), "accent = \"#111111\"\n"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("themes/b/colors.toml")), "accent = \"#222222\"\n"));
+    const QString link = dir.filePath(QStringLiteral("current/theme"));
+    QVERIFY(QFile::link(dir.filePath(QStringLiteral("themes/a")), link));
+
+    Theme theme(dir.filePath(QStringLiteral("current")));
+    QCOMPARE(theme.accent(), QStringLiteral("#111111"));
+
+    QVERIFY(QFile::link(dir.filePath(QStringLiteral("themes/b")), link + QStringLiteral(".next")));
+    QVERIFY(std::rename(QFile::encodeName(link + QStringLiteral(".next")).constData(),
+                        QFile::encodeName(link).constData()) == 0);
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#222222"));
+
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("themes/b/colors.toml")), "accent = \"#333333\"\n"));
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#333333"));
 }
 
 void BackendTests::themeFollowsHyprlandRounding() {
