@@ -818,8 +818,8 @@ ApplicationWindow {
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
-                iconName: player.playbackState === MediaPlayer.PlayingState && !player.priming ? "pause" : "play"
-                tipText: player.playbackState === MediaPlayer.PlayingState ? qsTr("Pause") : qsTr("Play")
+                iconName: win.playing() ? "pause" : "play"
+                tipText: win.playing() ? qsTr("Pause") : qsTr("Play")
                 enabled: timeline.duration > 0
                 onClicked: togglePlay()
             }
