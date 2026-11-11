@@ -1140,10 +1140,12 @@ ApplicationWindow {
                 }
 
                 Label {
+                    width: Math.min(implicitWidth, win.width - 160)
                     text: backend.exporting ? "The export is still running, and quitting stops it. Quit anyway?"
                                             : "Your edit hasn't been exported. Quit anyway?"
                     color: "#d6d6da"
                     font.pixelSize: 13
+                    wrapMode: Text.WordWrap
                     bottomPadding: 12
                 }
 
