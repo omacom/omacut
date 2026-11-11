@@ -60,9 +60,9 @@ Built with CMake:
 bin/build
 ```
 
-This produces a single `omacut` binary in `build/`. `bin/install` builds and installs it as a package with `makepkg`, so it shows up in the app launcher.
+This produces a single `omacut` binary in `build/`.
 
-Requirements: a C++17 compiler, `cmake`, and Qt 6 (`qt6-base`, `qt6-declarative`, `qt6-multimedia`). `pkgbuild/PKGBUILD` lists everything, and CI installs from it.
+Requirements: a C++17 compiler, `cmake`, and Qt 6 (`qt6-base`, `qt6-declarative`, `qt6-multimedia`). The package's PKGBUILD in `omacom/omarchy-pkgs` lists everything, and CI installs from it.
 
 ## Test
 
