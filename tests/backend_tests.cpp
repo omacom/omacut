@@ -1438,15 +1438,24 @@ void BackendTests::qmlArrowKeysMoveThePlayhead() {
     QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 6.0, 3000);
 
+    // A tap of Alt+arrow steps one frame (0.04s in this backend).
     QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 6.2, 3000);
-
-    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 6.0, 3000);
-
-    QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier | Qt::ShiftModifier);
     QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.04) < 0.000001, 3000);
-    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier | Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.0) < 0.000001, 3000);
+
+    // Holding it repeats faster than any tap: the first press steps one
+    // frame, and each repeat after it moves 0.2s. After a pause, the next
+    // press is a single frame again.
+    QTest::qWait(150);
+    QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.44) < 0.000001, 3000);
+    QTest::qWait(150);
+    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
     QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.0) < 0.000001, 3000);
 
     QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
@@ -1619,32 +1628,32 @@ void BackendTests::qmlKeysMoveAndAddClips() {
     QTest::keyClick(window, Qt::Key_S);
     QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
     QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 0.2, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 0.04) < 0.000001, 3000);
     QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier | Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.addCount, 1, 3000);
-    QCOMPARE(backend.lastAddAt, 0.2);
+    QCOMPARE(backend.lastAddAt, 0.04);
     backend.addVideo(3.0, backend.lastAddAt);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
                               (edit::Clips{{0, 0.0, 5.0}, {1, 0.0, 3.0}, {0, 5.0, 20.0}}), 3000);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), true, 3000);
 
     // Alt+] moves the clip under the playhead later, and the playhead moves
-    // with it, still 0.2 s in.
+    // with it, still one frame (0.04 s) in.
     QTest::keyClick(window, Qt::Key_BracketRight, Qt::AltModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
                               (edit::Clips{{1, 0.0, 3.0}, {0, 0.0, 5.0}, {0, 5.0, 20.0}}), 3000);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 3.2, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 3.04) < 0.000001, 3000);
 
     // At the end already, Alt+] does nothing; Alt+[ moves it back.
     QTest::keyClick(window, Qt::Key_BracketRight, Qt::AltModifier);
     QTest::keyClick(window, Qt::Key_BracketRight, Qt::AltModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
                               (edit::Clips{{1, 0.0, 3.0}, {0, 5.0, 20.0}, {0, 0.0, 5.0}}), 3000);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 18.2, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 18.04) < 0.000001, 3000);
     QTest::keyClick(window, Qt::Key_BracketLeft, Qt::AltModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
                               (edit::Clips{{1, 0.0, 3.0}, {0, 0.0, 5.0}, {0, 5.0, 20.0}}), 3000);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 3.2, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 3.04) < 0.000001, 3000);
 }
 
 void BackendTests::qmlZoomFocusesTheClip() {

@@ -226,32 +226,36 @@ ApplicationWindow {
         onActivated: seekTo(editBar.playheadSec + 5)
     }
 
+    // A tap of Alt+Left/Right pauses and steps one video frame. Holding the
+    // key repeats far faster than anyone taps, so a repeat within 100ms in
+    // the same direction moves 0.2s instead, to cover ground quickly.
+    property double lastAltStepAt: 0
+    property int lastAltStepDirection: 0
+    function altStep(direction) {
+        var now = Date.now();
+        var held = direction === lastAltStepDirection && now - lastAltStepAt < 100;
+        lastAltStepAt = now;
+        lastAltStepDirection = direction;
+        if (held) {
+            seekTo(editBar.playheadSec + 0.2 * direction);
+        } else {
+            player.pause();
+            backend.stepFrame(editBar.playheadSec, direction);
+        }
+    }
+
     Shortcut {
         sequence: "Alt+Left"
         context: Qt.ApplicationShortcut
         enabled: win.editing
-        onActivated: seekTo(editBar.playheadSec - 0.2)
+        onActivated: altStep(-1)
     }
 
     Shortcut {
         sequence: "Alt+Right"
         context: Qt.ApplicationShortcut
         enabled: win.editing
-        onActivated: seekTo(editBar.playheadSec + 0.2)
-    }
-
-    Shortcut {
-        sequence: "Alt+Shift+Left"
-        context: Qt.ApplicationShortcut
-        enabled: win.editing
-        onActivated: { player.pause(); backend.stepFrame(editBar.playheadSec, -1); }
-    }
-
-    Shortcut {
-        sequence: "Alt+Shift+Right"
-        context: Qt.ApplicationShortcut
-        enabled: win.editing
-        onActivated: { player.pause(); backend.stepFrame(editBar.playheadSec, 1); }
+        onActivated: altStep(1)
     }
 
     Connections {
@@ -979,8 +983,7 @@ ApplicationWindow {
                         { keys: "0–9", action: "Jump to 0%–90% of the edit" },
                         { keys: "← / →", action: "Move playhead 1s" },
                         { keys: "Shift ← / →", action: "Move playhead 5s" },
-                        { keys: "Alt ← / →", action: "Move playhead 0.2s" },
-                        { keys: "Alt Shift ← / →", action: "Move playhead one frame" },
+                        { keys: "Alt ← / →", action: "One frame; hold to move 0.2s" },
                         { keys: "[ / ]", action: "Previous / next clip edge" },
                         { keys: "S", action: "Split the clip at the playhead" },
                         { keys: "X", action: "Remove the clip" },
