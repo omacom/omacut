@@ -2432,6 +2432,17 @@ void BackendTests::translatorPicksPluralForms() {
     QCOMPARE(translator.translate("Main", "%n clips", nullptr, 25), QStringLiteral("%n клипов"));
     QCOMPARE(Translator::pluralCategory(QStringLiteral("ar"), 11), QStringLiteral("many"));
     QCOMPARE(Translator::pluralCategory(QStringLiteral("ja"), 1), QStringLiteral("other"));
+
+    // A counted string Russian lacks falls back to English, with English
+    // rules: 21 is "one" in Russian but plural in English.
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("en.json")), R"({"%n files": {"one": "%n file", "other": "%n files"}})"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("language")), "uk\n"));
+    QTRY_COMPARE(translator.language(), QStringLiteral("uk"));
+    QCOMPARE(translator.translate("Main", "%n files", nullptr, 21), QStringLiteral("%n files"));
+    QCOMPARE(translator.translate("Main", "%n files", nullptr, 1), QStringLiteral("%n file"));
+
+    // The translator set the default locale; later tests expect English.
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
 }
 
 static QString sourceDir() {
