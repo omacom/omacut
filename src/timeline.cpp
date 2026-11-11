@@ -97,6 +97,11 @@ bool Timeline::canJoin(int index) const {
         && m_clips[index].out == m_clips[index + 1].in;
 }
 
+bool Timeline::continues(int index) const {
+    return index >= 0 && index + 1 < m_clips.size()
+        && edit::continues(m_clips[index], m_clips[index + 1]);
+}
+
 void Timeline::split(double t) {
     const int i = clipAt(t);
     if (i < 0)
