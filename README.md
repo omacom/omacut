@@ -72,7 +72,9 @@ Requirements: a C++17 compiler, `cmake`, and Qt 6 (`qt6-base`, `qt6-declarative`
 bin/test
 ```
 
-Runs the Qt Test suite offscreen through `ctest`; it needs `ffmpeg` to make its sample videos.
+Runs the Qt Test suite through `ctest`; it needs `ffmpeg` to make its sample videos. The tests run offscreen with Qt's software renderer, so no windows open and screenshots hold real pixels. Any QML warning fails the test that caused it.
+
+Set `OMACUT_TEST_ON_SCREEN=1` to watch the tests in real windows instead.
 
 ## License
 
