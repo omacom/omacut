@@ -1,56 +1,42 @@
-<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Omacut</title>
+  <desc>A strip of film seen from the front, in Tokyo Night colors: dark film with sprocket holes, two dimmed frames at the ends, two bright frames between a pair of lilac trim handles, each piece with a hard shadow.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#2c2c2f"/>
-      <stop offset="1" stop-color="#161618"/>
-    </linearGradient>
-    <linearGradient id="handle" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#FFE45C"/>
-      <stop offset="1" stop-color="#FFD60A"/>
+    <linearGradient id="frame" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#7aa2f7"/>
+      <stop offset="1" stop-color="#7dcfff"/>
     </linearGradient>
   </defs>
-
-  <!-- App background -->
-  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
-
-  <!-- Filmstrip body -->
-  <rect x="64" y="176" width="384" height="160" rx="20" fill="#0e0e10"/>
-
-  <!-- Sprocket holes, top and bottom -->
-  <g fill="#2c2c2f">
-    <rect x="92"  y="192" width="36" height="20" rx="6"/>
-    <rect x="156" y="192" width="36" height="20" rx="6"/>
-    <rect x="220" y="192" width="36" height="20" rx="6"/>
-    <rect x="284" y="192" width="36" height="20" rx="6"/>
-    <rect x="348" y="192" width="36" height="20" rx="6"/>
-    <rect x="92"  y="300" width="36" height="20" rx="6"/>
-    <rect x="156" y="300" width="36" height="20" rx="6"/>
-    <rect x="220" y="300" width="36" height="20" rx="6"/>
-    <rect x="284" y="300" width="36" height="20" rx="6"/>
-    <rect x="348" y="300" width="36" height="20" rx="6"/>
-  </g>
-
-  <!-- Frames in the unselected (dimmed) regions -->
-  <g fill="#3a3a3e">
-    <rect x="84"  y="224" width="76" height="64" rx="8"/>
-    <rect x="352" y="224" width="76" height="64" rx="8"/>
-  </g>
-
-  <!-- Selected region: brighter frames between the handles -->
-  <g fill="#5a5a60">
-    <rect x="180" y="224" width="68" height="64" rx="8"/>
-    <rect x="264" y="224" width="68" height="64" rx="8"/>
-  </g>
-
-  <!-- Yellow trim handles bracketing the selection -->
-  <g fill="url(#handle)">
-    <rect x="156" y="160" width="28" height="192" rx="12"/>
-    <rect x="328" y="160" width="28" height="192" rx="12"/>
-  </g>
-
-  <!-- Grip notches on the handles -->
-  <g fill="#161618" opacity="0.55">
-    <rect x="167" y="240" width="6" height="32" rx="3"/>
-    <rect x="339" y="240" width="6" height="32" rx="3"/>
+  <g transform="translate(256 256) scale(1.2) translate(-256 -256)">
+    <!-- The strip of film; one hard shadow, as Hype's slides. -->
+    <rect x="64" y="146" width="384" height="220" rx="18" fill="#0e0f17" transform="translate(0 8)"/>
+    <rect x="64" y="146" width="384" height="220" rx="18" fill="#1a1b26" stroke="#3b4261" stroke-width="3"/>
+    <g fill="#3b4261">
+      <rect x="86" y="162" width="28" height="16" rx="6"/>
+      <rect x="146" y="162" width="28" height="16" rx="6"/>
+      <rect x="206" y="162" width="28" height="16" rx="6"/>
+      <rect x="278" y="162" width="28" height="16" rx="6"/>
+      <rect x="338" y="162" width="28" height="16" rx="6"/>
+      <rect x="398" y="162" width="28" height="16" rx="6"/>
+      <rect x="86" y="334" width="28" height="16" rx="6"/>
+      <rect x="146" y="334" width="28" height="16" rx="6"/>
+      <rect x="206" y="334" width="28" height="16" rx="6"/>
+      <rect x="278" y="334" width="28" height="16" rx="6"/>
+      <rect x="338" y="334" width="28" height="16" rx="6"/>
+      <rect x="398" y="334" width="28" height="16" rx="6"/>
+    </g>
+    <!-- Frames outside the cut, dimmed. -->
+    <rect x="82" y="194" width="62" height="124" rx="10" fill="#565f89" opacity=".55"/>
+    <rect x="368" y="194" width="62" height="124" rx="10" fill="#565f89" opacity=".55"/>
+    <!-- Frames inside the cut. -->
+    <rect x="176" y="194" width="74" height="124" rx="10" fill="url(#frame)"/>
+    <rect x="262" y="194" width="74" height="124" rx="10" fill="url(#frame)"/>
+    <!-- Trim handles bracketing the cut. -->
+    <rect x="148" y="118" width="24" height="276" rx="12" fill="#0e0f17" transform="translate(0 8)"/>
+    <rect x="148" y="118" width="24" height="276" rx="12" fill="#bb9af7"/>
+    <rect x="340" y="118" width="24" height="276" rx="12" fill="#0e0f17" transform="translate(0 8)"/>
+    <rect x="340" y="118" width="24" height="276" rx="12" fill="#bb9af7"/>
+    <rect x="157" y="238" width="6" height="36" rx="3" fill="#1a1b26" opacity=".35"/>
+    <rect x="349" y="238" width="6" height="36" rx="3" fill="#1a1b26" opacity=".35"/>
   </g>
 </svg>
