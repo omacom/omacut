@@ -34,7 +34,7 @@ Item {
     readonly property real handleW: 14
     // The clip frames' border; the filmstrip sits exactly inside it.
     readonly property int frameW: 3
-    readonly property real frameRadius: 8
+    readonly property real frameRadius: theme.radius
     // The stretch of the sequence the track currently shows. A drag holds the
     // scale it started with, so the handle stays under the pointer.
     readonly property real windowStart: zoomed ? viewStartSec : 0
@@ -108,7 +108,7 @@ Item {
     Rectangle {
         id: track
         anchors.fill: parent; anchors.topMargin: root.frameW; anchors.bottomMargin: root.frameW
-        radius: root.frameRadius - root.frameW; color: root.film
+        radius: Math.max(0, root.frameRadius - root.frameW); color: root.film
     }
 
     component Handle: Rectangle {
@@ -228,7 +228,7 @@ Item {
                                         ? (root.clips.length > 1 ? "Double-click to split · hold to move" : "Double-click to split") : ""
         visible: root.enabled && (dragging || (area.mode === 0 && area.containsMouse && !area.removeHovered && hint !== ""))
         width: label.implicitWidth + 20; height: dragging ? 32 : 26
-        radius: 7; color: "#2c2c2f"
+        radius: Math.min(4, theme.radius); color: "#2c2c2f"
         x: {
             var at = dragging ? root.positions[area.clipIndex] : null
             var anchor = dragging ? root.xForTime(area.leftEdge ? at.start : at.end) : area.mouseX

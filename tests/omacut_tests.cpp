@@ -29,6 +29,7 @@
 #include "backend.h"
 #include "filepicker.h"
 #include "portalfilepicker.h"
+#include "theme.h"
 #include "thumbprovider.h"
 
 // A fake org.freedesktop.portal.Request: only Close() matters here.
@@ -127,8 +128,6 @@ class ShortcutBackend : public QObject {
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(bool probing READ probing NOTIFY busyChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
-    Q_PROPERTY(QString themeAccent READ themeAccent NOTIFY themeAccentChanged)
-    Q_PROPERTY(QString themeAccentForeground READ themeAccentForeground NOTIFY themeAccentChanged)
     Q_PROPERTY(QObject *timeline READ timelineObject CONSTANT)
 
 public:
@@ -144,8 +143,6 @@ public:
     bool busy() const { return false; }
     bool probing() const { return false; }
     QString status() const { return {}; }
-    QString themeAccent() const { return QStringLiteral("#FFD60A"); }
-    QString themeAccentForeground() const { return QStringLiteral("black"); }
     QObject *timelineObject() { return &timeline; }
 
     Q_INVOKABLE bool load(const QUrl &) { return false; }
@@ -190,7 +187,6 @@ signals:
     void videosChanged();
     void busyChanged();
     void statusChanged();
-    void themeAccentChanged();
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
     void frameStepped(double from, double to);
@@ -237,6 +233,7 @@ public:
     explicit QmlHarness(QObject &backend, const QByteArray &source = {}) {
         m_engine.addImageProvider(QStringLiteral("thumbs"), new ThumbProvider);
         m_engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        m_engine.rootContext()->setContextProperty(QStringLiteral("theme"), &m_theme);
         const QUrl url = QUrl::fromLocalFile(mainQmlPath());
         if (source.isEmpty())
             m_engine.load(url);
@@ -253,6 +250,9 @@ public:
     }
 
 private:
+    // Declared before the engine, so it outlives the bindings that read it.
+    QTemporaryDir m_themeDir;
+    Theme m_theme{m_themeDir.path()};
     QQmlApplicationEngine m_engine;
     QQuickWindow *m_window = nullptr;
 };
@@ -326,6 +326,8 @@ private slots:
     void exportHeightsNeverUpscale();
     void themeAccentReadsOmarchyColors();
     void themeAccentForegroundKeepsContrast();
+    void themeFollowsOmarchyInstalledLater();
+    void themeFollowsHyprlandRounding();
     void portalPickerReplacesAnUnansweredRequest();
 
 private:
@@ -2241,8 +2243,7 @@ void BackendTests::themeAccentReadsOmarchyColors() {
     const QString colorsPath = m_dir.filePath(QStringLiteral("colors.toml"));
 
     // No file at all — the non-omarchy case — keeps the fallback.
-    QCOMPARE(Backend::accentFromColorsFile(m_dir.filePath(QStringLiteral("missing.toml")), fallback),
-             fallback);
+    QCOMPARE(Theme::readAccent(m_dir.filePath(QStringLiteral("missing.toml"))), fallback);
 
     const auto writeColors = [&colorsPath](const char *contents) {
         QFile file(colorsPath);
@@ -2254,39 +2255,94 @@ void BackendTests::themeAccentReadsOmarchyColors() {
                 "mode = \"dark\"\n"
                 "background = \"#121212\"\n"
                 "accent = \"#33ccff\"\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#33ccff"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("#33ccff"));
 
     writeColors("accent = '#aabbcc'\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#aabbcc"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("#aabbcc"));
 
     // Themes annotate their palette, and the note is not part of the colour.
     writeColors("accent = \"#4ECDC4\"          # secondary-400 -- the paired accent\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#4ECDC4"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("#4ECDC4"));
 
     writeColors("accent = '#aabbcc'  # single quoted, with a note\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#aabbcc"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("#aabbcc"));
 
     // Unquoted, the colour's own '#' opens it and a later one opens a comment.
     writeColors("accent = #4ECDC4 # secondary-400\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#4ECDC4"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("#4ECDC4"));
 
     // A named colour keeps working with a note after it.
     writeColors("accent = teal # not a hex value at all\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("teal"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("teal"));
 
     // A value that isn't a color keeps the fallback rather than breaking bindings.
     writeColors("accent = \"not-a-color\"\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), fallback);
+    QCOMPARE(Theme::readAccent(colorsPath), fallback);
 
     // As does a theme without an accent at all.
     writeColors("background = \"#121212\"\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), fallback);
+    QCOMPARE(Theme::readAccent(colorsPath), fallback);
+}
+
+static bool writeFile(const QString &path, const QByteArray &contents) {
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(contents) == contents.size();
 }
 
 void BackendTests::themeAccentForegroundKeepsContrast() {
-    QCOMPARE(Backend::foregroundFor(QStringLiteral("#FFD60A")), QStringLiteral("black"));
-    QCOMPARE(Backend::foregroundFor(QStringLiteral("#222266")), QStringLiteral("white"));
-    QCOMPARE(Backend::foregroundFor(QStringLiteral("garbage")), QStringLiteral("black"));
+    QTemporaryDir dir;
+    QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("theme")));
+    const QString colors = dir.filePath(QStringLiteral("theme/colors.toml"));
+
+    Theme fallback(dir.path());
+    QCOMPARE(fallback.accent(), QStringLiteral("#FFD60A"));
+    QCOMPARE(fallback.accentForeground(), QStringLiteral("black"));
+
+    QVERIFY(writeFile(colors, "accent = \"#222266\"\n"));
+    QCOMPARE(Theme(dir.path()).accentForeground(), QStringLiteral("white"));
+
+    // Named colours are accents too, and get a foreground like any other.
+    QVERIFY(writeFile(colors, "accent = teal\n"));
+    QCOMPARE(Theme(dir.path()).accentForeground(), QStringLiteral("white"));
+}
+
+void BackendTests::themeFollowsOmarchyInstalledLater() {
+    // The app starts before Omarchy's state directory exists, and picks up
+    // the accent once a theme lands there, without a restart.
+    QTemporaryDir dir;
+    const QString current = dir.filePath(QStringLiteral("state/omarchy/current"));
+    Theme theme(current);
+    QCOMPARE(theme.accent(), QStringLiteral("#FFD60A"));
+
+    QVERIFY(QDir().mkpath(current + QStringLiteral("/theme")));
+    QVERIFY(writeFile(current + QStringLiteral("/theme/colors.toml"), "accent = \"#112233\"\n"));
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#112233"));
+
+    // A theme switch replaces the file, and the watch follows it.
+    QVERIFY(QFile::remove(current + QStringLiteral("/theme/colors.toml")));
+    QVERIFY(writeFile(current + QStringLiteral("/theme/colors.toml"), "accent = \"#445566\"\n"));
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#445566"));
+
+    // So does replacing the whole current directory, as a symlink swap does.
+    QVERIFY(QDir(current).removeRecursively());
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#FFD60A"));
+    QVERIFY(QDir().mkpath(current + QStringLiteral("/theme")));
+    QVERIFY(writeFile(current + QStringLiteral("/theme/colors.toml"), "accent = \"#778899\"\n"));
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#778899"));
+}
+
+void BackendTests::themeFollowsHyprlandRounding() {
+    QTemporaryDir dir;
+    const QString response = dir.filePath(QStringLiteral("response.json"));
+    const QString command = dir.filePath(QStringLiteral("hyprctl"));
+    QVERIFY(writeFile(command, "#!/bin/sh\ncat '" + response.toUtf8() + "'\n"));
+    QVERIFY(QFile::setPermissions(command, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    QVERIFY(writeFile(response, "{\"int\":0}"));
+
+    Theme theme(dir.path(), nullptr, command);
+    QCOMPARE(theme.radius(), 0);
+    QVERIFY(writeFile(response, "{\"int\":6}"));
+    QTRY_COMPARE(theme.radius(), 6);
 }
 
 static bool dropUrls(QQuickWindow *window, const QList<QUrl> &urls) {
