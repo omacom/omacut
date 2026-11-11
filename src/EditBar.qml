@@ -6,7 +6,7 @@ import "Format.js" as Format
 // out stays on the track, dimmed, between them. Drag a handle to trim the
 // clip into its source, double-click a clip to split it, double-click the
 // line between two pieces of the same stretch to join them, hold a clip to
-// move it, and hover a clip to remove it. "t" is seconds along the sequence;
+// move it, and click a clip's × to remove it. "t" is seconds along the sequence;
 // a clip's in and out are seconds in its source.
 Item {
     id: root
@@ -14,6 +14,10 @@ Item {
     // Time runs left to right in every language, so the timeline isn't mirrored.
     LayoutMirroring.enabled: false
     LayoutMirroring.childrenInherit: true
+
+    // What the pointer is doing: dragging a handle, scrubbing, pressing a
+    // clip's ×, or moving a clip.
+    enum Mode { Idle, Trim, Scrub, Remove, Move }
 
     readonly property var timeline: backend.timeline
     readonly property var clips: timeline.clips
@@ -62,20 +66,26 @@ Item {
     }
     onLayoutChanged: if (!trimming) settleView()
     // Something is being dragged, so playback must not move the playhead.
-    readonly property bool interacting: area.mode !== 0
-    readonly property bool trimming: area.mode === 1
+    readonly property bool interacting: area.mode !== EditBar.Idle
+    readonly property bool trimming: area.mode === EditBar.Trim
 
     readonly property real handleW: 14
     // The clip frames' border; the filmstrip sits exactly inside it.
     readonly property int frameW: 3
     readonly property real frameRadius: theme.radius
+    // A clip's ×: its size, its inset from the top and from the end handle,
+    // and the narrowest clip that offers one.
+    readonly property int removeSize: 20
+    readonly property int removeInset: 7
+    readonly property int removeGap: 4
+    readonly property int removeMinWidth: 60
     // The stretch of the track currently shown, in track seconds.
     readonly property real windowStart: zoomed ? viewStartSec : 0
     // A drag holds the length it started with, so the handle stays under the pointer.
     readonly property real windowEnd: zoomed ? viewEndSec : trimming ? videoEnd(area.frozen[area.frozen.length - 1]) : footageEnd
     readonly property real windowLen: Math.max(windowEnd - windowStart, 0.001)
     readonly property real pxPerSec: width / windowLen
-    readonly property color film: "#1c1c1e"
+    readonly property color trackColor: "#1c1c1e"
     // Frames are decoded at twice the strip's height, for sharpness on HiDPI.
     readonly property int thumbHeight: 140
 
@@ -96,10 +106,10 @@ Item {
     // release, and the dragged clip's footage where it was, so only its edge
     // moves; moving a clip opens a space where it will land.
     readonly property var positions: {
-        if (area.mode === 1)
+        if (area.mode === EditBar.Trim)
             return area.frozen.map((was, i) => ({ start: was.origin + clips[i].in, end: was.origin + clips[i].out, origin: was.origin, source: was.source }))
         var result = []
-        if (area.mode === 4) {
+        if (area.mode === EditBar.Move) {
             // Laid out as if dropped, the moving clip itself under the pointer.
             var order = clips.slice(), moving = order.splice(area.clipIndex, 1)[0]
             order.splice(area.moveTarget, 0, moving)
@@ -126,7 +136,7 @@ Item {
     // moving clip carries its own filmstrip, and the cuts are hidden.
     readonly property var runs: {
         var result = []
-        if (area.mode === 4) return result
+        if (area.mode === EditBar.Move) return result
         for (var i = 0; i < positions.length; ++i) {
             var at = positions[i], run = result[result.length - 1]
             if (!run || run.source !== at.source || run.origin !== at.origin)
@@ -199,7 +209,7 @@ Item {
     Rectangle {
         id: track
         anchors.fill: parent; anchors.topMargin: root.frameW; anchors.bottomMargin: root.frameW
-        radius: Math.max(0, root.frameRadius - root.frameW); color: root.film
+        radius: Math.max(0, root.frameRadius - root.frameW); color: root.trackColor
     }
 
     component Handle: Rectangle {
@@ -209,7 +219,7 @@ Item {
         topLeftRadius: leading ? root.frameRadius : 0; bottomLeftRadius: topLeftRadius
         topRightRadius: leading ? 0 : root.frameRadius; bottomRightRadius: topRightRadius
         color: root.accent
-        Rectangle { anchors.centerIn: parent; width: 2; height: 16; radius: 1; color: root.film }
+        Rectangle { anchors.centerIn: parent; width: 2; height: 16; radius: 1; color: root.trackColor }
     }
 
     // Frames on the step ladder from film.from to film.to, each at its source
@@ -267,7 +277,7 @@ Item {
                 readonly property var cut: root.cuts[index] || { start: 0, end: 0 }
                 x: Math.round(root.xForTime(cut.start)); width: Math.round(root.xForTime(cut.end)) - x
                 y: root.frameW; height: root.height - 2 * root.frameW
-                color: root.film; opacity: 0.7
+                color: root.trackColor; opacity: 0.7
             }
         }
         Repeater {
@@ -279,17 +289,17 @@ Item {
                 // Briefly past the end while the clip count changes.
                 readonly property var at: root.positions[index] || { start: 0, end: 0, origin: 0, source: 0 }
                 readonly property bool hovered: area.clipHovered === index
-                readonly property bool moving: area.mode === 4 && area.clipIndex === index
+                readonly property bool moving: area.mode === EditBar.Move && area.clipIndex === index
                 // Whole pixels, so handles meet the filmstrip without an antialiased seam.
                 x: Math.round(root.xForTime(at.start)); width: Math.max(4, Math.round(root.xForTime(at.end)) - x)
                 height: root.height
-                z: moving || (area.mode === 1 && area.clipIndex === index) ? 1 : 0
+                z: moving || (area.mode === EditBar.Trim && area.clipIndex === index) ? 1 : 0
                 opacity: moving ? 0.85 : 1
                 // While clips move, each carries its own footage.
                 Film {
                     anchors.fill: parent; anchors.margins: root.frameW
                     clip: true
-                    film: area.mode === 4 ? root.filmOf(clipItem.at.source, clipItem.at.origin, clipItem.at.start - clipItem.at.origin, clipItem.at.end - clipItem.at.origin) : ({ video: null, from: 0, to: 0 })
+                    film: area.mode === EditBar.Move ? root.filmOf(clipItem.at.source, clipItem.at.origin, clipItem.at.start - clipItem.at.origin, clipItem.at.end - clipItem.at.origin) : ({ video: null, from: 0, to: 0 })
                     offsetX: clipItem.x + root.frameW
                 }
                 Rectangle {
@@ -302,10 +312,10 @@ Item {
                 // Remove this clip. Only offered when another clip would remain.
                 Rectangle {
                     id: remove
-                    visible: clipItem.hovered && root.clips.length > 1 && clipItem.width > 60 && area.mode === 0
+                    visible: clipItem.hovered && root.clips.length > 1 && clipItem.width > root.removeMinWidth && area.mode === EditBar.Idle
                     anchors.top: parent.top; anchors.right: parent.right
-                    anchors.topMargin: 7; anchors.rightMargin: root.handleW + 4
-                    width: 20; height: 20; radius: 10
+                    anchors.topMargin: root.removeInset; anchors.rightMargin: root.handleW + root.removeGap
+                    width: root.removeSize; height: root.removeSize; radius: root.removeSize / 2
                     readonly property bool hot: area.removeHovered
                     color: hot ? root.accent : "#e0202023"
                     Text {
@@ -320,10 +330,10 @@ Item {
         // The playhead, held between the handles of the clip it's in so it
         // never hides under one.
         Rectangle {
-            visible: root.durationSec > 0 && area.mode !== 4
+            visible: root.durationSec > 0 && area.mode !== EditBar.Move
                 && root.trackTime(root.playheadSec) >= root.windowStart && root.trackTime(root.playheadSec) <= root.windowEnd
             x: {
-                if (area.mode === 1) {
+                if (area.mode === EditBar.Trim) {
                     var at = root.positions[area.clipIndex]
                     var edge = Math.round(root.xForTime(area.leftEdge ? at.start : at.end))
                     return area.leftEdge ? edge + root.handleW : edge - root.handleW - width
@@ -349,7 +359,7 @@ Item {
         readonly property string hint: area.splitHovered >= 0 ? qsTr("Double-click to join")
                                       : area.clipHovered >= 0 && !area.onHandle
                                         ? (root.clips.length > 1 ? qsTr("Double-click to split · hold to move") : qsTr("Double-click to split")) : ""
-        visible: root.enabled && (dragging || (area.mode === 0 && area.containsMouse && !area.removeHovered && hint !== ""))
+        visible: root.enabled && (dragging || (area.mode === EditBar.Idle && area.containsMouse && !area.removeHovered && hint !== ""))
         width: label.implicitWidth + 20; height: dragging ? 32 : 26
         radius: Math.min(4, theme.radius); color: "#2c2c2f"
         x: {
@@ -377,8 +387,7 @@ Item {
         id: area
         anchors.fill: parent
         hoverEnabled: true
-        // 0 none, 1 dragging a handle, 2 scrubbing, 3 pressing a clip's ×, 4 moving a clip
-        property int mode: 0
+        property int mode: EditBar.Idle
         property int clipIndex: -1
         property bool leftEdge: true
         // The source time under the dragged handle.
@@ -397,7 +406,7 @@ Item {
         property real grabOffset: 0
         // Where a moving clip would land: its index once dropped.
         readonly property int moveTarget: {
-            if (mode !== 4) return -1
+            if (mode !== EditBar.Move) return -1
             var moving = root.clips[clipIndex]
             var middle = root.timeForX(mouseX) - grabOffset + (moving.out - moving.in) / 2
             var target = 0
@@ -406,13 +415,15 @@ Item {
             return target
         }
 
-        // The hovered clip's × sits in its top-right corner, inside the handle.
-        function onRemove(x, y) {
+        // Whether x, y is on the hovered clip's ×, in its top-right corner
+        // inside the handle.
+        function overRemoveButton(x, y) {
             if (clipHovered < 0 || root.clips.length < 2) return false
             var at = root.positions[clipHovered]
-            var right = root.xForTime(at.end) - root.handleW - 4
+            var right = root.xForTime(at.end) - root.handleW - root.removeGap
             var width = root.xForTime(at.end) - root.xForTime(at.start)
-            return width > 60 && x >= right - 20 && x <= right && y >= 7 && y <= 27
+            return width > root.removeMinWidth && x >= right - root.removeSize && x <= right
+                && y >= root.removeInset && y <= root.removeInset + root.removeSize
         }
 
         // Where x lands: a handle of some clip, or inside a clip. Between two
@@ -454,28 +465,28 @@ Item {
             onHandle = hit.handle
             clipHovered = hit.clip
             splitHovered = hit.split
-            removeHovered = onRemove(x, y)
+            removeHovered = overRemoveButton(x, y)
             cursorShape = removeHovered ? Qt.PointingHandCursor : hit.handle ? Qt.SizeHorCursor : Qt.ArrowCursor
         }
         function pickUp() {
-            if (mode !== 2 || clipIndex < 0 || root.clips.length < 2) return
+            if (mode !== EditBar.Scrub || clipIndex < 0 || root.clips.length < 2) return
             grabOffset = root.timeForX(mouseX) - root.positions[clipIndex].start
-            mode = 4
+            mode = EditBar.Move
             cursorShape = Qt.ClosedHandCursor
         }
 
         onPositionChanged: mouse => {
             if (root.durationSec <= 0) return
             var t = root.timeForX(mouse.x)
-            if (mode === 0) { hover(mouse.x, mouse.y); return }
-            if (mode === 2) {
+            if (mode === EditBar.Idle) { hover(mouse.x, mouse.y); return }
+            if (mode === EditBar.Scrub) {
                 // Moving before the hold fires makes it a scrub, not a pick-up.
                 if (Math.abs(mouse.x - pressX) > 4) hold.stop()
                 // Over a cut, the playhead waits at the next clip's start.
                 seek(root.sequenceTime(t))
                 return
             }
-            if (mode !== 1) return
+            if (mode !== EditBar.Trim) return
             // Unclamped, so the outer handles can reach past the timeline's
             // ends to restore footage trimmed off earlier.
             var free = root.windowStart + mouse.x / Math.max(root.pxPerSec, 0.001)
@@ -485,7 +496,7 @@ Item {
         }
         onPressed: mouse => {
             if (root.durationSec <= 0) return
-            if (removeHovered) { mode = 3; return }
+            if (removeHovered) { mode = EditBar.Remove; return }
             var hit = hitTest(mouse.x)
             clipIndex = hit.clip
             if (hit.handle) {
@@ -493,43 +504,43 @@ Item {
                 dragStartPlayhead = root.trackTime(root.playheadSec)
                 leftEdge = hit.left
                 activeTime = leftEdge ? root.clips[clipIndex].in : root.clips[clipIndex].out
-                mode = 1
+                mode = EditBar.Trim
                 root.timeline.beginGesture()
                 // Show the edge's frame from the press, not only once dropped.
                 root.scrubClip(clipIndex, edgeFrameTime)
             } else {
-                mode = 2; pressX = mouse.x
+                mode = EditBar.Scrub; pressX = mouse.x
                 seek(root.sequenceTime(root.timeForX(mouse.x)))
                 if (hit.clip >= 0) hold.restart()
             }
         }
         onReleased: {
             hold.stop()
-            if (mode === 1) {
+            if (mode === EditBar.Trim) {
                 root.timeline.endGesture()
                 // The playhead stays on the frame the handle was dropped at.
                 root.playheadSec = root.timeline.clipStart(clipIndex) + edgeFrameTime - root.clips[clipIndex].in
                 root.settleView()
             }
-            if (mode === 3 && onRemove(mouseX, mouseY)) root.timeline.removeClip(clipHovered)
-            if (mode === 4) {
+            if (mode === EditBar.Remove && overRemoveButton(mouseX, mouseY)) root.timeline.removeClip(clipHovered)
+            if (mode === EditBar.Move) {
                 var target = moveTarget
                 root.timeline.moveClip(clipIndex, target)
-                mode = 0
+                mode = EditBar.Idle
                 seek(root.timeline.clipStart(target))
             }
-            mode = 0; clipIndex = -1
+            mode = EditBar.Idle; clipIndex = -1
             // A drag can end off the bar, and then no exit follows to clear it.
             if (containsMouse) hover(mouseX, mouseY)
             else unhover()
         }
         onCanceled: {
             hold.stop()
-            if (mode === 1) { root.timeline.endGesture(); root.settleView() }
-            mode = 0; clipIndex = -1
+            if (mode === EditBar.Trim) { root.timeline.endGesture(); root.settleView() }
+            mode = EditBar.Idle; clipIndex = -1
         }
         onDoubleClicked: mouse => {
-            if (onRemove(mouse.x, mouse.y)) return
+            if (overRemoveButton(mouse.x, mouse.y)) return
             var hit = hitTest(mouse.x)
             if (hit.split >= 0) root.timeline.joinClips(hit.split)
             else if (hit.clip >= 0 && !hit.handle) root.timeline.split(root.sequenceTime(root.timeForX(mouse.x)))
