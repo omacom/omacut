@@ -5,7 +5,7 @@ pkgdesc='Dead-simple video length trimmer built with Qt Quick and ffmpeg'
 arch=('x86_64' 'aarch64')
 url='https://github.com/omacom/omacut'
 license=('MIT')
-depends=('ffmpeg' 'hicolor-icon-theme' 'qt6-base' 'qt6-declarative' 'qt6-multimedia' 'xdg-desktop-portal')
+depends=('ffmpeg' 'hicolor-icon-theme' 'qt6-base' 'qt6-declarative' 'qt6-multimedia' 'qt6-wayland' 'xdg-desktop-portal')
 makedepends=('cmake' 'gcc' 'make')
 # The playback tests drive a real MediaPlayer, which needs Qt's ffmpeg backend.
 checkdepends=('qt6-multimedia-ffmpeg')
