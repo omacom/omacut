@@ -1,5 +1,6 @@
 #include "translator.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -29,6 +30,12 @@ QString Translator::language() const {
 bool Translator::isEmpty() const {
     QReadLocker locker(&m_lock);
     return m_strings.isEmpty();
+}
+
+// Unregistered before the catalog and its lock go, since a worker thread can
+// still be translating through QCoreApplication while the app shuts down.
+Translator::~Translator() {
+    QCoreApplication::removeTranslator(this);
 }
 
 // One registry code on the first line; anything else, or no file, is English.
