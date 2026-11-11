@@ -1,5 +1,8 @@
 #include "ffmpeg.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -198,6 +201,29 @@ QImage thumbnail(const QString &path, double time, int height,
     QImage img;
     img.loadFromData(data, "JPEG");
     return img;
+}
+
+QList<double> frameTimes(const QString &path, double start) {
+    QProcess proc;
+    proc.start(toolPath("ffprobe"), {"-v", "error", "-select_streams", "V:0",
+               "-show_entries", "packet=pts_time", "-of", "csv=p=0", path});
+    if (!proc.waitForFinished(kProbeTimeoutMs)) {
+        proc.kill();
+        proc.waitForFinished();
+        return {};
+    }
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
+        return {};
+    QList<double> times;
+    for (const QByteArray &line : proc.readAllStandardOutput().split('\n')) {
+        bool ok = false;
+        const double time = line.split(',').value(0).toDouble(&ok);
+        if (ok && std::isfinite(time))
+            times.append(time - start);
+    }
+    std::sort(times.begin(), times.end());
+    times.erase(std::unique(times.begin(), times.end()), times.end());
+    return times;
 }
 
 QStringList shownFrameArgs(const QString &path, double pts) {

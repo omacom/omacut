@@ -77,6 +77,8 @@ public:
     // clip's video, in the background. One at a time; frameSaved or
     // frameFailed says how it went.
     Q_INVOKABLE void saveFrame(double t);
+    // Resolve the adjacent displayed frame without blocking the UI.
+    Q_INVOKABLE void stepFrame(double t, int direction);
 
     // Write the clips to dst. A non-zero scaleHeight downscales the shorter
     // side to that size.
@@ -94,6 +96,8 @@ signals:
     void themeAccentChanged();
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
+    void frameStepped(double from, double to);
+    void frameStepFailed(const QString &message);
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);
@@ -113,6 +117,7 @@ private:
         ffmpeg::VideoInfo info;
         QUrl url;
         int thumbKey = 0;
+        QList<double> frameTimes;
     };
     // The local path behind url, or an empty string (and a loadError) when
     // it isn't an absolute local file ffprobe can safely be handed.
@@ -156,6 +161,7 @@ private:
     int m_batchAdded = 0;
     int m_batchSkipped = 0;
     bool m_savingFrame = false;
+    bool m_steppingFrame = false;
     // The hidden file a frame is being written to, until it's renamed.
     QString m_framePart;
     QString m_status;

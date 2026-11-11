@@ -160,6 +160,7 @@ public:
     }
     Q_INVOKABLE QUrl suggestedExportUrl() const { return {}; }
     Q_INVOKABLE void saveFrame(double) {}
+    Q_INVOKABLE void stepFrame(double t, int direction) { emit frameStepped(t, t + direction * 0.04); }
     Q_INVOKABLE bool addVideos(const QVariantList &, double) { return false; }
 
     void announceInfo() {
@@ -192,6 +193,8 @@ signals:
     void themeAccentChanged();
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
+    void frameStepped(double from, double to);
+    void frameStepFailed(const QString &message);
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);
@@ -272,6 +275,8 @@ private slots:
     void exportDialogDelegatesSuggestedUrl();
     void suggestedExportUrlAlwaysUsesMp4();
     void exportClipWritesMp4();
+    void frameStepsFollowPresentationTimes();
+    void frameStepFailuresHaveTheirOwnNotice();
     void saveFrameWritesPngBesideTheSource();
     void saveFrameSquaresStretchedPixels();
     void shownFrameIsTheLastToStartByThen();
@@ -290,6 +295,7 @@ private slots:
     void qmlDoesNotCreateAudioOutputWithoutVideo();
     void qmlShortcutsTriggerBackendActions();
     void qmlArrowKeysMoveThePlayhead();
+    void qmlFrameStepsSurviveRoundedPlayerFeedback();
     void qmlNumberKeysJumpThroughTheEdit();
     void qmlSpaceChordsSetTheClipEdges();
     void qmlKeysSplitAndRemoveClips();
@@ -737,6 +743,87 @@ void BackendTests::suggestedExportUrlAlwaysUsesMp4() {
 
     QCOMPARE(backend.suggestedExportUrl(),
              QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("renamed-source_trimmed.mp4"))));
+}
+
+void BackendTests::frameStepsFollowPresentationTimes() {
+    const QString path = m_dir.filePath(QStringLiteral("step-vfr.mkv"));
+    QProcess proc;
+    // Irregular presentation times, with B-frame reordering in the file.
+    proc.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")), {
+        "-v", "error", "-f", "lavfi", "-i", "testsrc=size=32x32:rate=10:duration=1",
+        "-vf", "select='eq(n,0)+eq(n,1)+eq(n,4)+eq(n,8)'",
+        "-fps_mode", "vfr", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", path
+    });
+    QVERIFY(proc.waitForFinished(10000));
+    QCOMPARE(proc.exitCode(), 0);
+    const auto times = ffmpeg::frameTimes(path, 0);
+    QCOMPARE(times, (QList<double>{0.0, 0.1, 0.4, 0.8}));
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QVERIFY(backend.load(QUrl::fromLocalFile(path)));
+    waitForProbe(backend);
+    QSignalSpy stepped(&backend, &Backend::frameStepped);
+    const auto step = [&](double from, int direction, double expected) {
+        stepped.clear();
+        backend.stepFrame(from, direction);
+        QTRY_COMPARE_WITH_TIMEOUT(stepped.count(), 1, 10000);
+        QVERIFY(qAbs(stepped.first().at(1).toDouble() - expected) < 0.000001);
+    };
+    step(0, 1, 0.1);
+    step(0.1, 1, 0.4);
+    step(0.4, -1, 0.1);
+    step(0.6, -1, 0.1);
+    step(0, -1, 0);
+    step(backend.timeline()->duration(), 1, backend.timeline()->duration());
+    step(backend.timeline()->duration(), -1, 0.8);
+    backend.timeline()->split(0.4);
+    step(0.4, -1, 0.1);
+    step(0.1, 1, 0.4);
+    // Trimmed clips still use their source's timestamps.
+    backend.timeline()->setClip(1, 0.5, 0.9);
+    step(0.4, 1, 0.7);
+    step(0.7, -1, 0.4);
+
+    // A seek to this cut rounds up to 0.401s in the player. It must
+    // still step into the previous clip rather than returning to the cut.
+    backend.timeline()->reset(0.9);
+    backend.timeline()->split(0.4006);
+    step(0.401, -1, 0.4);
+    step(0.4, -1, 0.1);
+
+    // The last frame can start less than half a millisecond before a cut.
+    // After reaching it, the next press must leave that frame behind.
+    backend.timeline()->reset(0.9);
+    backend.timeline()->split(0.4004);
+    step(0.4004, -1, 0.4);
+    step(0.4, -1, 0.1);
+}
+
+void BackendTests::frameStepFailuresHaveTheirOwnNotice() {
+    const QString path = m_dir.filePath(QStringLiteral("step-removed.mp4"));
+    QVERIFY(QFile::copy(m_videoPath, path));
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QVERIFY(backend.load(QUrl::fromLocalFile(path)));
+    waitForProbe(backend);
+    QVERIFY(QFile::remove(path));
+    QSignalSpy stepFailed(&backend, &Backend::frameStepFailed);
+    QSignalSpy saveFailed(&backend, &Backend::frameFailed);
+    backend.stepFrame(0, 1);
+    QTRY_COMPARE_WITH_TIMEOUT(stepFailed.count() + saveFailed.count(), 1, 10000);
+    QCOMPARE(stepFailed.count(), 1);
+    QCOMPARE(saveFailed.count(), 0);
+
+    ShortcutBackend display(QUrl(), 0);
+    QmlHarness harness(display);
+    QVERIFY(harness.window());
+    const QString message = stepFailed.first().first().toString();
+    emit display.frameStepFailed(message);
+    QCOMPARE(harness.window()->property("noticeText").toString(),
+             QStringLiteral("Could not step to the frame: ") + message);
+    emit display.frameFailed(QStringLiteral("save error"));
+    QCOMPARE(harness.window()->property("noticeText").toString(),
+             QStringLiteral("Could not save the frame: save error"));
 }
 
 void BackendTests::saveFrameWritesPngBesideTheSource() {
@@ -1351,11 +1438,38 @@ void BackendTests::qmlArrowKeysMoveThePlayhead() {
     QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 6.0, 3000);
 
+    // A tap of Alt+arrow steps one frame (0.04s in this backend).
     QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 6.2, 3000);
-
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.04) < 0.000001, 3000);
     QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 6.0, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.0) < 0.000001, 3000);
+
+    // Holding it repeats faster than any tap: the first press steps one
+    // frame, and each repeat after it moves 0.2s. After a pause, the next
+    // press is a single frame again.
+    QTest::qWait(150);
+    QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.44) < 0.000001, 3000);
+    QTest::qWait(150);
+    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.0) < 0.000001, 3000);
+
+    // A step cancels a pending play on a source that's still loading, so
+    // playback can't start under the stepped frame.
+    auto *player = window->findChild<QMediaPlayer *>();
+    QVERIFY(player);
+    QVERIFY(player->setProperty("pendingPlay", true));
+    QTest::qWait(150);
+    QTest::keyClick(window, Qt::Key_Left, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 5.96) < 0.000001, 3000);
+    QCOMPARE(player->property("pendingPlay").toBool(), false);
+    QTest::qWait(150);
+    QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 6.0) < 0.000001, 3000);
 
     QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 1.0, 3000);
@@ -1368,6 +1482,56 @@ void BackendTests::qmlArrowKeysMoveThePlayhead() {
     QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
     QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 5.0, 20.0}}), 3000);
+}
+
+void BackendTests::qmlFrameStepsSurviveRoundedPlayerFeedback() {
+    // MP4 retains sub-millisecond timestamps; Matroska's millisecond
+    // time base would round away the very condition being tested.
+    const QString path = m_dir.filePath(QStringLiteral("step-24fps.mp4"));
+    QProcess proc;
+    proc.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")), {
+        "-v", "error", "-f", "lavfi", "-i", "testsrc=size=32x32:rate=24:duration=1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", path
+    });
+    QVERIFY(proc.waitForFinished(10000));
+    QCOMPARE(proc.exitCode(), 0);
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QVERIFY(backend.load(QUrl::fromLocalFile(path)));
+    waitForProbe(backend);
+    backend.timeline()->setClip(0, 0, 0.1668);
+    // Silent video tests need no connection to the desktop audio server.
+    const QString sourceDir = QUrl::fromLocalFile(QFileInfo(mainQmlPath()).absolutePath()).toString();
+    QmlHarness harness(backend, QString("import \"%1\" as Editor\n"
+                                        "Editor.Main { function ensureAudioOutput() {} }")
+                                    .arg(sourceDir).toUtf8());
+    QVERIFY(harness.window());
+    auto *player = harness.window()->findChild<QMediaPlayer *>();
+    QVERIFY(player);
+    emit backend.infoChanged();
+    QTRY_COMPARE_WITH_TIMEOUT(player->playbackState(), QMediaPlayer::PausedState, 10000);
+    QTRY_VERIFY_WITH_TIMEOUT(!player->property("priming").toBool(), 10000);
+    QVERIFY(QMetaObject::invokeMethod(harness.window(), "seekTo", Q_ARG(QVariant, 0.1668)));
+    QSignalSpy stepped(&backend, &Backend::frameStepped);
+    // Each step starts with the playhead produced by the real QML handler,
+    // after feeding back the player's rounded source position.
+    for (double expected : {0.166667, 0.125, 0.083333, 0.041667, 0.0}) {
+        stepped.clear();
+        backend.stepFrame(playhead(harness), -1);
+        QTRY_COMPARE_WITH_TIMEOUT(stepped.count(), 1, 10000);
+        const double resolved = stepped.first().at(1).toDouble();
+        QVERIFY(qAbs(resolved - expected) < 0.000001);
+        const qint64 rounded = qRound64(resolved * 1000);
+        player->setPosition(rounded);
+        // Emit even when the rounded position has not changed (167ms
+        // for both the clip end and its final frame).
+        emit player->positionChanged(rounded);
+        QVERIFY(qAbs(playhead(harness) - expected) < 0.000001);
+    }
+    // A subsequent ordinary seek must replace the remembered frame time.
+    QVERIFY(QMetaObject::invokeMethod(harness.window(), "seekTo", Q_ARG(QVariant, 0.1668)));
+    emit player->positionChanged(167);
+    QVERIFY(qAbs(playhead(harness) - 0.1668) < 0.000001);
 }
 
 void BackendTests::qmlSpaceChordsSetTheClipEdges() {
@@ -1477,32 +1641,32 @@ void BackendTests::qmlKeysMoveAndAddClips() {
     QTest::keyClick(window, Qt::Key_S);
     QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
     QTest::keyClick(window, Qt::Key_Right, Qt::AltModifier);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 0.2, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 0.04) < 0.000001, 3000);
     QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier | Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.addCount, 1, 3000);
-    QCOMPARE(backend.lastAddAt, 0.2);
+    QCOMPARE(backend.lastAddAt, 0.04);
     backend.addVideo(3.0, backend.lastAddAt);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
                               (edit::Clips{{0, 0.0, 5.0}, {1, 0.0, 3.0}, {0, 5.0, 20.0}}), 3000);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), true, 3000);
 
     // Alt+] moves the clip under the playhead later, and the playhead moves
-    // with it, still 0.2 s in.
+    // with it, still one frame (0.04 s) in.
     QTest::keyClick(window, Qt::Key_BracketRight, Qt::AltModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
                               (edit::Clips{{1, 0.0, 3.0}, {0, 0.0, 5.0}, {0, 5.0, 20.0}}), 3000);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 3.2, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 3.04) < 0.000001, 3000);
 
     // At the end already, Alt+] does nothing; Alt+[ moves it back.
     QTest::keyClick(window, Qt::Key_BracketRight, Qt::AltModifier);
     QTest::keyClick(window, Qt::Key_BracketRight, Qt::AltModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
                               (edit::Clips{{1, 0.0, 3.0}, {0, 5.0, 20.0}, {0, 0.0, 5.0}}), 3000);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 18.2, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 18.04) < 0.000001, 3000);
     QTest::keyClick(window, Qt::Key_BracketLeft, Qt::AltModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
                               (edit::Clips{{1, 0.0, 3.0}, {0, 0.0, 5.0}, {0, 5.0, 20.0}}), 3000);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 3.2, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(playhead(harness) - 3.04) < 0.000001, 3000);
 }
 
 void BackendTests::qmlZoomFocusesTheClip() {

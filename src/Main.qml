@@ -226,18 +226,46 @@ ApplicationWindow {
         onActivated: seekTo(editBar.playheadSec + 5)
     }
 
+    // A tap of Alt+Left/Right pauses and steps one video frame. Holding the
+    // key repeats far faster than anyone taps, so a repeat within 100ms in
+    // the same direction moves 0.2s instead, to cover ground quickly.
+    property double lastAltStepAt: 0
+    property int lastAltStepDirection: 0
+    function altStep(direction) {
+        var now = Date.now();
+        var held = direction === lastAltStepDirection && now - lastAltStepAt < 100;
+        lastAltStepAt = now;
+        lastAltStepDirection = direction;
+        if (held) {
+            seekTo(editBar.playheadSec + 0.2 * direction);
+        } else {
+            // A source still loading must not start playing once it's in.
+            player.pause();
+            player.pendingPlay = false;
+            backend.stepFrame(editBar.playheadSec, direction);
+        }
+    }
+
     Shortcut {
         sequence: "Alt+Left"
         context: Qt.ApplicationShortcut
         enabled: win.editing
-        onActivated: seekTo(editBar.playheadSec - 0.2)
+        onActivated: altStep(-1)
     }
 
     Shortcut {
         sequence: "Alt+Right"
         context: Qt.ApplicationShortcut
         enabled: win.editing
-        onActivated: seekTo(editBar.playheadSec + 0.2)
+        onActivated: altStep(1)
+    }
+
+    Connections {
+        target: backend
+        function onFrameStepped(from, to) {
+            if (win.editing && !win.playing() && Math.abs(editBar.playheadSec - from) < 0.000001)
+                win.seekTo(to);
+        }
     }
 
     Shortcut {
@@ -408,11 +436,15 @@ ApplicationWindow {
         // until the first frame arrives, then pausing, puts that frame up.
         property bool priming: false
         property int primeMs: 0
+        // Keep the exact paused seek target: rounding a frame up to the
+        // clip's end must not turn the next backward step into a repeat.
+        property real pausedSourceTime: -1
 
         // Shows sourceTime in clip index, and plays on from there if asked.
         function show(index, sourceTime, andPlay) {
             var url = backend.videos[timeline.clips[index].source].url;
             var ms = Math.round(sourceTime * 1000);
+            pausedSourceTime = andPlay ? -1 : sourceTime;
             clip = index;
             // Compared as text: url values are never identical as objects.
             if (source.toString() !== url.toString() || mediaStatus === MediaPlayer.LoadingMedia) {
@@ -438,6 +470,7 @@ ApplicationWindow {
                 return;
             }
             clip = index;
+            pausedSourceTime = pendingPlay ? -1 : sourceTime;
             pendingMs = Math.round(sourceTime * 1000);
         }
 
@@ -492,6 +525,9 @@ ApplicationWindow {
             if (pendingMs >= 0 || clip < 0 || clip >= timeline.clips.length)
                 return;
             var c = timeline.clips[clip], t = player.position / 1000;
+            if (!win.playing() && pausedSourceTime >= 0
+                    && player.position === Math.round(pausedSourceTime * 1000))
+                t = pausedSourceTime;
             // Play the clips in order: carry on into a clip that continues
             // this one, jump to any other, and stop after the last.
             if (playbackState === MediaPlayer.PlayingState && t >= c.out - 0.03) {
@@ -949,7 +985,7 @@ ApplicationWindow {
                         { keys: "0–9", action: "Jump to 0%–90% of the edit" },
                         { keys: "← / →", action: "Move playhead 1s" },
                         { keys: "Shift ← / →", action: "Move playhead 5s" },
-                        { keys: "Alt ← / →", action: "Move playhead 0.2s" },
+                        { keys: "Alt ← / →", action: "One frame; hold to move 0.2s" },
                         { keys: "[ / ]", action: "Previous / next clip edge" },
                         { keys: "S", action: "Split the clip at the playhead" },
                         { keys: "X", action: "Remove the clip" },
@@ -1174,6 +1210,9 @@ ApplicationWindow {
         }
         function onFrameFailed(message) {
             win.showNotice("Could not save the frame: " + message);
+        }
+        function onFrameStepFailed(message) {
+            win.showNotice("Could not step to the frame: " + message);
         }
         function onLoadError(message) {
             // The export-reopen refusal is a complete sentence already.

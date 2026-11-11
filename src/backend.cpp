@@ -373,6 +373,71 @@ void Backend::exportDialog() {
     m_filePicker->exportVideo(suggestedExportUrl(), exportHeights(frame.width, frame.height));
 }
 
+void Backend::stepFrame(double t, int direction) {
+    if (m_steppingFrame || busy() || m_timeline.duration() <= 0 || !direction)
+        return;
+    t = qBound(0.0, t, m_timeline.duration());
+    const edit::Clips clips = m_timeline.clips();
+    int index = m_timeline.clipAt(t);
+    // An edge belongs to the following clip, but stepping left from it
+    // should show the previous clip's last frame. The player can round
+    // that edge up by half a millisecond when reporting its position.
+    constexpr double tolerance = 0.0005;
+    if (direction < 0 && index > 0 && t - m_timeline.clipStart(index) <= tolerance)
+        --index;
+    const edit::Clip clip = clips.at(index);
+    const double clipStart = m_timeline.clipStart(index);
+    const bool atClipEnd = t >= m_timeline.clipStart(index + 1);
+    const Video video = m_videos.at(clip.source);
+    m_steppingFrame = true;
+    const QPointer<Backend> guard(this);
+    QThreadPool::globalInstance()->start([guard, video, clips, clip, clipStart, atClipEnd, t, direction] {
+        const auto times = video.frameTimes.isEmpty()
+            ? ffmpeg::frameTimes(video.info.path, video.info.start) : video.frameTimes;
+        QMetaObject::invokeMethod(QCoreApplication::instance(),
+            [guard, video, clips, clip, clipStart, atClipEnd, t, direction, times] {
+                if (!guard)
+                    return;
+                guard->m_steppingFrame = false;
+                if (guard->m_timeline.clips() != clips || guard->m_videos.value(clip.source).thumbKey != video.thumbKey)
+                    return;
+                if (times.isEmpty()) {
+                    emit guard->frameStepFailed(QStringLiteral("Could not read video frame times."));
+                    return;
+                }
+                guard->m_videos[clip.source].frameTimes = times;
+                const double sourceTime = atClipEnd ? clip.out : clip.in + t - clipStart;
+                // Match the player's millisecond resolution, including rounded
+                // timestamps at fractional frame rates.
+                double target = direction < 0 ? clip.in : clip.out;
+                if (direction > 0) {
+                    for (double time : times) {
+                        if (time > sourceTime + tolerance && time < clip.out) {
+                            target = time;
+                            break;
+                        }
+                    }
+                } else {
+                    // First find the frame currently on screen, then its predecessor.
+                    double shown = clip.in;
+                    for (double time : times) {
+                        if (time > sourceTime + tolerance || time >= clip.out)
+                            break;
+                        if (time >= clip.in) {
+                            target = shown;
+                            shown = time;
+                        }
+                    }
+                    // Only at/past the actual end: treating a frame just before
+                    // it as the end would keep returning that same frame.
+                    if (atClipEnd)
+                        target = shown;
+                }
+                emit guard->frameStepped(t, clipStart + target - clip.in);
+            }, Qt::QueuedConnection);
+    });
+}
+
 void Backend::saveFrame(double t) {
     if (m_savingFrame || m_videos.isEmpty() || m_timeline.duration() <= 0)
         return;

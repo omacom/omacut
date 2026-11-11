@@ -25,7 +25,7 @@ Handles catch on neighbouring clip edges and the playhead.
 - *0–9*: Jump to 0%–90% of the edit.
 - *Left/Right*: Move the playhead by 1 second.
 - *Shift+Left/Right*: Move the playhead by 5 seconds.
-- *Alt+Left/Right*: Move the playhead by 0.2 seconds.
+- *Alt+Left/Right*: Pause and move the playhead by one video frame. Hold to move it by 0.2 seconds at a time.
 - *[ / ]*: Jump to the previous / next clip edge.
 - *S*: Split the clip at the playhead.
 - *X, Delete*: Remove the clip under the playhead.
