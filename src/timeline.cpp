@@ -92,9 +92,9 @@ double Timeline::edgeFrom(double t, int direction) const {
 }
 
 bool Timeline::canJoin(int index) const {
-    return index >= 0 && index + 1 < m_clips.size()
-        && m_clips[index].source == m_clips[index + 1].source
-        && m_clips[index].out == m_clips[index + 1].in;
+    // The same test playback and export use, so a handle dragged onto its
+    // neighbour's edge, a hair off from float arithmetic, can still join.
+    return index >= 0 && index + 1 < m_clips.size() && edit::continues(m_clips[index], m_clips[index + 1]);
 }
 
 bool Timeline::continues(int index) const {

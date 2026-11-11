@@ -1954,7 +1954,10 @@ void BackendTests::timelineSplitsTrimsAndJoins() {
     // Only a clip that carries on where the last left off can join it.
     timeline.joinClips(0);
     QCOMPARE(timeline.clips().size(), 2);
-    timeline.setClip(1, 4.0, 10.0);
+    // A hair off, as a dragged handle leaves it, counts as carrying on, the
+    // same as playback and export see it.
+    timeline.setClip(1, 4.0004, 10.0);
+    QVERIFY(timeline.canJoin(0));
     timeline.joinClips(0);
     QCOMPARE(timeline.clips(), wholeVideo(10.0));
     // The last clip can't be removed.
