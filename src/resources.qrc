@@ -53,5 +53,8 @@
         <file alias="i18n/vi.json">i18n/vi.json</file>
         <file alias="i18n/zh-CN.json">i18n/zh-CN.json</file>
         <file alias="i18n/zh-TW.json">i18n/zh-TW.json</file>
+        <file alias="ConfirmDialog.qml">ConfirmDialog.qml</file>
+        <file alias="DialogButton.qml">DialogButton.qml</file>
+        <file alias="DialogPanel.qml">DialogPanel.qml</file>
     </qresource>
 </RCC>

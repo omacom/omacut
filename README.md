@@ -19,6 +19,8 @@ The timeline shows your clips back to back, in the order they play, each framed 
 
 Handles catch on neighbouring clip edges and the playhead.
 
+Confirmations are answered from the keyboard: the arrows and Tab move between the buttons, Enter presses one, Alt and a button's underlined letter presses that one, and Escape backs out.
+
 ## Hotkeys
 
 - *Space*: Start/stop video playback.

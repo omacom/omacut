@@ -636,39 +636,6 @@ ApplicationWindow {
         onTriggered: win.noticeText = ""
     }
 
-    component DialogButton: Rectangle {
-        id: dialogButton
-        width: dialogButtonLabel.implicitWidth + 28
-        height: 34
-        radius: theme.radius
-
-        property string text: ""
-        property bool primary: false
-        signal clicked()
-
-        color: primary ? win.accent : "#2c2c2f"
-        border.color: activeFocus ? (primary ? win.accentForeground : win.accent) : "transparent"
-        border.width: activeFocus ? 2 : 0
-
-        Keys.onReturnPressed: clicked()
-        Keys.onEnterPressed: clicked()
-        Keys.onSpacePressed: clicked()
-
-        Label {
-            id: dialogButtonLabel
-            anchors.centerIn: parent
-            text: dialogButton.text
-            color: dialogButton.primary ? win.accentForeground : "white"
-            font.pixelSize: 13
-            font.weight: Font.DemiBold
-        }
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: dialogButton.clicked()
-        }
-    }
-
     component IconButton: Rectangle {
         id: iconButton
         implicitWidth: 44
@@ -997,12 +964,10 @@ ApplicationWindow {
             onClicked: win.helpVisible = false
         }
 
-        Rectangle {
+        DialogPanel {
             anchors.centerIn: parent
             width: helpColumn.width + 56
             height: helpColumn.height + 48
-            radius: theme.radius
-            color: "#1c1c1e"
 
             Column {
                 id: helpColumn
@@ -1061,174 +1026,41 @@ ApplicationWindow {
     }
 
     // --- open confirmation (replacing an unexported edit) ---
-    Rectangle {
-        LayoutMirroring.enabled: win.rightToLeft
-        LayoutMirroring.childrenInherit: true
+    ConfirmDialog {
         visible: win.openConfirmVisible
-        anchors.fill: parent
-        color: "#cc000000"
-        onVisibleChanged: {
-            if (visible)
-                openKeepButton.forceActiveFocus();
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: win.openConfirmVisible = false
-        }
-
-        Rectangle {
-            anchors.centerIn: parent
-            width: openColumn.width + 64
-            height: openColumn.height + 48
-            radius: theme.radius
-            color: "#1c1c1e"
-
-            MouseArea {
-                anchors.fill: parent
-            }
-
-            Column {
-                id: openColumn
-                anchors.centerIn: parent
-                spacing: 8
-
-                Label {
-                    text: qsTr("Unexported edit")
-                    color: "white"
-                    font.pixelSize: 16
-                    font.weight: Font.DemiBold
-                }
-
-                Label {
-                    width: Math.min(implicitWidth, win.width - 160)
-                    text: qsTr("Opening another video will discard this edit. Open it anyway?")
-                    color: "#d6d6da"
-                    font.pixelSize: 13
-                    wrapMode: Text.WordWrap
-                    bottomPadding: 12
-                }
-
-                Row {
-                    anchors.right: parent.right
-                    spacing: 10
-
-                    DialogButton {
-                        id: openKeepButton
-                        text: qsTr("Keep editing")
-                        KeyNavigation.left: openVideoConfirmButton
-                        KeyNavigation.right: openVideoConfirmButton
-                        KeyNavigation.tab: openVideoConfirmButton
-                        KeyNavigation.backtab: openVideoConfirmButton
-                        onClicked: win.openConfirmVisible = false
-                    }
-                    DialogButton {
-                        id: openVideoConfirmButton
-                        text: qsTr("Open video")
-                        primary: true
-                        KeyNavigation.left: openKeepButton
-                        KeyNavigation.right: openKeepButton
-                        KeyNavigation.tab: openKeepButton
-                        KeyNavigation.backtab: openKeepButton
-                        onClicked: {
-                            win.openConfirmVisible = false;
-                            backend.openVideoDialog();
-                        }
-                    }
-                }
-            }
+        title: qsTr("Unexported edit")
+        message: qsTr("Opening another video will discard this edit. Open it anyway?")
+        buttons: [
+            { text: qsTr("Keep editing"), mnemonic: "K" },
+            { text: qsTr("Open video"), mnemonic: "O", primary: true }
+        ]
+        onDismissed: win.openConfirmVisible = false
+        onChosen: (index) => {
+            win.openConfirmVisible = false;
+            if (index === 1)
+                backend.openVideoDialog();
         }
     }
 
     // --- quit confirmation ---
-    Rectangle {
-        LayoutMirroring.enabled: win.rightToLeft
-        LayoutMirroring.childrenInherit: true
+    ConfirmDialog {
         visible: win.quitConfirmVisible
-        anchors.fill: parent
-        color: "#cc000000"
-        onVisibleChanged: {
-            if (visible)
-                (backend.exporting ? quitCancelButton : quitExportButton).forceActiveFocus();
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            onClicked: win.quitConfirmVisible = false
-        }
-
-        Rectangle {
-            anchors.centerIn: parent
-            width: quitColumn.width + 64
-            height: quitColumn.height + 48
-            radius: theme.radius
-            color: "#1c1c1e"
-
-            MouseArea {
-                anchors.fill: parent
-            }
-
-            Column {
-                id: quitColumn
-                anchors.centerIn: parent
-                spacing: 8
-
-                Label {
-                    text: backend.exporting ? qsTr("Exporting") : qsTr("Unexported edit")
-                    color: "white"
-                    font.pixelSize: 16
-                    font.weight: Font.DemiBold
-                }
-
-                Label {
-                    width: Math.min(implicitWidth, win.width - 160)
-                    text: backend.exporting ? qsTr("The export is still running, and quitting stops it. Quit anyway?")
-                                            : qsTr("Your edit hasn't been exported. Quit anyway?")
-                    color: "#d6d6da"
-                    font.pixelSize: 13
-                    wrapMode: Text.WordWrap
-                    bottomPadding: 12
-                }
-
-                Row {
-                    anchors.right: parent.right
-                    spacing: 10
-
-                    DialogButton {
-                        id: quitCancelButton
-                        text: qsTr("Cancel")
-                        KeyNavigation.left: quitExportButton.visible ? quitExportButton : quitQuitButton
-                        KeyNavigation.right: quitQuitButton
-                        KeyNavigation.tab: quitQuitButton
-                        KeyNavigation.backtab: quitExportButton.visible ? quitExportButton : quitQuitButton
-                        onClicked: win.quitConfirmVisible = false
-                    }
-                    DialogButton {
-                        id: quitQuitButton
-                        text: qsTr("Quit")
-                        KeyNavigation.left: quitCancelButton
-                        KeyNavigation.right: quitExportButton.visible ? quitExportButton : quitCancelButton
-                        KeyNavigation.tab: quitExportButton.visible ? quitExportButton : quitCancelButton
-                        KeyNavigation.backtab: quitCancelButton
-                        onClicked: forceQuit()
-                    }
-                    DialogButton {
-                        id: quitExportButton
-                        text: qsTr("Export")
-                        primary: true
-                        // Already exporting: there's nothing to start.
-                        visible: !backend.exporting
-                        KeyNavigation.left: quitQuitButton
-                        KeyNavigation.right: quitCancelButton
-                        KeyNavigation.tab: quitCancelButton
-                        KeyNavigation.backtab: quitQuitButton
-                        onClicked: {
-                            win.quitConfirmVisible = false;
-                            exportVideo();
-                        }
-                    }
-                }
-            }
+        title: backend.exporting ? qsTr("Exporting") : qsTr("Unexported edit")
+        message: backend.exporting ? qsTr("The export is still running, and quitting stops it. Quit anyway?")
+                                   : qsTr("Your edit hasn't been exported. Quit anyway?")
+        // Already exporting: there's nothing to start, so no Export.
+        buttons: [
+            { text: qsTr("Cancel"), mnemonic: "C" },
+            { text: qsTr("Quit"), mnemonic: "Q" }
+        ].concat(backend.exporting ? [] : [{ text: qsTr("Export"), mnemonic: "E", primary: true }])
+        initialFocus: backend.exporting ? 0 : 2
+        onDismissed: win.quitConfirmVisible = false
+        onChosen: (index) => {
+            win.quitConfirmVisible = false;
+            if (index === 1)
+                forceQuit();
+            else if (index === 2)
+                exportVideo();
         }
     }
 
