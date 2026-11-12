@@ -25,6 +25,8 @@
 #include <QQuickWindow>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QRandomGenerator>
+#include <QStyleHints>
 #include <QTemporaryDir>
 
 #include <cstdio>
@@ -366,6 +368,14 @@ private slots:
     void qmlBracketsJumpBetweenClipEdges();
     void qmlKeysMoveAndAddClips();
     void qmlZoomFocusesTheClip();
+    void qmlTrimKeepsTheTimelineScale();
+    void qmlZoomingOutRestoresTheFilmstrip();
+    void qmlTimelineViewDependsOnlyOnTheEdit_data();
+    void qmlTimelineViewDependsOnlyOnTheEdit();
+    void qmlTrackRefitsAfterRemovingClips();
+    void qmlSplitPiecesTrimApart();
+    void qmlMovingAPieceKeepsTheCut();
+    void qmlFilmstripHoldsStillUnderADrag();
     void qmlPressingHandleScrubsItsFrame();
     void formatTimeShowsHoursFromSixtyMinutes();
     void qmlDropOpensThenAddsVideos();
@@ -1661,12 +1671,17 @@ void BackendTests::qmlSpaceChordsSetTheClipEdges() {
     QCOMPARE(backend.timeline.clips(), (edit::Clips{{0, 0.0, 15.0}}));
 
     // Same for the start, at 5 s. The playhead stays on its frame, which is
-    // now the clip's first: the start of the edit.
+    // now the clip's first: the start of the edit, and still over the clip's
+    // left edge on the track, which keeps its place.
     QQuickItem *editBar = harness.editBar();
     editBar->setProperty("playheadSec", 5.0);
     QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 5.0, 15.0}}), 3000);
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 0.0, 3000);
+    QCOMPARE(editBar->property("positions").toList().value(0).toMap().value(QStringLiteral("start")).toDouble(), 5.0);
+    QVariant playheadOnTrack;
+    QVERIFY(QMetaObject::invokeMethod(editBar, "trackTime", Q_RETURN_ARG(QVariant, playheadOnTrack), Q_ARG(QVariant, playhead(harness))));
+    QCOMPARE(playheadOnTrack.toDouble(), 5.0);
     // So pressing it again trims nothing more, instead of another 5 s each time.
     QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
     QTest::qWait(50);
@@ -1848,6 +1863,276 @@ void BackendTests::qmlZoomFocusesTheClip() {
     backend.timeline.removeClip(1);
     backend.timeline.setClip(0, 0.0, 4.0);
     QTRY_COMPARE_WITH_TIMEOUT(editBar->property("zoomed").toBool(), false, 3000);
+    // Zoomed out, the track spans the whole video: the clip and what's trimmed off its end.
+    QCOMPARE(editBar->property("windowEnd").toDouble(), 20.0);
+}
+
+// Where clip index draws on the track, in track seconds.
+static QPair<double, double> clipPlace(QQuickItem *editBar, int index) {
+    const QVariantMap at = editBar->property("positions").toList().value(index).toMap();
+    return {at.value(QStringLiteral("start")).toDouble(), at.value(QStringLiteral("end")).toDouble()};
+}
+
+void BackendTests::qmlTrimKeepsTheTimelineScale() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QQuickItem *editBar = harness.editBar();
+    QTRY_COMPARE_WITH_TIMEOUT(editBar->property("windowEnd").toDouble(), 20.0, 3000);
+
+    // Trimming either end leaves the track at the video's length, with the
+    // cut-off footage dimmed, rather than stretching the clip to fill it.
+    backend.timeline.setClip(0, 3.0, 15.0);
+    QTest::qWait(50);
+    QCOMPARE(editBar->property("windowEnd").toDouble(), 20.0);
+    QCOMPARE(clipPlace(editBar, 0), qMakePair(3.0, 15.0));
+
+    // So do split pieces trimmed apart.
+    backend.timeline.setClip(0, 0.0, 20.0);
+    backend.timeline.split(10.0);
+    backend.timeline.setClip(0, 0.0, 6.0);
+    backend.timeline.setClip(1, 14.0, 18.0);
+    QTest::qWait(50);
+    QCOMPARE(editBar->property("windowEnd").toDouble(), 20.0);
+
+    // A clip that goes back over footage the one before used starts the
+    // video over after it; the track fits both.
+    backend.timeline.setClip(1, 5.0, 20.0);
+    QTRY_COMPARE_WITH_TIMEOUT(editBar->property("windowEnd").toDouble(), 40.0, 3000);
+
+    // Another video follows the whole of the one before, so trimming the end
+    // of a clip from that one leaves it where it was.
+    backend.timeline.restore({20.0}, {{0, 0.0, 20.0}});
+    backend.addVideoOfLength(10.0, 19.0);
+    QTRY_COMPARE_WITH_TIMEOUT(clipPlace(editBar, 1), qMakePair(20.0, 30.0), 3000);
+    backend.timeline.setClip(0, 0.0, 12.0);
+    QTest::qWait(50);
+    QCOMPARE(clipPlace(editBar, 1), qMakePair(20.0, 30.0));
+    QCOMPARE(editBar->property("windowEnd").toDouble(), 30.0);
+}
+
+void BackendTests::qmlTrackRefitsAfterRemovingClips() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QQuickItem *editBar = harness.editBar();
+
+    // Out of order, the pieces lay out past the video's length...
+    backend.timeline.split(10.0);
+    backend.timeline.moveClip(1, 0);
+    QTRY_COMPARE_WITH_TIMEOUT(editBar->property("windowEnd").toDouble(), 40.0, 3000);
+
+    // ...and once a piece is removed, the track fits what's left, with no
+    // empty stretch past the footage.
+    backend.timeline.removeClip(0);
+    QTRY_COMPARE_WITH_TIMEOUT(editBar->property("windowEnd").toDouble(), 20.0, 3000);
+    QCOMPARE(clipPlace(editBar, 0), qMakePair(0.0, 10.0));
+
+    // Zoomed on a clip, removing it zooms back out to what's left, wherever
+    // that is: here the clip from 15 s, right of the zoomed view.
+    backend.timeline.restore({20.0}, {{0, 0.0, 5.0}, {0, 15.0, 20.0}});
+    editBar->setProperty("playheadSec", 1.0);
+    QTest::keyClick(window, Qt::Key_Z);
+    QTRY_VERIFY_WITH_TIMEOUT(editBar->property("zoomed").toBool(), 3000);
+    QVERIFY(editBar->property("windowEnd").toDouble() < 15.0);
+    backend.timeline.removeClip(0);
+    QTRY_COMPARE_WITH_TIMEOUT(editBar->property("zoomed").toBool(), false, 3000);
+}
+
+static QList<QQuickItem *> itemsNamed(QQuickItem *item, const QString &name) {
+    QList<QQuickItem *> found;
+    for (QQuickItem *child : item->childItems()) {
+        if (child->objectName() == name) found << child;
+        found << itemsNamed(child, name);
+    }
+    return found;
+}
+
+// Each filmstrip frame on the track: the item, its source, and where it
+// sits. A frame that is rebuilt, reloads, or moves shows up as a difference.
+struct Frame {
+    QQuickItem *item;
+    QString source;
+    double x;
+    bool operator==(const Frame &o) const { return item == o.item && source == o.source && x == o.x; }
+};
+static QList<Frame> filmstripFrames(QQuickItem *item) {
+    QList<Frame> frames;
+    const QList<QQuickItem *> children = item->childItems();
+    for (QQuickItem *child : children) {
+        if (child->inherits("QQuickImage") && child->isVisible())
+            frames.append({child, child->property("source").toUrl().toString(), child->mapToScene(QPointF()).x()});
+        frames.append(filmstripFrames(child));
+    }
+    return frames;
+}
+
+void BackendTests::qmlFilmstripHoldsStillUnderADrag() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QQuickItem *editBar = harness.editBar();
+    QVERIFY(editBar);
+    backend.timeline.setClip(0, 0.0, 12.0);
+    QTest::qWait(50);
+
+    // The footage trimmed off the end stays on the track, dimmed.
+    const QList<Frame> before = filmstripFrames(editBar);
+    const double clipEnd = editBar->mapToScene(QPointF(editBar->width() * 12.0 / 20.0, 0)).x();
+    QVERIFY(std::any_of(before.begin(), before.end(), [&](const Frame &frame) {
+        return frame.x + frame.item->width() > clipEnd;
+    }));
+    const QList<QQuickItem *> cuts = itemsNamed(editBar, QStringLiteral("cut"));
+    QVERIFY(std::any_of(cuts.begin(), cuts.end(), [&](QQuickItem *cut) {
+        const double x = cut->mapToScene(QPointF()).x();
+        return cut->isVisible() && qAbs(x - clipEnd) <= 1 && qAbs(x + cut->width() - editBar->mapToScene(QPointF(editBar->width(), 0)).x()) <= 1;
+    }));
+
+    // Dragging the end handle in and back out moves only the frame around
+    // the clip: no filmstrip frame reloads, is rebuilt, or shifts.
+    const double y = editBar->height() / 2.0;
+    auto at = [&](double x) { return editBar->mapToScene(QPointF(x, y)).toPoint(); };
+    const double handle = editBar->width() * 12.0 / 20.0 - 5.0;
+    QTest::mouseMove(window, at(handle));
+    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, at(handle));
+    QVERIFY(filmstripFrames(editBar) == before);
+    for (const double dx : {-20.0, -60.0, -100.0, -40.0, 30.0, 80.0}) {
+        QTest::mouseMove(window, at(handle + dx));
+        QVERIFY2(filmstripFrames(editBar) == before, qPrintable(QStringLiteral("dragged by %1").arg(dx)));
+    }
+    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, at(handle + 80.0));
+    QVERIFY(backend.timeline.clips().first().out > 12.0);
+}
+
+void BackendTests::qmlZoomingOutRestoresTheFilmstrip() {
+    const QString video = makeVideo(QStringLiteral("zoom.mp4"), 20.0, false, QStringLiteral("64x36"));
+    QVERIFY(!video.isEmpty());
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend, {}, video);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QQuickItem *editBar = harness.editBar();
+    backend.timeline.split(5.0);
+    backend.timeline.split(15.0);
+    auto frames = [&] {
+        QStringList list;
+        for (const Frame &frame : filmstripFrames(editBar))
+            list << frame.source + QStringLiteral(" at ") + QString::number(frame.x)
+                    + QStringLiteral(" status ") + QString::number(frame.item->property("status").toInt());
+        return list;
+    };
+    auto allLoaded = [&] {
+        const QList<Frame> list = filmstripFrames(editBar);
+        return !list.isEmpty() && std::all_of(list.begin(), list.end(), [](const Frame &frame) {
+            return frame.item->property("status").toInt() == 1 && frame.item->implicitWidth() > 0;
+        });
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(allLoaded(), 10000);
+    const QStringList before = frames();
+
+    // Zoom in, and straight back out before the closer frames have loaded.
+    QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_Z);
+    QTRY_COMPARE_WITH_TIMEOUT(editBar->property("zoomed").toBool(), true, 3000);
+    QTest::qWait(20);
+    QTest::keyClick(window, Qt::Key_Z);
+    QTRY_COMPARE_WITH_TIMEOUT(editBar->property("zoomed").toBool(), false, 3000);
+    QTRY_VERIFY2_WITH_TIMEOUT(allLoaded(), qPrintable(frames().join(QStringLiteral("\n"))), 10000);
+    QCOMPARE(frames(), before);
+
+    // And again, letting the zoomed-in frames load first.
+    QTest::keyClick(window, Qt::Key_Z);
+    QTRY_COMPARE_WITH_TIMEOUT(editBar->property("zoomed").toBool(), true, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(allLoaded(), 10000);
+    QTest::keyClick(window, Qt::Key_Z);
+    QTRY_COMPARE_WITH_TIMEOUT(editBar->property("zoomed").toBool(), false, 3000);
+    QTRY_VERIFY2_WITH_TIMEOUT(allLoaded(), qPrintable(frames().join(QStringLiteral("\n"))), 10000);
+    QCOMPARE(frames(), before);
+}
+
+void BackendTests::qmlSplitPiecesTrimApart() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QQuickItem *editBar = harness.editBar();
+    QVERIFY(editBar);
+    backend.timeline.split(10.0);
+    QTest::qWait(50);
+    const double y = editBar->height() / 2.0;
+    auto at = [&](double x) { return editBar->mapToScene(QPointF(x, y)).toPoint(); };
+    auto drag = [&](double from, double by) {
+        QTest::mouseMove(window, at(from));
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, at(from));
+        for (int step = 1; step <= 6; ++step) QTest::mouseMove(window, at(from + by * step / 6));
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, at(from + by));
+        QTest::qWait(400);  // Past the double-click interval, so the next press is a fresh one.
+    };
+    const double perSec = editBar->width() / 20.0;
+
+    // Pull the second piece's start away from the split: the footage between
+    // is left out, and the piece stays over its own footage, not closed up
+    // against the first.
+    drag(10.0 * perSec + 6, 60);
+    edit::Clips clips = backend.timeline.clips();
+    QCOMPARE(clips.size(), 2);
+    QCOMPARE(clips[0].out, 10.0);
+    QVERIFY(clips[1].in > 10.0);
+    const double secondIn = clips[1].in;
+    QCOMPARE(clipPlace(editBar, 0), qMakePair(0.0, 10.0));
+    QCOMPARE(clipPlace(editBar, 1), qMakePair(secondIn, 20.0));
+
+    // Then the first piece's end: the gap widens, and both stay put.
+    drag(10.0 * perSec - 6, -60);
+    clips = backend.timeline.clips();
+    QCOMPARE(clips.size(), 2);
+    QVERIFY(clips[0].out < 10.0);
+    QCOMPARE(clips[1].in, secondIn);
+    QCOMPARE(clipPlace(editBar, 0), qMakePair(0.0, clips[0].out));
+    QCOMPARE(clipPlace(editBar, 1), qMakePair(secondIn, 20.0));
+
+    // Clicking in the gap puts the playhead on the second piece's start, and
+    // the sequence still plays the pieces back to back.
+    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, at((clips[0].out + secondIn) / 2.0 * perSec));
+    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), clips[0].length(), 3000);
+
+    // Dragging the second piece's start back restores the cut footage.
+    drag(secondIn * perSec + 6, -(secondIn - 10.0) * perSec - 40);
+    clips = backend.timeline.clips();
+    QVERIFY(clips[1].in < secondIn);
+    QCOMPARE(clipPlace(editBar, 1).first, clips[1].in);
+}
+
+void BackendTests::qmlMovingAPieceKeepsTheCut() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QQuickItem *editBar = harness.editBar();
+    QVERIFY(editBar);
+    backend.timeline.split(10.0);
+    backend.timeline.setClip(1, 12.0, 20.0);
+    QTest::qWait(50);
+    QCOMPARE(clipPlace(editBar, 1), qMakePair(12.0, 20.0));
+
+    // Hold the second piece and drop it before the first.
+    const double y = editBar->height() / 2.0, perSec = editBar->width() / 20.0;
+    auto at = [&](double x) { return editBar->mapToScene(QPointF(x, y)).toPoint(); };
+    QTest::mouseMove(window, at(16.0 * perSec));
+    QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, at(16.0 * perSec));
+    QTest::qWait(450);
+    for (int step = 1; step <= 8; ++step) QTest::mouseMove(window, at((16.0 - step * 2.0) * perSec));
+    QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, at(0.0));
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 12.0, 20.0}, {0, 0.0, 10.0}}), 3000);
+
+    // Out of order, nothing is cut between them, so they sit back to back,
+    // the first over its own footage and the track grown to fit.
+    QCOMPARE(clipPlace(editBar, 0), qMakePair(12.0, 20.0));
+    QCOMPARE(clipPlace(editBar, 1), qMakePair(20.0, 30.0));
+    QTRY_COMPARE_WITH_TIMEOUT(editBar->property("windowEnd").toDouble(), 40.0, 3000);
 }
 
 void BackendTests::qmlPressingHandleScrubsItsFrame() {
@@ -1865,7 +2150,8 @@ void BackendTests::qmlPressingHandleScrubsItsFrame() {
     QVERIFY(scrubClipSpy.isValid());
 
     // Pressing the leading handle immediately previews the clip's in-point.
-    const QPoint leftHandle = editBar->mapToScene(QPointF(5.0, editBar->height() / 2.0)).toPoint();
+    // The clip stays over its footage, 3 s along the 20 s track.
+    const QPoint leftHandle = editBar->mapToScene(QPointF(editBar->width() * 3.0 / 20.0 + 5.0, editBar->height() / 2.0)).toPoint();
     QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, leftHandle);
     QCOMPARE(scrubClipSpy.count(), 1);
     QCOMPARE(scrubClipSpy.first().at(0).toInt(), 0);
@@ -1873,7 +2159,8 @@ void BackendTests::qmlPressingHandleScrubsItsFrame() {
     QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, leftHandle);
 
     // Pressing the trailing handle immediately previews the clip's out-point.
-    const QPoint rightHandle = editBar->mapToScene(QPointF(editBar->width() - 5.0, editBar->height() / 2.0)).toPoint();
+    // The trim keeps the track's 20 s scale, and the clip ends at 15 s.
+    const QPoint rightHandle = editBar->mapToScene(QPointF(editBar->width() * 15.0 / 20.0 - 5.0, editBar->height() / 2.0)).toPoint();
     QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, rightHandle);
     QCOMPARE(scrubClipSpy.count(), 2);
     QCOMPARE(scrubClipSpy.last().at(0).toInt(), 0);
@@ -2136,6 +2423,25 @@ void BackendTests::timelineSplitsTrimsAndJoins() {
     // Touching pieces of the same stretch export as one.
     timeline.split(5.0);
     QCOMPARE(edit::merged(timeline.clips()), wholeVideo(10.0));
+
+    // A dragged edge stops at the piece that picks up after it in the same
+    // video, so a drag never reuses footage the next piece shows...
+    timeline.moveEdge(0, false, 8.0);
+    timeline.moveEdge(1, true, 2.0);
+    QCOMPARE(timeline.clips(), (edit::Clips{{0, 0.0, 5.0}, {0, 5.0, 10.0}}));
+    // ...but crosses a cut up to it.
+    timeline.setClip(0, 0.0, 3.0);
+    timeline.setClip(1, 7.0, 10.0);
+    timeline.moveEdge(0, false, 9.0);
+    QCOMPARE(timeline.clips(), (edit::Clips{{0, 0.0, 7.0}, {0, 7.0, 10.0}}));
+    timeline.setClip(0, 0.0, 3.0);
+    timeline.moveEdge(1, true, 1.0);
+    QCOMPARE(timeline.clips(), (edit::Clips{{0, 0.0, 3.0}, {0, 3.0, 10.0}}));
+    // A piece that goes back in the video doesn't stop it.
+    timeline.restore({10.0}, {{0, 5.0, 8.0}, {0, 0.0, 3.0}});
+    timeline.moveEdge(0, false, 9.5);
+    timeline.moveEdge(1, true, 0.0);
+    QCOMPARE(timeline.clips(), (edit::Clips{{0, 5.0, 9.5}, {0, 0.0, 3.0}}));
 }
 
 void BackendTests::timelineSeeksAcrossARealCut() {
@@ -3009,6 +3315,454 @@ void BackendTests::portalPickerReplacesAnUnansweredRequest() {
         QStringLiteral("/org/freedesktop/portal/desktop"));
     QDBusConnection::sessionBus().unregisterService(
         QStringLiteral("org.freedesktop.portal.Desktop"));
+}
+
+
+// ---------------------------------------------------------------------------
+// The timeline view as a function of the edit.
+//
+// The track is a map of the footage: clips are windows onto it, edits move the
+// windows, and only zooming changes the scale. So what the track shows must
+// depend only on the clips, the zoom and the playhead, never on how they got
+// there. The test below runs random edits, the way a person might, and after
+// each one compares the track against a freshly opened one showing the same
+// edit, down to the pixel. Along the way it checks the rules a person sees:
+// the zoomed-out track is covered end to end, a zoomed view shows a clip,
+// trimming a clip shorter moves no other clip, and nothing in the filmstrip
+// reloads or moves under a drag.
+
+namespace {
+
+struct BarView {
+    QVariantList positions;
+    double windowStart = 0, windowEnd = 0;
+    QStringList frames;
+    QImage picture;
+    bool loaded = false;
+};
+
+// Each filmstrip frame with where it sits, keyed so a frame that reloads,
+// moves, or is rebuilt shows up as a difference.
+static void collectFrames(QQuickItem *item, QQuickItem *container, QHash<QQuickItem *, QString> &frames) {
+    const QList<QQuickItem *> children = item->childItems();
+    for (QQuickItem *child : children) {
+        const QString name = child->objectName();
+        QQuickItem *next = name == QLatin1String("clip") || name == QLatin1String("run") ? child : container;
+        if (child->inherits("QQuickImage") && child->isVisible())
+            frames.insert(child, QStringLiteral("%1 %2 %3+%4 in %5+%6")
+                                     .arg(quintptr(container), 0, 16)
+                                     .arg(child->property("source").toUrl().toString())
+                                     .arg(child->mapToScene(QPointF()).x()).arg(child->width())
+                                     .arg(child->parentItem()->mapToScene(QPointF()).x()).arg(child->parentItem()->width()));
+        collectFrames(child, next, frames);
+    }
+}
+
+static QHash<QQuickItem *, QString> framesOf(QQuickItem *editBar) {
+    QHash<QQuickItem *, QString> frames;
+    collectFrames(editBar, nullptr, frames);
+    return frames;
+}
+
+static bool framesLoaded(QQuickItem *editBar) {
+    const auto frames = framesOf(editBar);
+    for (auto it = frames.begin(); it != frames.end(); ++it)
+        // Ready with a picture: a frame that failed to extract is Ready but empty.
+        if (it.key()->property("status").toInt() != 1 || it.key()->implicitWidth() <= 0)
+            return false;
+    return true;
+}
+
+// Where the clips and the videos' filmstrips draw, as [from, to) in bar pixels.
+static QList<QPair<double, double>> coveredSpans(QQuickItem *editBar) {
+    QList<QPair<double, double>> spans;
+    std::function<void(QQuickItem *)> walk = [&](QQuickItem *item) {
+        for (QQuickItem *child : item->childItems()) {
+            const QString name = child->objectName();
+            if ((name == QLatin1String("clip") || name == QLatin1String("run")) && child->isVisible() && child->width() > 0) {
+                const double x = child->mapToItem(editBar, QPointF()).x();
+                spans.append({x, x + child->width()});
+            }
+            walk(child);
+        }
+    };
+    walk(editBar);
+    std::sort(spans.begin(), spans.end());
+    return spans;
+}
+
+}  // namespace
+
+// Owns one editor window showing an edit, for the test below.
+class EditorUnderTest {
+public:
+    EditorUnderTest(const QUrl &placeholder, const QString &video, const QList<double> &durations)
+        : backend(placeholder, durations.value(0)), harness(backend, {}, video) {
+        window = showEditor(harness, backend);
+        if (!window)
+            return;
+        bar = harness.editBar();
+        // The offscreen platform opens a window smaller than asked and grows
+        // it later; pin the size so two editors lay out alike.
+        window->setGeometry(QRect(0, 0, 960, 680));
+        QTest::qWaitFor([this] { return window->width() == 960 && window->height() == 680; }, 3000);
+        QTest::qWait(50);
+        for (int i = 1; i < durations.size(); ++i)
+            backend.addVideoOfLength(durations[i], 0);
+    }
+
+    BarView view() {
+        // Off the bar, so no hover state is showing.
+        QTest::mouseMove(window, QPoint(5, 5));
+        BarView v;
+        v.loaded = QTest::qWaitFor([this] { return framesLoaded(bar); }, 10000);
+        QTest::qWait(20);
+        v.positions = bar->property("positions").toList();
+        v.windowStart = bar->property("windowStart").toDouble();
+        v.windowEnd = bar->property("windowEnd").toDouble();
+        // Videos by their place in the edit, not their key, which every editor
+        // hands out afresh.
+        QHash<QString, QString> videoOf;
+        const QVariantList videos = backend.property("videos").toList();
+        for (int i = 0; i < videos.size(); ++i)
+            videoOf.insert(QStringLiteral("image://thumbs/%1/").arg(videos[i].toMap().value(QStringLiteral("thumbKey")).toInt()),
+                           QStringLiteral("video %1 at ").arg(i));
+        const auto frames = framesOf(bar);
+        for (QString frame : frames) {
+            frame = frame.section(QLatin1Char(' '), 1);
+            const QString prefix = frame.left(frame.indexOf(QLatin1Char('/'), QStringLiteral("image://thumbs/").size()) + 1);
+            v.frames << videoOf.value(prefix, prefix) + frame.mid(prefix.size());
+        }
+        v.frames.sort();
+        const QImage whole = window->grabWindow();
+        const qreal scale = whole.devicePixelRatio();
+        const QRectF rect = bar->mapRectToScene(QRectF(0, 0, bar->width(), bar->height()));
+        v.picture = whole.copy(QRectF(rect.topLeft() * scale, rect.size() * scale).toAlignedRect());
+        return v;
+    }
+
+    QPoint at(double x) const { return bar->mapToScene(QPointF(x, bar->height() / 2.0)).toPoint(); }
+    double xOf(double trackSec) const {
+        return (trackSec - bar->property("windowStart").toDouble()) * bar->property("pxPerSec").toDouble();
+    }
+
+    ShortcutBackend backend;
+    QmlHarness harness;
+    QQuickWindow *window = nullptr;
+    QQuickItem *bar = nullptr;
+};
+
+// Pixels that differ visibly between two pictures of the track. A few always
+// do: the software renderer rasterises a resized rounded frame a little
+// differently from a fresh one. A wrong or missing frame differs in thousands.
+static int differingPixels(const QImage &a, const QImage &b) {
+    if (a.size() != b.size())
+        return a.width() * a.height();
+    const QImage x = a.convertToFormat(QImage::Format_RGB32), y = b.convertToFormat(QImage::Format_RGB32);
+    int count = 0;
+    for (int row = 0; row < x.height(); ++row) {
+        const QRgb *p = reinterpret_cast<const QRgb *>(x.constScanLine(row));
+        const QRgb *q = reinterpret_cast<const QRgb *>(y.constScanLine(row));
+        for (int col = 0; col < x.width(); ++col) {
+            const int d = qMax(qAbs(qRed(p[col]) - qRed(q[col])),
+                               qMax(qAbs(qGreen(p[col]) - qGreen(q[col])), qAbs(qBlue(p[col]) - qBlue(q[col]))));
+            if (d > 48)
+                ++count;
+        }
+    }
+    return count;
+}
+
+static QString describe(const edit::Clips &clips) {
+    QStringList parts;
+    for (const edit::Clip &clip : clips)
+        parts << QStringLiteral("%1:%2-%3").arg(clip.source).arg(clip.in, 0, 'f', 3).arg(clip.out, 0, 'f', 3);
+    return parts.join(QLatin1Char(' '));
+}
+
+static double placeOf(const QVariantList &positions, int index, const char *edge) {
+    return positions.value(index).toMap().value(QLatin1String(edge)).toDouble();
+}
+
+// The frame under sequence time t: the video and the time in it.
+static QPair<int, double> frameAt(const Timeline &timeline, double t) {
+    const int i = timeline.clipAt(t);
+    const edit::Clip clip = timeline.clips().value(i);
+    return {clip.source, clip.in + t - timeline.clipStart(i)};
+}
+
+// Float noise from splits and trims stays well under this.
+constexpr double kNoise = 0.0001;
+
+// Whether clip shows that frame of its video.
+static bool shows(const edit::Clip &clip, const QPair<int, double> &frame) {
+    return clip.source == frame.first && frame.second >= clip.in - kNoise && frame.second < clip.out - kNoise;
+}
+
+static bool samePlace(const QVariant &a, const QVariant &b) {
+    const QVariantMap x = a.toMap(), y = b.toMap();
+    return qAbs(x.value(QStringLiteral("start")).toDouble() - y.value(QStringLiteral("start")).toDouble()) < kNoise
+        && qAbs(x.value(QStringLiteral("end")).toDouble() - y.value(QStringLiteral("end")).toDouble()) < kNoise;
+}
+
+// For each clip, whether it picks up later in the video of the one before,
+// sharing its stretch of track. A trim that changes none of these must leave
+// every other clip where it was.
+static QList<bool> continuity(const edit::Clips &clips) {
+    QList<bool> result;
+    for (int i = 1; i < clips.size(); ++i)
+        result << (clips[i].source == clips[i - 1].source && clips[i].in > clips[i - 1].out - 0.001);
+    return result;
+}
+
+void BackendTests::qmlTimelineViewDependsOnlyOnTheEdit_data() {
+    QTest::addColumn<quint32>("seed");
+    // More with OMACUT_FUZZ_SEEDS=n, e.g. before a release, and against a real
+    // recording with OMACUT_FUZZ_VIDEO=path: big frames extract slowly, which
+    // shakes out timing that a tiny test video never hits.
+    const int seeds = qMax(4, qEnvironmentVariableIntValue("OMACUT_FUZZ_SEEDS"));
+    for (int i = 0; i < seeds; ++i)
+        QTest::addRow("seed %d", i + 1) << quint32(i + 1);
+}
+
+void BackendTests::qmlTimelineViewDependsOnlyOnTheEdit() {
+    QFETCH(quint32, seed);
+    QString video = qEnvironmentVariable("OMACUT_FUZZ_VIDEO");
+    if (video.isEmpty())
+        video = makeVideo(QStringLiteral("fuzz.mp4"), 20.0, false, QStringLiteral("64x36"));
+    const double length = ffmpeg::probe(video).duration;
+    QVERIFY(length > 1.0);
+    QRandomGenerator random(seed);
+    EditorUnderTest editor(placeholderUrl(m_dir), video, {length});
+    QVERIFY2(editor.window, qPrintable(mainQmlPath()));
+    Timeline &timeline = editor.backend.timeline;
+    QStringList history;
+    auto uniform = [&](double from, double to) { return from + random.generateDouble() * (to - from); };
+    QByteArray message;  // Outlives the check that reports it.
+    auto failure = [&](const QString &what) {
+        message = QStringLiteral("%1\nafter: %2\nclips: %3")
+                      .arg(what, history.join(QStringLiteral(", ")), describe(timeline.clips()))
+                      .toUtf8();
+        return message.constData();
+    };
+
+    const int steps = 24;
+    for (int step = 0; step < steps; ++step) {
+        const edit::Clips before = timeline.clips();
+        const BarView was = editor.view();
+        const bool zoomed = editor.bar->property("zoomed").toBool();
+        const int count = before.size();
+        const int pick = int(random.bounded(15));
+        int trimmed = -1;  // A clip trimmed shorter, which must move no other clip.
+        // An edit made from the keyboard at the playhead, the way a person
+        // does it, and the frame that was under the playhead then.
+        // Where it should be after: the same frame, or for Ctrl+Shift+Space, the
+        // trimmed clip's last one. Unset when the edit cut that frame.
+        bool keyed = false;
+        QPair<int, double> frameBefore;
+        edit::Clip clipBefore;
+        int indexBefore = -1;
+        auto keyAt = [&](const QString &name, Qt::Key key, Qt::KeyboardModifiers modifiers) {
+            const double t = uniform(0, timeline.duration());
+            editor.bar->setProperty("playheadSec", t);
+            frameBefore = frameAt(timeline, t);
+            indexBefore = timeline.clipAt(t);
+            clipBefore = timeline.clips().value(indexBefore);
+            keyed = true;
+            history << QStringLiteral("%1 at %2").arg(name).arg(t, 0, 'f', 2);
+            QTest::keyClick(editor.window, key, modifiers);
+        };
+
+        if (pick <= 1) {
+            const double t = uniform(0, timeline.duration());
+            history << QStringLiteral("split at %1").arg(t, 0, 'f', 2);
+            timeline.split(t);
+        } else if (pick == 2) {
+            const int i = int(random.bounded(count));
+            const bool start = random.bounded(2);
+            const double edge = start ? before[i].in : before[i].out;
+            const double to = edge + uniform(-3, 3);
+            history << QStringLiteral("trim %1 %2 to %3").arg(i).arg(start ? "in" : "out").arg(to, 0, 'f', 2);
+            timeline.moveEdge(i, start, to);
+            if (timeline.clips().size() == count && timeline.clips()[i].length() < before[i].length())
+                trimmed = i;
+        } else if (pick <= 4) {
+            // Drag a handle, checking the filmstrip holds still under it.
+            const int i = int(random.bounded(count));
+            const bool start = random.bounded(2);
+            const double edgeSec = placeOf(was.positions, i, start ? "start" : "end");
+            const double x = editor.xOf(edgeSec) + (start ? 6 : -6);
+            const double dx = uniform(-90, 90);
+            if (x < 8 || x > editor.bar->width() - 8 || editor.xOf(placeOf(was.positions, i, "end")) - editor.xOf(placeOf(was.positions, i, "start")) < 30)
+                continue;
+            history << QStringLiteral("drag %1 %2 by %3px").arg(i).arg(start ? "in" : "out").arg(dx, 0, 'f', 0);
+            QTest::mouseMove(editor.window, editor.at(x));
+            // A frame's place on screen, without its container's, which a drag resizes.
+            auto onScreen = [](QHash<QQuickItem *, QString> frames) {
+                for (QString &frame : frames) frame = frame.section(QStringLiteral(" in "), 0, 0);
+                return frames;
+            };
+            const auto still = onScreen(framesOf(editor.bar));
+            QTest::mousePress(editor.window, Qt::LeftButton, Qt::NoModifier, editor.at(x));
+            for (int move = 1; move <= 5; ++move) {
+                QTest::mouseMove(editor.window, editor.at(x + dx * move / 5));
+                const auto now = onScreen(framesOf(editor.bar));
+                for (auto it = now.begin(); it != now.end(); ++it) {
+                    if (still.contains(it.key()))
+                        QVERIFY2(still.value(it.key()) == it.value(), failure(QStringLiteral("a filmstrip frame moved or reloaded mid-drag: %1 -> %2").arg(still.value(it.key()), it.value())));
+                    else
+                        QVERIFY2(!QList<QString>(still.values()).contains(it.value()),
+                                 failure(QStringLiteral("a filmstrip frame was rebuilt mid-drag: %1").arg(it.value())));
+                }
+                // Mid-drag, every other clip stays where it was.
+                const QVariantList positions = editor.bar->property("positions").toList();
+                for (int j = 0; j < count; ++j)
+                    if (j != i)
+                        QVERIFY2(positions.value(j) == was.positions.value(j), failure(QStringLiteral("clip %1 moved while dragging clip %2").arg(j).arg(i)));
+            }
+            QTest::mouseRelease(editor.window, Qt::LeftButton, Qt::NoModifier, editor.at(x + dx));
+            QTest::qWait(QGuiApplication::styleHints()->mouseDoubleClickInterval() + 20);
+            if (timeline.clips().size() == count && timeline.clips()[i].length() < before[i].length())
+                trimmed = i;
+        } else if (pick == 5) {
+            int join = -1;
+            for (int i = 0; i + 1 < count; ++i)
+                if (timeline.canJoin(i)) join = i;
+            if (join < 0) continue;
+            history << QStringLiteral("join %1").arg(join);
+            timeline.joinClips(join);
+        } else if (pick == 6) {
+            if (count < 2) continue;
+            const int from = int(random.bounded(count)), to = int(random.bounded(count));
+            history << QStringLiteral("move %1 to %2").arg(from).arg(to);
+            timeline.moveClip(from, to);
+        } else if (pick == 7) {
+            if (count < 2) continue;
+            const int i = int(random.bounded(count));
+            history << QStringLiteral("remove %1").arg(i);
+            timeline.removeClip(i);
+        } else if (pick == 8) {
+            const double t = uniform(0, timeline.duration());
+            history << QStringLiteral("zoom at %1").arg(t, 0, 'f', 2);
+            editor.bar->setProperty("playheadSec", t);
+            QTest::keyClick(editor.window, Qt::Key_Z);
+        } else if (pick == 11) {
+            keyAt(QStringLiteral("S"), Qt::Key_S, Qt::NoModifier);
+        } else if (pick == 12 || pick == 13) {
+            // Moving an edge to the playhead twice is the same as once.
+            const bool start = pick == 12;
+            keyAt(start ? QStringLiteral("Ctrl+Space") : QStringLiteral("Ctrl+Shift+Space"), Qt::Key_Space,
+                  start ? Qt::ControlModifier : Qt::ControlModifier | Qt::ShiftModifier);
+            const edit::Clips once = timeline.clips();
+            QTest::keyClick(editor.window, Qt::Key_Space, start ? Qt::ControlModifier : Qt::ControlModifier | Qt::ShiftModifier);
+            QVERIFY2(timeline.clips() == once, failure(QStringLiteral("pressing it again trimmed again: %1").arg(describe(timeline.clips()))));
+        } else if (pick == 14) {
+            const bool earlier = random.bounded(2);
+            keyAt(earlier ? QStringLiteral("Alt+[") : QStringLiteral("Alt+]"),
+                  earlier ? Qt::Key_BracketLeft : Qt::Key_BracketRight, Qt::AltModifier);
+        } else if (pick == 9) {
+            if (timeline.sourceDurations().size() >= 3) continue;
+            // Another video, shorter, after the clip under t. Every video key
+            // shows the same footage; only the lengths differ.
+            const double t = uniform(0, timeline.duration());
+            history << QStringLiteral("add video at %1").arg(t, 0, 'f', 2);
+            editor.backend.addVideoOfLength(length * 0.6, t);
+        } else {
+            const bool undo = random.bounded(2);
+            history << (undo ? QStringLiteral("undo") : QStringLiteral("redo"));
+            undo ? timeline.undo() : timeline.redo();
+        }
+
+        const BarView now = editor.view();
+        const edit::Clips clips = timeline.clips();
+        QVERIFY2(now.loaded, failure(QStringLiteral("filmstrip frames never loaded")));
+
+        // An edit from the keyboard keeps the playhead on its frame. Ctrl+Shift+Space
+        // ends the clip there, leaving the playhead on the clip's last frame.
+        if (keyed && clips != before && pick == 13)
+            frameBefore.second -= 0.001;
+        if (keyed) {
+            // What became of the clip the playhead was in: a split leaves it
+            // two pieces, a trim leaves it in place, and a move shifts it one
+            // place. If none of those still shows the frame, the edit cut it.
+            bool kept = false;
+            for (int i = indexBefore - 1; i <= indexBefore + 1; ++i) {
+                const edit::Clip clip = clips.value(i, edit::Clip{-1, 0, 0});
+                kept = kept || (shows(clip, frameBefore) && qMax(clip.in, clipBefore.in) < qMin(clip.out, clipBefore.out));
+            }
+            keyed = kept;
+        }
+        if (keyed) {
+            const auto frameAfter = frameAt(timeline, editor.bar->property("playheadSec").toDouble());
+            QVERIFY2(frameAfter.first == frameBefore.first && qAbs(frameAfter.second - frameBefore.second) < 0.002,
+                     failure(QStringLiteral("the playhead moved off its frame: video %1 at %2 s, now video %3 at %4 s")
+                                 .arg(frameBefore.first).arg(frameBefore.second, 0, 'f', 3)
+                                 .arg(frameAfter.first).arg(frameAfter.second, 0, 'f', 3)));
+        }
+
+        // Zoomed out, the track is covered end to end: clips, and the dimmed
+        // footage cut from around them. No blank stretch.
+        if (!editor.bar->property("zoomed").toBool()) {
+            double reached = 0;
+            for (const auto &span : coveredSpans(editor.bar)) {
+                QVERIFY2(span.first <= reached + 1, failure(QStringLiteral("blank track from %1px to %2px").arg(reached).arg(span.first)));
+                reached = qMax(reached, span.second);
+            }
+            QVERIFY2(reached >= editor.bar->width() - 1, failure(QStringLiteral("blank track past %1px of %2px").arg(reached).arg(editor.bar->width())));
+        }
+
+        // No clip runs into the footage of the next one picking up later in
+        // the same video: a handle stops there.
+        for (int i = 0; i + 1 < clips.size(); ++i)
+            QVERIFY2(clips[i].source != clips[i + 1].source || clips[i + 1].in <= clips[i].in + kNoise
+                         || clips[i + 1].in >= clips[i].out - 0.001,
+                     failure(QStringLiteral("clip %1 runs into the footage of clip %2").arg(i).arg(i + 1)));
+
+        // Zoomed in, some clip is in view.
+        if (editor.bar->property("zoomed").toBool()) {
+            bool inView = false;
+            for (const QVariant &at : now.positions)
+                inView = inView || (at.toMap().value(QStringLiteral("end")).toDouble() > now.windowStart
+                                    && at.toMap().value(QStringLiteral("start")).toDouble() < now.windowEnd);
+            QVERIFY2(inView, failure(QStringLiteral("zoomed on %1..%2 with no clip in view").arg(now.windowStart).arg(now.windowEnd)));
+        }
+
+        // A clip trimmed shorter leaves the others, and the track's scale, alone.
+        if (trimmed >= 0 && continuity(before) == continuity(clips)) {
+            for (int j = 0; j < clips.size(); ++j)
+                if (j != trimmed)
+                    QVERIFY2(samePlace(now.positions.value(j), was.positions.value(j)), failure(QStringLiteral("trimming clip %1 moved clip %2").arg(trimmed).arg(j)));
+            if (!zoomed)
+                QVERIFY2(qAbs(now.windowEnd - was.windowEnd) < kNoise, failure(QStringLiteral("trimming changed the track's length from %1 to %2").arg(was.windowEnd).arg(now.windowEnd)));
+        }
+
+        // And a freshly opened editor shows the same edit the same way.
+        EditorUnderTest fresh(placeholderUrl(m_dir), video, timeline.sourceDurations());
+        QVERIFY(fresh.window);
+        fresh.backend.timeline.restore(timeline.sourceDurations(), clips);
+        fresh.bar->setProperty("viewStartSec", editor.bar->property("viewStartSec"));
+        fresh.bar->setProperty("viewEndSec", editor.bar->property("viewEndSec"));
+        fresh.bar->setProperty("zoomed", editor.bar->property("zoomed"));
+        fresh.bar->setProperty("playheadSec", editor.bar->property("playheadSec"));
+        const BarView expected = fresh.view();
+        QVERIFY2(now.positions == expected.positions, failure(QStringLiteral("clips sit differently than in a fresh editor")));
+        QVERIFY2(now.windowStart == expected.windowStart && now.windowEnd == expected.windowEnd,
+                 failure(QStringLiteral("track spans %1..%2, a fresh editor %3..%4").arg(now.windowStart).arg(now.windowEnd).arg(expected.windowStart).arg(expected.windowEnd)));
+        if (now.frames != expected.frames) {
+            QStringList extra, missing;
+            for (const QString &f : now.frames) if (!expected.frames.contains(f)) extra << f;
+            for (const QString &f : expected.frames) if (!now.frames.contains(f)) missing << f;
+            QFAIL(failure(QStringLiteral("filmstrip differs from a fresh editor's\nonly here: %1\nonly fresh: %2")
+                              .arg(extra.join(QStringLiteral("; ")), missing.join(QStringLiteral("; ")))));
+        }
+        const int differing = differingPixels(now.picture, expected.picture);
+        if (differing > 20) {
+            const QString base = QDir::temp().filePath(QStringLiteral("omacut-seed%1-step%2").arg(seed).arg(step));
+            now.picture.save(base + QStringLiteral("-edited.png"));
+            expected.picture.save(base + QStringLiteral("-fresh.png"));
+            QFAIL(failure(QStringLiteral("track looks different from a fresh editor's in %1 pixels; see %2-*.png").arg(differing).arg(base)));
+        }
+    }
 }
 
 // Offscreen, with the software renderer: no windows pop up while the tests

@@ -14,6 +14,8 @@ class Timeline : public QObject {
     // Each clip as {source, in, out, start, end}, start and end along the sequence.
     Q_PROPERTY(QVariantList clips READ clipList NOTIFY changed)
     Q_PROPERTY(double duration READ duration NOTIFY changed)
+    // Each video's length, by source index.
+    Q_PROPERTY(QList<double> sourceDurations READ sourceDurations NOTIFY changed)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
     // Cut, added to, or reordered, and not exported as it stands.
@@ -31,6 +33,9 @@ public:
 
     // A freshly loaded video: one clip spanning all of it, and no history.
     void reset(double duration);
+    // An edit as if just opened, with no history: its videos' lengths, and its clips.
+    void restore(const QList<double> &sourceDurations, const edit::Clips &clips);
+    QList<double> sourceDurations() const { return m_sourceDurations; }
     // Adds a video of the given length as a clip after the one under t (at
     // the end past the last), as an undoable edit. Returns its source index.
     int addSource(double duration, double t);
@@ -54,7 +59,8 @@ public:
     // Clamps into the clip's source, keeping at least a minimum clip.
     Q_INVOKABLE void setClip(int index, double in, double out);
     // Moves one edge of a clip to a source time, stopping a minimum clip short
-    // of the other edge.
+    // of the other edge, and at the neighbour that picks up later in the same
+    // video: a handle can't drag over footage the next piece already uses.
     Q_INVOKABLE void moveEdge(int index, bool start, double sourceTime);
     // Moves the start or end of the clip under t to t.
     Q_INVOKABLE void trimTo(double t, bool start);
