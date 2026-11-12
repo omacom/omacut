@@ -24,6 +24,7 @@
   "Drop to add to the edit": "Drop to add to the edit",
   "Export": "Export",
   "Export failed: %1": "Export failed: %1",
+  "Exporting": "Exporting",
   "Exporting %1%": "Exporting %1%",
   "ffmpeg failed.": "ffmpeg failed.",
   "ffmpeg is not installed.": "ffmpeg is not installed.",
@@ -63,6 +64,7 @@
     "other": "Skipped %n files that won't open."
   },
   "Split the clip at the playhead": "Split the clip at the playhead",
+  "The export is still running, and quitting stops it. Quit anyway?": "The export is still running, and quitting stops it. Quit anyway?",
   "The portal file picker failed: %1": "The portal file picker failed: %1",
   "The selected clip has no length.": "The selected clip has no length.",
   "The XDG desktop portal file chooser is not available.": "The XDG desktop portal file chooser is not available.",

@@ -132,6 +132,7 @@ class ShortcutBackend : public QObject {
     Q_PROPERTY(QVariantList videos READ videos NOTIFY videosChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(bool probing READ probing NOTIFY busyChanged)
+    Q_PROPERTY(bool exporting READ exporting NOTIFY busyChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QObject *timeline READ timelineObject CONSTANT)
 
@@ -145,8 +146,13 @@ public:
 
     QUrl source() const { return m_source; }
     QVariantList videos() const { return m_videos; }
-    bool busy() const { return false; }
+    bool busy() const { return m_exporting; }
     bool probing() const { return false; }
+    bool exporting() const { return m_exporting; }
+    void setExporting(bool exporting) {
+        m_exporting = exporting;
+        emit busyChanged();
+    }
     QString status() const { return {}; }
     QObject *timelineObject() { return &timeline; }
 
@@ -206,6 +212,7 @@ private:
     QUrl m_source;
     double m_duration;
     QVariantList m_videos;
+    bool m_exporting = false;
 };
 
 // All of the first video: what a freshly loaded one edits.
@@ -322,6 +329,7 @@ private slots:
     void qmlDropTakesOnlyLocalFiles();
     void qmlDropLandsAfterThePlayheadsClip();
     void qmlQuitConfirmsUnexportedEdit();
+    void qmlQuitAsksWhileExporting();
     void qmlOpenConfirmsUnexportedEdit();
     void qmlHelpOverlayBlocksEditingKeys();
     void timelineSplitsTrimsAndJoins();
@@ -1817,6 +1825,43 @@ void BackendTests::formatTimeShowsHoursFromSixtyMinutes() {
     QCOMPARE(callFmt(3599.99), QStringLiteral("59:59.99"));
     QCOMPARE(callFmt(3599.999), QStringLiteral("01:00:00.00"));
     QCOMPARE(callFmt(3661.25), QStringLiteral("01:01:01.25"));
+}
+
+void BackendTests::qmlQuitAsksWhileExporting() {
+    // An untouched video has nothing unexported, but exporting it (say, down
+    // to 720p) is work a quit would throw away.
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QCOMPARE(window->property("unexported").toBool(), false);
+    backend.setExporting(true);
+
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
+    QVERIFY(window->isVisible());
+    QQuickItem *exportButton = dialogButton(window, QStringLiteral("Export"));
+    QVERIFY(exportButton);
+    QVERIFY(!exportButton->isVisible());
+
+    // Arrows cycle Cancel and Quit only, starting from Cancel.
+    QTest::keyClick(window, Qt::Key_Right);
+    QTest::keyClick(window, Qt::Key_Right);
+    QTest::keyClick(window, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), false, 3000);
+    QVERIFY(window->isVisible());
+
+    // Closing the window asks the same, and the question goes away with the export.
+    window->close();
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
+    QVERIFY(window->isVisible());
+    backend.setExporting(false);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), false, 3000);
+
+    QSignalSpy quitSpy(&harness.engine(), &QQmlApplicationEngine::quit);
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_VERIFY_WITH_TIMEOUT(!window->isVisible(), 3000);
+    QCOMPARE(quitSpy.count(), 1);
 }
 
 void BackendTests::qmlOpenConfirmsUnexportedEdit() {

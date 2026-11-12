@@ -23,6 +23,7 @@ class Backend : public QObject {
     Q_PROPERTY(QVariantList videos READ videoList NOTIFY videosChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(bool probing READ probing NOTIFY busyChanged)
+    Q_PROPERTY(bool exporting READ exporting NOTIFY busyChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QObject *timeline READ timeline CONSTANT)
 
@@ -38,6 +39,7 @@ public:
     // set of videos is about to change, so opening or adding must wait.
     bool busy() const { return m_busy || m_probing; }
     bool probing() const { return m_probing; }
+    bool exporting() const { return m_busy; }
     QString status() const { return m_status; }
     Timeline *timeline() { return &m_timeline; }
 
