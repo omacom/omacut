@@ -408,13 +408,13 @@ ApplicationWindow {
         onActivated: addVideo()
     }
 
+    // Off while a dialog is up, so the quit confirmation's own Q can answer:
+    // two enabled shortcuts on one key are ambiguous and neither fires.
     Shortcut {
         sequence: "Q"
         context: Qt.ApplicationShortcut
-        onActivated: {
-            if (!win.overlayOpen)
-                requestQuit();
-        }
+        enabled: !win.overlayOpen
+        onActivated: requestQuit()
     }
 
     Shortcut {

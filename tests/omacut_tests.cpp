@@ -410,6 +410,7 @@ private slots:
     void translatorPicksPluralForms();
     void catalogsMatchTheCode();
     void qmlDialogsAnswerFromTheKeyboard();
+    void qmlDialogsAnswerToABareLetter();
     void stubBackendMatchesTheRealOne();
     void portalPickerReplacesAnUnansweredRequest();
 
@@ -3080,6 +3081,67 @@ void BackendTests::qmlDialogsAnswerFromTheKeyboard() {
     QTest::keyClick(window, Qt::Key_O, Qt::AltModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.openCount, 1, 3000);
     QCOMPARE(window->property("openConfirmVisible").toBool(), false);
+}
+
+// Neither dialog has anything to type into, so a button's letter presses it
+// without Alt too (omacom/plain#10). The quit dialog's Q is the app's Q, which
+// has to step aside for it: two live shortcuts on one key fire neither.
+void BackendTests::qmlDialogsAnswerToABareLetter() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), true, 3000);
+
+    // The open confirmation: K keeps the edit, O opens another video.
+    QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("openConfirmVisible").toBool(), true, 3000);
+    QTest::keyClick(window, Qt::Key_K);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("openConfirmVisible").toBool(), false, 3000);
+    QCOMPARE(backend.openCount, 0);
+    // With the dialog gone its letters mean nothing.
+    QTest::keyClick(window, Qt::Key_O);
+    QTest::qWait(50);
+    QCOMPARE(backend.openCount, 0);
+    QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("openConfirmVisible").toBool(), true, 3000);
+    QTest::keyClick(window, Qt::Key_O);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.openCount, 1, 3000);
+    QCOMPARE(window->property("openConfirmVisible").toBool(), false);
+
+    // The quit confirmation: C cancels, E exports.
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
+    QTest::keyClick(window, Qt::Key_C);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), false, 3000);
+    QCOMPARE(backend.exportCount, 0);
+    QTest::keyClick(window, Qt::Key_E);
+    QTest::qWait(50);
+    QCOMPARE(backend.exportCount, 0);
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
+    QTest::keyClick(window, Qt::Key_E);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 1, 3000);
+    QCOMPARE(window->property("quitConfirmVisible").toBool(), false);
+
+    // Holding Q to ask must not answer: its repeats are not a second press.
+    QSignalSpy quitSpy(&harness.engine(), &QQmlApplicationEngine::quit);
+    QTest::keyPress(window, Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
+    qt_handleKeyEvent(window, QEvent::KeyPress, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"), true);
+    qt_handleKeyEvent(window, QEvent::KeyPress, Qt::Key_Q, Qt::NoModifier, QStringLiteral("q"), true);
+    QTest::keyRelease(window, Qt::Key_Q);
+    QTest::qWait(50);
+    QVERIFY(window->isVisible());
+    QCOMPARE(window->property("quitConfirmVisible").toBool(), true);
+    QCOMPARE(quitSpy.count(), 0);
+
+    // A second Q, pressed on purpose, quits.
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_VERIFY_WITH_TIMEOUT(!window->isVisible(), 3000);
+    QCOMPARE(quitSpy.count(), 1);
 }
 
 // What QML can reach on an object: its properties with their types, change
