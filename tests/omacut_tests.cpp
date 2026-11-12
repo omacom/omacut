@@ -303,6 +303,7 @@ private slots:
     void exportOverASourceStartsOverFromTheSavedFile();
     void exportZeroLengthClipFails();
     void exportRefusesRewrittenPathOverExistingFile();
+    void exportRefusesAnythingButAbsoluteLocalPaths();
     void exportStartFailureClearsBusy();
     void failedExportPreservesExistingFile();
     void qmlDoesNotCreateAudioOutputWithoutVideo();
@@ -1262,6 +1263,28 @@ void BackendTests::exportZeroLengthClipFails() {
     QCOMPARE(doneSpy.count(), 0);
     QVERIFY(!backend.busy());
     QVERIFY(!QFileInfo::exists(outPath));
+}
+
+void BackendTests::exportRefusesAnythingButAbsoluteLocalPaths() {
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(videoUrl()));
+    waitForProbe(backend);
+    waitForBackgroundWork(backend);
+
+    // Neither may become ".mp4" or "out.mp4" in the working directory.
+    const QString cwd = QDir::currentPath();
+    QVERIFY(QDir::setCurrent(m_dir.path()));
+    backend.exportClips(QUrl(QStringLiteral("smb://server/share/out.mp4")), wholeVideo(1.0));
+    backend.exportClips(QUrl(QStringLiteral("file:out.mp4")), wholeVideo(1.0));
+    QVERIFY(QDir::setCurrent(cwd));
+    // Nor a file URL naming a host, which would become "//server/share/out.mp4".
+    backend.exportClips(QUrl(QStringLiteral("file://server/share/out.mp4")), wholeVideo(1.0));
+    QCOMPARE(failedSpy.count(), 3);
+    QVERIFY(!backend.busy());
+    QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral(".mp4"))));
+    QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral("out.mp4"))));
 }
 
 void BackendTests::exportRefusesRewrittenPathOverExistingFile() {
