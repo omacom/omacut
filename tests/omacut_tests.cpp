@@ -126,6 +126,14 @@ private:
     bool m_hadValue;
 };
 
+// Like the real backend's, video keys are never reused: QML caches frames by
+// URL for the whole process, so a key reused by a later test would be shown
+// the earlier test's frames, or blanks.
+static int nextThumbKey() {
+    static int key = 0;
+    return ++key;
+}
+
 class ShortcutBackend : public QObject {
     Q_OBJECT
     Q_PROPERTY(QUrl source READ source NOTIFY infoChanged)
@@ -141,7 +149,7 @@ public:
         : QObject(parent), m_source(std::move(source)), m_duration(duration) {
         timeline.reset(duration);
         if (!m_source.isEmpty())
-            m_videos = {QVariantMap{{QStringLiteral("url"), m_source}, {QStringLiteral("thumbKey"), 1}}};
+            m_videos = {QVariantMap{{QStringLiteral("url"), m_source}, {QStringLiteral("thumbKey"), nextThumbKey()}}};
     }
 
     QUrl source() const { return m_source; }
@@ -156,7 +164,6 @@ public:
     QString status() const { return {}; }
     QObject *timelineObject() { return &timeline; }
 
-    Q_INVOKABLE bool load(const QUrl &) { return false; }
     Q_INVOKABLE void openVideoDialog() { ++openCount; }
     Q_INVOKABLE void addVideoDialog(double t) {
         ++addCount;
@@ -166,7 +173,6 @@ public:
         ++exportCount;
         exportedClips = timeline.clips();
     }
-    Q_INVOKABLE QUrl suggestedExportUrl() const { return {}; }
     Q_INVOKABLE void saveFrame(double) {}
     Q_INVOKABLE void stepFrame(double t, int direction) { emit frameStepped(t, t + direction * 0.04); }
     Q_INVOKABLE bool addVideos(const QVariantList &, double) { return false; }
@@ -179,9 +185,9 @@ public:
         timeline.markExported(exportedClips);
         emit exportDone(QStringLiteral("/tmp/exported.mp4"));
     }
-    // What choosing a video in the add dialog does.
-    void addVideo(double duration, double t) {
-        m_videos.append(QVariantMap{{QStringLiteral("url"), m_source}, {QStringLiteral("thumbKey"), m_videos.size() + 1}});
+    // What choosing a video of this length in the add dialog does.
+    void addVideoOfLength(double duration, double t) {
+        m_videos.append(QVariantMap{{QStringLiteral("url"), m_source}, {QStringLiteral("thumbKey"), nextThumbKey()}});
         emit videosChanged();
         timeline.addSource(duration, t);
     }
@@ -246,12 +252,30 @@ static QString mainQmlPath() {
         QStringLiteral("../src/Main.qml"));
 }
 
+// Calls back when a string-connected signal fires.
+class Relay : public QObject {
+    Q_OBJECT
+public:
+    std::function<void()> callback;
+public slots:
+    void trigger() { if (callback) callback(); }
+};
+
 // Loads Main.qml against a stub backend and keeps the engine alive for as long
 // as the window is in use, so each shortcut test is just the key presses.
 class QmlHarness {
 public:
-    explicit QmlHarness(QObject &backend, const QByteArray &source = {}) {
-        m_engine.addImageProvider(QStringLiteral("thumbs"), new ThumbProvider);
+    // framesFrom, a real video, serves the filmstrip for every video the
+    // backend has, now and later; without it the filmstrip stays blank.
+    explicit QmlHarness(QObject &backend, const QByteArray &source = {}, const QString &framesFrom = {})
+        : m_backend(backend), m_framesFrom(framesFrom) {
+        m_thumbs = new ThumbProvider;
+        // Before loading: the filmstrip asks for frames as soon as it's built.
+        serveFrames();
+        m_relay.callback = [this] { serveFrames(); };
+        if (backend.metaObject()->indexOfSignal("videosChanged()") >= 0)
+            QObject::connect(&backend, SIGNAL(videosChanged()), &m_relay, SLOT(trigger()));
+        m_engine.addImageProvider(QStringLiteral("thumbs"), m_thumbs);
         m_engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
         m_engine.rootContext()->setContextProperty(QStringLiteral("theme"), &m_theme);
         // English, from the catalog in src/, so counted strings get their forms.
@@ -275,12 +299,23 @@ public:
     }
 
 private:
+    void serveFrames() {
+        if (m_framesFrom.isEmpty())
+            return;
+        for (const QVariant &video : m_backend.property("videos").toList())
+            m_thumbs->setVideo(video.toMap().value(QStringLiteral("thumbKey")).toInt(), m_framesFrom);
+    }
+
+    QObject &m_backend;
+    QString m_framesFrom;
     // Declared before the engine, so it outlives the bindings that read it.
     QTemporaryDir m_themeDir;
     Theme m_theme{m_themeDir.path()};
     Translator m_translator{m_themeDir.filePath(QStringLiteral("language")),
                             QFileInfo(QString::fromUtf8(__FILE__)).dir().absoluteFilePath(QStringLiteral("../src/i18n"))};
+    Relay m_relay;
     QQmlApplicationEngine m_engine;
+    ThumbProvider *m_thumbs = nullptr;
     QQuickWindow *m_window = nullptr;
 };
 
@@ -289,6 +324,7 @@ class BackendTests : public QObject {
 
 private slots:
     void initTestCase();
+    void init();
     void openDialogDelegatesToFilePicker();
     void pickerSelectionLoadsVideo();
     void loadRefusesAnythingButAbsoluteLocalPaths();
@@ -364,6 +400,7 @@ private slots:
     void translatorPicksPluralForms();
     void catalogsMatchTheCode();
     void qmlDialogsAnswerFromTheKeyboard();
+    void stubBackendMatchesTheRealOne();
     void portalPickerReplacesAnUnansweredRequest();
 
 private:
@@ -382,6 +419,13 @@ private:
     QTemporaryDir m_dir;
     QString m_videoPath;
 };
+
+// A QML warning, such as a TypeError from a binding or a call the backend
+// doesn't have, fails the test that caused it; otherwise QML only logs it and
+// the test passes with the UI broken.
+void BackendTests::init() {
+    QTest::failOnWarning(QRegularExpression(QStringLiteral("\\.qml:\\d+")));
+}
 
 void BackendTests::initTestCase() {
     QQuickStyle::setStyle(QStringLiteral("Material"));
@@ -1735,7 +1779,7 @@ void BackendTests::qmlKeysMoveAndAddClips() {
     QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier | Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.addCount, 1, 3000);
     QCOMPARE(backend.lastAddAt, 0.04);
-    backend.addVideo(3.0, backend.lastAddAt);
+    backend.addVideoOfLength(3.0, backend.lastAddAt);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
                               (edit::Clips{{0, 0.0, 5.0}, {1, 0.0, 3.0}, {0, 5.0, 20.0}}), 3000);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), true, 3000);
@@ -2732,6 +2776,44 @@ void BackendTests::qmlDialogsAnswerFromTheKeyboard() {
     QCOMPARE(window->property("openConfirmVisible").toBool(), false);
 }
 
+// What QML can reach on an object: its properties with their types, change
+// signals and writability, and its signals and invokable methods with their
+// full signatures, return type included.
+static QStringList qmlSurface(const QMetaObject &meta) {
+    QStringList surface;
+    for (int i = meta.propertyOffset(); i < meta.propertyCount(); ++i) {
+        const QMetaProperty property = meta.property(i);
+        surface << QStringLiteral("property %1 %2 notify %3%4%5").arg(
+            QString::fromLatin1(property.typeName()), QString::fromLatin1(property.name()),
+            QString::fromLatin1(property.notifySignal().methodSignature()),
+            property.isWritable() ? QStringLiteral(" writable") : QString(),
+            property.isConstant() ? QStringLiteral(" constant") : QString());
+    }
+    for (int i = meta.methodOffset(); i < meta.methodCount(); ++i) {
+        const QMetaMethod method = meta.method(i);
+        if (method.access() != QMetaMethod::Public || method.methodType() == QMetaMethod::Slot)
+            continue;
+        surface << QStringLiteral("%1 %2 %3").arg(
+            method.methodType() == QMetaMethod::Signal ? QStringLiteral("signal") : QStringLiteral("method"),
+            QString::fromLatin1(method.typeName()), QString::fromLatin1(method.methodSignature()));
+    }
+    surface.sort();
+    return surface;
+}
+
+void BackendTests::stubBackendMatchesTheRealOne() {
+    // The QML tests run Main.qml against ShortcutBackend, so it must offer
+    // QML everything the real Backend does, the same way; anything missing
+    // would leave those tests passing while the app breaks.
+    const QStringList stub = qmlSurface(ShortcutBackend::staticMetaObject);
+    const QStringList real = qmlSurface(Backend::staticMetaObject);
+    QStringList missing, extra;
+    for (const QString &entry : real) if (!stub.contains(entry)) missing << entry;
+    for (const QString &entry : stub) if (!real.contains(entry)) extra << entry;
+    QVERIFY2(missing.isEmpty() && extra.isEmpty(),
+             qPrintable(QStringLiteral("stub lacks: %1\nstub adds: %2").arg(missing.join(QStringLiteral("; ")), extra.join(QStringLiteral("; ")))));
+}
+
 static bool dropUrls(QQuickWindow *window, const QList<QUrl> &urls) {
     QMimeData mime;
     mime.setUrls(urls);
@@ -2929,5 +3011,18 @@ void BackendTests::portalPickerReplacesAnUnansweredRequest() {
         QStringLiteral("org.freedesktop.portal.Desktop"));
 }
 
-QTEST_MAIN(BackendTests)
+// Offscreen, with the software renderer: no windows pop up while the tests
+// run, every window is the size it asks for rather than what a tiling window
+// manager makes it, and grabbed windows hold real pixels. The desktop's own
+// QT_QPA_PLATFORM is overridden; OMACUT_TEST_ON_SCREEN=1 keeps it, to watch.
+int main(int argc, char *argv[]) {
+    if (qEnvironmentVariableIsEmpty("OMACUT_TEST_ON_SCREEN")) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        qputenv("QT_QUICK_BACKEND", "software");
+    }
+    QGuiApplication app(argc, argv);
+    QTEST_SET_MAIN_SOURCE_PATH
+    BackendTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
 #include "omacut_tests.moc"

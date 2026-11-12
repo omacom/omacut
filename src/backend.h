@@ -46,10 +46,10 @@ public:
     // Start over with a video. Probing runs off the UI thread: false means
     // refused outright (busy, or not an absolute local path); the outcome
     // itself arrives via infoChanged or loadError.
-    Q_INVOKABLE bool load(const QUrl &url);
+    bool load(const QUrl &url);
     // Add a video as a clip after the one under t, sequence seconds. Like
     // load(), the probe finishes in the background.
-    Q_INVOKABLE bool addVideo(const QUrl &url, double t);
+    bool addVideo(const QUrl &url, double t);
     // Add several videos in order, each after the previous one lands, the
     // way a multi-file drop should behave. Failures are skipped; once the
     // batch settles, skippedVideos says how many, if any loaded.
@@ -62,7 +62,7 @@ public:
     Q_INVOKABLE void exportDialog();
 
     // Suggested "<name>_trimmed.mp4" target next to the source.
-    Q_INVOKABLE QUrl suggestedExportUrl() const;
+    QUrl suggestedExportUrl() const;
     // Saves the frame under t (seconds along the edit) as a PNG next to that
     // clip's video, in the background. One at a time; frameSaved or
     // frameFailed says how it went.
