@@ -31,7 +31,7 @@ Handles catch on neighbouring clip edges and the playhead.
 - *X, Delete*: Remove the clip under the playhead.
 - *Alt+[ / Alt+]*: Move the clip under the playhead earlier / later.
 - *Ctrl+Space*: Move the start of the clip under the playhead to the playhead.
-- *Alt+Space*: Move the end of the clip under the playhead to the playhead.
+- *Ctrl+Shift+Space*: Move the end of the clip under the playhead to the playhead.
 - *Ctrl+Z / Ctrl+Shift+Z*: Undo / redo.
 - *Z*: Zoom to the clip under the playhead for fine tuning (Z again zooms back out).
 - *F*: Save the frame under the playhead as a PNG next to its video.
