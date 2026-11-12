@@ -2292,7 +2292,7 @@ void BackendTests::themeAccentForegroundKeepsContrast() {
 static bool dropUrls(QQuickWindow *window, const QList<QUrl> &urls) {
     QMimeData mime;
     mime.setUrls(urls);
-    const QPoint point(window->width() / 2, window->height() / 3);
+    const QPointF point(window->width() / 2, window->height() / 3);
     QDragEnterEvent enter(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &enter);
     if (!enter.isAccepted()) {
@@ -2487,4 +2487,4 @@ void BackendTests::portalPickerReplacesAnUnansweredRequest() {
 }
 
 QTEST_MAIN(BackendTests)
-#include "backend_tests.moc"
+#include "omacut_tests.moc"
