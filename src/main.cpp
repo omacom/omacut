@@ -9,6 +9,7 @@
 #include <QUrl>
 
 #include "backend.h"
+#include "theme.h"
 #include "thumbprovider.h"
 
 int main(int argc, char *argv[]) {
@@ -30,6 +31,7 @@ int main(int argc, char *argv[]) {
     // Modern, themeable controls (the same family Quickshell builds on).
     QQuickStyle::setStyle("Material");
 
+    Theme theme;
     auto *provider = new ThumbProvider();
     Backend backend(provider, &app);
 
@@ -38,6 +40,7 @@ int main(int argc, char *argv[]) {
     // The engine takes ownership of the image provider.
     engine.addImageProvider("thumbs", provider);
 
+    engine.rootContext()->setContextProperty("theme", &theme);
     engine.rootContext()->setContextProperty("backend", &backend);
 
     engine.load(QUrl("qrc:/Main.qml"));

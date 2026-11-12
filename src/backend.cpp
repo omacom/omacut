@@ -1,6 +1,5 @@
 #include "backend.h"
 
-#include <QColor>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -8,7 +7,6 @@
 #include <QPointer>
 #include <QProcess>
 #include <QTemporaryFile>
-#include <QTextStream>
 #include <QThreadPool>
 #include <QTimer>
 #include <QVariantMap>
@@ -23,16 +21,6 @@
 #include "thumbprovider.h"
 
 namespace {
-const QString kDefaultAccent = QStringLiteral("#FFD60A");
-
-QString omarchyCurrentDir() {
-    return QDir::homePath() + QStringLiteral("/.local/state/omarchy/current");
-}
-
-QString omarchyColorsPath() {
-    return omarchyCurrentDir() + QStringLiteral("/theme/colors.toml");
-}
-
 QString mp4PathFor(const QString &path) {
     const QFileInfo file(path);
     if (file.suffix().compare(QStringLiteral("mp4"), Qt::CaseInsensitive) == 0)
@@ -55,22 +43,10 @@ Backend::Backend(ThumbProvider *provider, QObject *parent)
     : Backend(provider, new PortalFilePicker(), parent) {}
 
 Backend::Backend(ThumbProvider *provider, FilePicker *filePicker, QObject *parent)
-    : QObject(parent), m_provider(provider), m_filePicker(filePicker),
-      m_themeAccent(kDefaultAccent) {
+    : QObject(parent), m_provider(provider), m_filePicker(filePicker) {
     if (!m_filePicker->parent())
         m_filePicker->setParent(this);
     wireFilePicker();
-
-    // Follow omarchy theme switches live. The theme lives behind a symlink that
-    // gets swapped, so the reload also re-arms the watch paths every time.
-    const auto themeChanged = [this] {
-        watchTheme();
-        loadThemeAccent();
-    };
-    connect(&m_themeWatcher, &QFileSystemWatcher::directoryChanged, this, themeChanged);
-    connect(&m_themeWatcher, &QFileSystemWatcher::fileChanged, this, themeChanged);
-    watchTheme();
-    loadThemeAccent();
 }
 
 Backend::~Backend() {
@@ -104,78 +80,6 @@ void Backend::setStatus(const QString &status) {
         return;
     m_status = status;
     emit statusChanged();
-}
-
-QString Backend::accentFromColorsFile(const QString &path, const QString &fallback) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-        return fallback;
-
-    QTextStream in(&file);
-    while (!in.atEnd()) {
-        const QString line = in.readLine().trimmed();
-        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
-            continue;
-
-        const int equals = line.indexOf(QLatin1Char('='));
-        if (equals < 0 || line.left(equals).trimmed() != QStringLiteral("accent"))
-            continue;
-
-        QString value = line.mid(equals + 1).trimmed();
-
-        // A value can carry a trailing comment. Inside quotes the '#' belongs
-        // to the string; outside them it starts one -- except the leading '#'
-        // of a bare hex colour, which is the value itself.
-        if (value.startsWith(QLatin1Char('"')) || value.startsWith(QLatin1Char('\''))) {
-            const QChar quote = value.front();
-            const int closing = value.indexOf(quote, 1);
-            value = closing > 0 ? value.mid(1, closing - 1) : value.mid(1);
-        } else {
-            const int comment =
-                value.indexOf(QLatin1Char('#'), value.startsWith(QLatin1Char('#')) ? 1 : 0);
-            if (comment >= 0)
-                value = value.left(comment).trimmed();
-        }
-
-        return QColor::fromString(value).isValid() ? value : fallback;
-    }
-    return fallback;
-}
-
-QString Backend::foregroundFor(const QString &color) {
-    const QColor parsed = QColor::fromString(color);
-    if (!parsed.isValid())
-        return QStringLiteral("black");
-    const double luminance = 0.299 * parsed.redF()
-        + 0.587 * parsed.greenF() + 0.114 * parsed.blueF();
-    return luminance < 0.5 ? QStringLiteral("white") : QStringLiteral("black");
-}
-
-QString Backend::themeAccentForeground() const {
-    return foregroundFor(m_themeAccent);
-}
-
-void Backend::loadThemeAccent() {
-    const QString accent = accentFromColorsFile(omarchyColorsPath(), kDefaultAccent);
-    if (accent == m_themeAccent)
-        return;
-    m_themeAccent = accent;
-    emit themeAccentChanged();
-}
-
-void Backend::watchTheme() {
-    const QStringList watched = m_themeWatcher.files() + m_themeWatcher.directories();
-    if (!watched.isEmpty())
-        m_themeWatcher.removePaths(watched);
-
-    const QString currentDir = omarchyCurrentDir();
-    const QString themeDir = currentDir + QStringLiteral("/theme");
-    if (QDir(currentDir).exists())
-        m_themeWatcher.addPath(currentDir);
-    if (QDir(themeDir).exists())
-        m_themeWatcher.addPath(themeDir);
-    if (QFileInfo::exists(omarchyColorsPath()))
-        m_themeWatcher.addPath(omarchyColorsPath());
 }
 
 bool Backend::isVideoPath(const QString &path) const {

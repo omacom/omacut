@@ -15,8 +15,8 @@ ApplicationWindow {
     visible: true
     title: backend.source.toString() === "" ? "omacut" : "omacut — " + fileName(backend.source)
     readonly property bool hasVideo: backend.source.toString() !== ""
-    readonly property color accent: backend.themeAccent
-    readonly property color accentForeground: backend.themeAccentForeground
+    readonly property color accent: theme.accent
+    readonly property color accentForeground: theme.accentForeground
     readonly property bool audioOutputReady: audioOutput !== null
     property var audioOutput: null
     property string noticeText: ""
@@ -612,7 +612,7 @@ ApplicationWindow {
         id: dialogButton
         width: dialogButtonLabel.implicitWidth + 28
         height: 34
-        radius: 8
+        radius: theme.radius
 
         property string text: ""
         property bool primary: false
@@ -735,7 +735,7 @@ ApplicationWindow {
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: win.hasVideo ? 12 : 0
+            radius: win.hasVideo ? theme.radius : 0
             color: "black"
             clip: true
 
@@ -765,6 +765,8 @@ ApplicationWindow {
                 visible: !win.hasVideo
                 text: "Open a video"
                 highlighted: true
+                // Material.roundedScale isn't inherited, so the control sets it itself.
+                Material.roundedScale: theme.radius
                 focusPolicy: Qt.NoFocus
                 font.pixelSize: 18
                 Material.foreground: win.accentForeground
@@ -912,7 +914,7 @@ ApplicationWindow {
             color: "#cc0e0e10"
             border.color: win.accent
             border.width: 2
-            radius: 12
+            radius: theme.radius
             Label {
                 anchors.centerIn: parent
                 text: win.hasVideo ? "Drop to add to the edit" : "Drop a video to open it"
@@ -963,7 +965,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             width: helpColumn.width + 56
             height: helpColumn.height + 48
-            radius: 12
+            radius: theme.radius
             color: "#1c1c1e"
 
             Column {
@@ -1041,7 +1043,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             width: openColumn.width + 64
             height: openColumn.height + 48
-            radius: 12
+            radius: theme.radius
             color: "#1c1c1e"
 
             MouseArea {
@@ -1117,7 +1119,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             width: quitColumn.width + 64
             height: quitColumn.height + 48
-            radius: 12
+            radius: theme.radius
             color: "#1c1c1e"
 
             MouseArea {
