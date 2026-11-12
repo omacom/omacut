@@ -3403,9 +3403,10 @@ public:
             return;
         bar = harness.editBar();
         // The offscreen platform opens a window smaller than asked and grows
-        // it later; pin the size so two editors lay out alike.
+        // it later; pin the size so two editors lay out alike. Should it never
+        // get there, comparing the two editors' layouts fails and says how.
         window->setGeometry(QRect(0, 0, 960, 680));
-        QTest::qWaitFor([this] { return window->width() == 960 && window->height() == 680; }, 3000);
+        (void)QTest::qWaitFor([this] { return window->width() == 960 && window->height() == 680; }, 3000);
         QTest::qWait(50);
         for (int i = 1; i < durations.size(); ++i)
             backend.addVideoOfLength(durations[i], 0);
