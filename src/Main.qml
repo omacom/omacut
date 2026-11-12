@@ -327,7 +327,7 @@ ApplicationWindow {
     }
 
     Shortcut {
-        sequence: "Alt+Space"
+        sequence: "Ctrl+Shift+Space"
         context: Qt.ApplicationShortcut
         autoRepeat: false
         enabled: win.editing
@@ -991,7 +991,7 @@ ApplicationWindow {
                         { keys: "X", action: "Remove the clip" },
                         { keys: "Alt [ / ]", action: "Move the clip earlier / later" },
                         { keys: "Ctrl Space", action: "Clip start to playhead" },
-                        { keys: "Alt Space", action: "Clip end to playhead" },
+                        { keys: "Ctrl Shift Space", action: "Clip end to playhead" },
                         { keys: "Ctrl Z", action: "Undo (Ctrl Shift Z redo)" },
                         { keys: "Z", action: "Zoom to the clip" },
                         { keys: "F", action: "Save the playhead frame as a PNG" },

@@ -1544,7 +1544,7 @@ void BackendTests::qmlSpaceChordsSetTheClipEdges() {
     for (int i = 0; i < 3; ++i)
         QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 15.0, 3000);
-    QTest::keyClick(window, Qt::Key_Space, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier | Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 0.0, 15.0}}), 3000);
 
     // Same for the start, at 5 s. The clip now starts there, so the
@@ -1558,7 +1558,7 @@ void BackendTests::qmlSpaceChordsSetTheClipEdges() {
     // The edges never cross: pulling the end onto the start leaves the clip be.
     QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 0.0, 3000);
-    QTest::keyClick(window, Qt::Key_Space, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier | Qt::ShiftModifier);
     QTest::qWait(50);
     QCOMPARE(backend.timeline.clips(), (edit::Clips{{0, 5.0, 15.0}}));
 }
@@ -1690,7 +1690,7 @@ void BackendTests::qmlZoomFocusesTheClip() {
     QCOMPARE(editBar->property("viewEndSec").toDouble(), 16.25);
 
     // Tighten the clip while zoomed: end to the playhead at 10 s.
-    QTest::keyClick(window, Qt::Key_Space, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier | Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
                               (edit::Clips{{0, 0.0, 5.0}, {0, 5.0, 10.0}, {0, 15.0, 20.0}}), 3000);
     QTest::keyClick(window, Qt::Key_Left);
@@ -1911,7 +1911,7 @@ void BackendTests::qmlQuitConfirmsUnexportedEdit() {
     backend.announceExportDone();
     QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), false, 3000);
     QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
-    QTest::keyClick(window, Qt::Key_Space, Qt::AltModifier);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier | Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 5.0, 15.0}}), 3000);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), true, 3000);
 
