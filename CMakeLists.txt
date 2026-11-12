@@ -28,5 +28,8 @@ target_link_libraries(omacut PRIVATE omacut_core)
 enable_testing()
 add_executable(omacut_tests tests/omacut_tests.cpp)
 target_link_libraries(omacut_tests PRIVATE omacut_core Qt6::Test)
+# GCC on aarch64 notes that passing a std::pair changed ABI in GCC 10.1, which
+# only matters when linking against objects built by GCC 9 or older.
+target_compile_options(omacut_tests PRIVATE -Wno-psabi)
 add_test(NAME omacut_tests COMMAND omacut_tests)
 set_tests_properties(omacut_tests PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
