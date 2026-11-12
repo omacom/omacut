@@ -24,6 +24,12 @@ int main(int argc, char *argv[]) {
         qputenv("QT_FFMPEG_DECODING_HW_DEVICE_TYPES",
                 QFileInfo::exists("/sys/module/nvidia") ? "cuda" : "vaapi,cuda");
 
+    // Exports run through the ffmpeg CLI, so Qt never encodes. Without this, Qt
+    // probes every hardware encoder backend when it loads, which takes about two
+    // seconds before the window appears on some GPUs (Vulkan alone takes ~0.9s).
+    if (!qEnvironmentVariableIsSet("QT_FFMPEG_ENCODING_HW_DEVICE_TYPES"))
+        qputenv("QT_FFMPEG_ENCODING_HW_DEVICE_TYPES", "none");
+
     QGuiApplication app(argc, argv);
     app.setApplicationName("omacut");
 
