@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -77,7 +78,7 @@ VideoInfo probe(const QString &path) {
 
     const QString ffprobe = toolPath("ffprobe");
     if (ffprobe.isEmpty()) {
-        info.error = "`ffprobe` was not found on your PATH. Install ffmpeg.";
+        info.error = QCoreApplication::translate("ffmpeg", "`ffprobe` was not found on your PATH. Install ffmpeg.");
         return info;
     }
 
@@ -92,14 +93,14 @@ VideoInfo probe(const QString &path) {
     if (!proc.waitForFinished(kProbeTimeoutMs)) {
         proc.kill();
         proc.waitForFinished(-1);
-        info.error = "ffprobe timed out reading this file.";
+        info.error = QCoreApplication::translate("ffmpeg", "ffprobe timed out reading this file.");
         return info;
     }
 
     if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
         info.error = QString::fromUtf8(proc.readAllStandardError()).trimmed();
         if (info.error.isEmpty())
-            info.error = "ffprobe failed.";
+            info.error = QCoreApplication::translate("ffmpeg", "ffprobe failed.");
         return info;
     }
 
@@ -117,7 +118,7 @@ VideoInfo probe(const QString &path) {
             info.audio = true;
     }
     if (stream.isEmpty()) {
-        info.error = "No video stream found in this file.";
+        info.error = QCoreApplication::translate("ffmpeg", "No video stream found in this file.");
         return info;
     }
 
@@ -149,14 +150,14 @@ VideoInfo probe(const QString &path) {
     } else {
         info.duration = probePacketDuration(ffprobe, path, stream.value("index").toInt());
         if (info.duration <= 0.0) {
-            info.error = "Could not determine the video duration.";
+            info.error = QCoreApplication::translate("ffmpeg", "Could not determine the video duration.");
             return info;
         }
     }
 
     info.ok = info.duration > 0.0;
     if (!info.ok)
-        info.error = "Video has a zero or invalid duration.";
+        info.error = QCoreApplication::translate("ffmpeg", "Video has a zero or invalid duration.");
     return info;
 }
 

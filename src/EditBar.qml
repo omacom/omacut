@@ -10,6 +10,9 @@ import "Format.js" as Format
 Item {
     id: root
     implicitHeight: 76
+    // Time runs left to right in every language, so the timeline isn't mirrored.
+    LayoutMirroring.enabled: false
+    LayoutMirroring.childrenInherit: true
 
     readonly property var timeline: backend.timeline
     readonly property var clips: timeline.clips
@@ -34,7 +37,7 @@ Item {
     readonly property real handleW: 14
     // The clip frames' border; the filmstrip sits exactly inside it.
     readonly property int frameW: 3
-    readonly property real frameRadius: 8
+    readonly property real frameRadius: theme.radius
     // The stretch of the sequence the track currently shows. A drag holds the
     // scale it started with, so the handle stays under the pointer.
     readonly property real windowStart: zoomed ? viewStartSec : 0
@@ -108,7 +111,7 @@ Item {
     Rectangle {
         id: track
         anchors.fill: parent; anchors.topMargin: root.frameW; anchors.bottomMargin: root.frameW
-        radius: root.frameRadius - root.frameW; color: root.film
+        radius: Math.max(0, root.frameRadius - root.frameW); color: root.film
     }
 
     component Handle: Rectangle {
@@ -223,12 +226,12 @@ Item {
     // Hint above the timeline: the source time under a dragged handle, or what the pointer can do.
     Rectangle {
         readonly property bool dragging: root.trimming
-        readonly property string hint: area.splitHovered >= 0 ? "Double-click to join"
+        readonly property string hint: area.splitHovered >= 0 ? qsTr("Double-click to join")
                                       : area.clipHovered >= 0 && !area.onHandle
-                                        ? (root.clips.length > 1 ? "Double-click to split · hold to move" : "Double-click to split") : ""
+                                        ? (root.clips.length > 1 ? qsTr("Double-click to split · hold to move") : qsTr("Double-click to split")) : ""
         visible: root.enabled && (dragging || (area.mode === 0 && area.containsMouse && !area.removeHovered && hint !== ""))
         width: label.implicitWidth + 20; height: dragging ? 32 : 26
-        radius: 7; color: "#2c2c2f"
+        radius: Math.min(4, theme.radius); color: "#2c2c2f"
         x: {
             var at = dragging ? root.positions[area.clipIndex] : null
             var anchor = dragging ? root.xForTime(area.leftEdge ? at.start : at.end) : area.mouseX

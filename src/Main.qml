@@ -15,8 +15,8 @@ ApplicationWindow {
     visible: true
     title: backend.source.toString() === "" ? "omacut" : "omacut — " + fileName(backend.source)
     readonly property bool hasVideo: backend.source.toString() !== ""
-    readonly property color accent: backend.themeAccent
-    readonly property color accentForeground: backend.themeAccentForeground
+    readonly property color accent: theme.accent
+    readonly property color accentForeground: theme.accentForeground
     readonly property bool audioOutputReady: audioOutput !== null
     property var audioOutput: null
     property string noticeText: ""
@@ -24,6 +24,9 @@ ApplicationWindow {
     property bool quitConfirmVisible: false
     property bool openConfirmVisible: false
     readonly property string statusText: noticeText !== "" ? noticeText : backend.status
+    // Right-to-left languages mirror the window; the Translator sets the
+    // application's layout direction.
+    readonly property bool rightToLeft: Qt.application.layoutDirection === Qt.RightToLeft
 
     readonly property var timeline: backend.timeline
     // Quitting only warns about unexported edits. One clip spanning the whole
@@ -615,7 +618,7 @@ ApplicationWindow {
         id: dialogButton
         width: dialogButtonLabel.implicitWidth + 28
         height: 34
-        radius: 8
+        radius: theme.radius
 
         property string text: ""
         property bool primary: false
@@ -730,6 +733,8 @@ ApplicationWindow {
     }
 
     ColumnLayout {
+        LayoutMirroring.enabled: win.rightToLeft
+        LayoutMirroring.childrenInherit: true
         anchors.fill: parent
         anchors.margins: win.hasVideo ? 16 : 0
         spacing: 14
@@ -738,7 +743,7 @@ ApplicationWindow {
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            radius: win.hasVideo ? 12 : 0
+            radius: win.hasVideo ? theme.radius : 0
             color: "black"
             clip: true
 
@@ -766,8 +771,10 @@ ApplicationWindow {
                 id: openVideoButton
                 anchors.centerIn: parent
                 visible: !win.hasVideo
-                text: "Open a video"
+                text: qsTr("Open a video")
                 highlighted: true
+                // Material.roundedScale isn't inherited, so the control sets it itself.
+                Material.roundedScale: theme.radius
                 focusPolicy: Qt.NoFocus
                 font.pixelSize: 18
                 Material.foreground: win.accentForeground
@@ -812,7 +819,7 @@ ApplicationWindow {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
                 iconName: player.playbackState === MediaPlayer.PlayingState && !player.priming ? "pause" : "play"
-                tipText: player.playbackState === MediaPlayer.PlayingState ? "Pause" : "Play"
+                tipText: player.playbackState === MediaPlayer.PlayingState ? qsTr("Pause") : qsTr("Play")
                 enabled: timeline.duration > 0
                 onClicked: togglePlay()
             }
@@ -840,7 +847,7 @@ ApplicationWindow {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
                 iconName: "plus"
-                tipText: "Add a video"
+                tipText: qsTr("Add a video")
                 enabled: timeline.duration > 0 && !backend.busy
                 onClicked: addVideo()
             }
@@ -849,7 +856,7 @@ ApplicationWindow {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
                 iconName: "download"
-                tipText: "Export"
+                tipText: qsTr("Export")
                 enabled: timeline.duration > 0 && !backend.busy
                 onClicked: exportVideo()
             }
@@ -881,7 +888,7 @@ ApplicationWindow {
                 visible: win.statusText === "" && timeline.duration > 0 && !editBar.trimming
                 textFormat: Text.StyledText
                 text: Format.fmt(editBar.playheadSec) + " (" + Format.fmt(win.timeline.duration) + ")"
-                    + (editBar.zoomed ? " · <font color=\"" + win.accent + "\">zoomed</font>" : "")
+                    + (editBar.zoomed ? " · <font color=\"" + win.accent + "\">" + qsTr("zoomed") + "</font>" : "")
                 color: "#d6d6da"
                 font.pixelSize: 13
                 font.family: "monospace"
@@ -890,6 +897,8 @@ ApplicationWindow {
     }
 
     DropArea {
+        LayoutMirroring.enabled: win.rightToLeft
+        LayoutMirroring.childrenInherit: true
         id: videoDropArea
         objectName: "videoDropArea"
         anchors.fill: parent
@@ -915,10 +924,10 @@ ApplicationWindow {
             color: "#cc0e0e10"
             border.color: win.accent
             border.width: 2
-            radius: 12
+            radius: theme.radius
             Label {
                 anchors.centerIn: parent
-                text: win.hasVideo ? "Drop to add to the edit" : "Drop a video to open it"
+                text: win.hasVideo ? qsTr("Drop to add to the edit") : qsTr("Drop a video to open it")
                 font.pixelSize: 20
                 color: win.accent
             }
@@ -927,6 +936,8 @@ ApplicationWindow {
 
     // --- subtle help toggle in the corner ---
     Rectangle {
+        LayoutMirroring.enabled: win.rightToLeft
+        LayoutMirroring.childrenInherit: true
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.margins: 10
@@ -953,6 +964,8 @@ ApplicationWindow {
 
     // --- hotkey overlay ---
     Rectangle {
+        LayoutMirroring.enabled: win.rightToLeft
+        LayoutMirroring.childrenInherit: true
         visible: win.helpVisible
         anchors.fill: parent
         color: "#cc000000"
@@ -966,7 +979,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             width: helpColumn.width + 56
             height: helpColumn.height + 48
-            radius: 12
+            radius: theme.radius
             color: "#1c1c1e"
 
             Column {
@@ -975,7 +988,7 @@ ApplicationWindow {
                 spacing: 10
 
                 Label {
-                    text: "Keyboard shortcuts"
+                    text: qsTr("Keyboard shortcuts")
                     color: "white"
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
@@ -984,25 +997,25 @@ ApplicationWindow {
 
                 Repeater {
                     model: [
-                        { keys: "Space", action: "Play / pause" },
-                        { keys: "0–9", action: "Jump to 0%–90% of the edit" },
-                        { keys: "← / →", action: "Move playhead 1s" },
-                        { keys: "Shift ← / →", action: "Move playhead 5s" },
-                        { keys: "Alt ← / →", action: "One frame; hold to move 0.2s" },
-                        { keys: "[ / ]", action: "Previous / next clip edge" },
-                        { keys: "S", action: "Split the clip at the playhead" },
-                        { keys: "X", action: "Remove the clip" },
-                        { keys: "Alt [ / ]", action: "Move the clip earlier / later" },
-                        { keys: "Ctrl Space", action: "Clip start to playhead" },
-                        { keys: "Alt Space", action: "Clip end to playhead" },
-                        { keys: "Ctrl Z", action: "Undo (Ctrl Shift Z redo)" },
-                        { keys: "Z", action: "Zoom to the clip" },
-                        { keys: "F", action: "Save the playhead frame as a PNG" },
-                        { keys: "Ctrl O", action: "Open a video" },
-                        { keys: "Ctrl Shift O", action: "Add a video after this clip" },
-                        { keys: "Ctrl S", action: "Export" },
-                        { keys: "Q", action: "Quit" },
-                        { keys: "?", action: "Show these shortcuts" }
+                        { keys: "Space", action: qsTr("Play / pause") },
+                        { keys: "0–9", action: qsTr("Jump to 0%–90% of the edit") },
+                        { keys: "← / →", action: qsTr("Move playhead 1s") },
+                        { keys: "Shift ← / →", action: qsTr("Move playhead 5s") },
+                        { keys: "Alt ← / →", action: qsTr("One frame; hold to move 0.2s") },
+                        { keys: "[ / ]", action: qsTr("Previous / next clip edge") },
+                        { keys: "S", action: qsTr("Split the clip at the playhead") },
+                        { keys: "X", action: qsTr("Remove the clip") },
+                        { keys: "Alt [ / ]", action: qsTr("Move the clip earlier / later") },
+                        { keys: "Ctrl Space", action: qsTr("Clip start to playhead") },
+                        { keys: "Alt Space", action: qsTr("Clip end to playhead") },
+                        { keys: "Ctrl Z", action: qsTr("Undo (Ctrl Shift Z redo)") },
+                        { keys: "Z", action: qsTr("Zoom to the clip") },
+                        { keys: "F", action: qsTr("Save the playhead frame as a PNG") },
+                        { keys: "Ctrl O", action: qsTr("Open a video") },
+                        { keys: "Ctrl Shift O", action: qsTr("Add a video after this clip") },
+                        { keys: "Ctrl S", action: qsTr("Export") },
+                        { keys: "Q", action: qsTr("Quit") },
+                        { keys: "?", action: qsTr("Show these shortcuts") }
                     ]
                     delegate: Row {
                         spacing: 18
@@ -1027,6 +1040,8 @@ ApplicationWindow {
 
     // --- open confirmation (replacing an unexported edit) ---
     Rectangle {
+        LayoutMirroring.enabled: win.rightToLeft
+        LayoutMirroring.childrenInherit: true
         visible: win.openConfirmVisible
         anchors.fill: parent
         color: "#cc000000"
@@ -1044,7 +1059,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             width: openColumn.width + 64
             height: openColumn.height + 48
-            radius: 12
+            radius: theme.radius
             color: "#1c1c1e"
 
             MouseArea {
@@ -1057,16 +1072,18 @@ ApplicationWindow {
                 spacing: 8
 
                 Label {
-                    text: "Unexported edit"
+                    text: qsTr("Unexported edit")
                     color: "white"
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
                 }
 
                 Label {
-                    text: "Opening another video will discard this edit. Open it anyway?"
+                    width: Math.min(implicitWidth, win.width - 160)
+                    text: qsTr("Opening another video will discard this edit. Open it anyway?")
                     color: "#d6d6da"
                     font.pixelSize: 13
+                    wrapMode: Text.WordWrap
                     bottomPadding: 12
                 }
 
@@ -1076,7 +1093,7 @@ ApplicationWindow {
 
                     DialogButton {
                         id: openKeepButton
-                        text: "Keep editing"
+                        text: qsTr("Keep editing")
                         KeyNavigation.left: openVideoConfirmButton
                         KeyNavigation.right: openVideoConfirmButton
                         KeyNavigation.tab: openVideoConfirmButton
@@ -1085,7 +1102,7 @@ ApplicationWindow {
                     }
                     DialogButton {
                         id: openVideoConfirmButton
-                        text: "Open video"
+                        text: qsTr("Open video")
                         primary: true
                         KeyNavigation.left: openKeepButton
                         KeyNavigation.right: openKeepButton
@@ -1103,6 +1120,8 @@ ApplicationWindow {
 
     // --- quit confirmation ---
     Rectangle {
+        LayoutMirroring.enabled: win.rightToLeft
+        LayoutMirroring.childrenInherit: true
         visible: win.quitConfirmVisible
         anchors.fill: parent
         color: "#cc000000"
@@ -1120,7 +1139,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             width: quitColumn.width + 64
             height: quitColumn.height + 48
-            radius: 12
+            radius: theme.radius
             color: "#1c1c1e"
 
             MouseArea {
@@ -1133,7 +1152,7 @@ ApplicationWindow {
                 spacing: 8
 
                 Label {
-                    text: backend.exporting ? "Exporting" : "Unexported edit"
+                    text: backend.exporting ? qsTr("Exporting") : qsTr("Unexported edit")
                     color: "white"
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
@@ -1141,8 +1160,8 @@ ApplicationWindow {
 
                 Label {
                     width: Math.min(implicitWidth, win.width - 160)
-                    text: backend.exporting ? "The export is still running, and quitting stops it. Quit anyway?"
-                                            : "Your edit hasn't been exported. Quit anyway?"
+                    text: backend.exporting ? qsTr("The export is still running, and quitting stops it. Quit anyway?")
+                                            : qsTr("Your edit hasn't been exported. Quit anyway?")
                     color: "#d6d6da"
                     font.pixelSize: 13
                     wrapMode: Text.WordWrap
@@ -1155,7 +1174,7 @@ ApplicationWindow {
 
                     DialogButton {
                         id: quitCancelButton
-                        text: "Cancel"
+                        text: qsTr("Cancel")
                         KeyNavigation.left: quitExportButton.visible ? quitExportButton : quitQuitButton
                         KeyNavigation.right: quitQuitButton
                         KeyNavigation.tab: quitQuitButton
@@ -1164,7 +1183,7 @@ ApplicationWindow {
                     }
                     DialogButton {
                         id: quitQuitButton
-                        text: "Quit"
+                        text: qsTr("Quit")
                         KeyNavigation.left: quitCancelButton
                         KeyNavigation.right: quitExportButton.visible ? quitExportButton : quitCancelButton
                         KeyNavigation.tab: quitExportButton.visible ? quitExportButton : quitCancelButton
@@ -1173,7 +1192,7 @@ ApplicationWindow {
                     }
                     DialogButton {
                         id: quitExportButton
-                        text: "Export"
+                        text: qsTr("Export")
                         primary: true
                         // Already exporting: there's nothing to start.
                         visible: !backend.exporting
@@ -1208,26 +1227,28 @@ ApplicationWindow {
                 player.show(0, 0, false);
         }
         function onExportDone(path) {
-            win.showNotice("Saved " + path);
+            win.showNotice(qsTr("Saved %1").arg(path));
         }
         function onExportFailed(message) {
-            win.showNotice("Export failed: " + message);
+            win.showNotice(qsTr("Export failed: %1").arg(message));
         }
         function onFrameSaved(path) {
-            win.showNotice("Saved " + path);
+            win.showNotice(qsTr("Saved %1").arg(path));
         }
         function onFrameFailed(message) {
-            win.showNotice("Could not save the frame: " + message);
+            win.showNotice(qsTr("Could not save the frame: %1").arg(message));
         }
         function onFrameStepFailed(message) {
-            win.showNotice("Could not step to the frame: " + message);
+            win.showNotice(qsTr("Could not step to the frame: %1").arg(message));
         }
         function onLoadError(message) {
-            // The export-reopen refusal is a complete sentence already.
-            win.showNotice(message.startsWith("Saved") ? message : "Cannot open video: " + message);
+            win.showNotice(qsTr("Cannot open video: %1").arg(message));
+        }
+        function onExportReopenFailed() {
+            win.showNotice(qsTr("Saved, but couldn't reopen it, so the clips no longer match the file."));
         }
         function onSkippedVideos(count) {
-            win.showNotice(count === 1 ? "Skipped a file that won't open." : "Skipped " + count + " files that won't open.");
+            win.showNotice(qsTr("Skipped %n files that won't open.", "", count));
         }
     }
 }

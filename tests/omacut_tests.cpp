@@ -14,6 +14,9 @@
 #include <QFile>
 #include <QImage>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QRegularExpression>
 #include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -24,12 +27,15 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
+#include <cstdio>
 #include <memory>
 
 #include "backend.h"
 #include "filepicker.h"
 #include "portalfilepicker.h"
+#include "theme.h"
 #include "thumbprovider.h"
+#include "translator.h"
 
 // A fake org.freedesktop.portal.Request: only Close() matters here.
 class FakePortalRequest : public QObject {
@@ -128,8 +134,6 @@ class ShortcutBackend : public QObject {
     Q_PROPERTY(bool probing READ probing NOTIFY busyChanged)
     Q_PROPERTY(bool exporting READ exporting NOTIFY busyChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
-    Q_PROPERTY(QString themeAccent READ themeAccent NOTIFY themeAccentChanged)
-    Q_PROPERTY(QString themeAccentForeground READ themeAccentForeground NOTIFY themeAccentChanged)
     Q_PROPERTY(QObject *timeline READ timelineObject CONSTANT)
 
 public:
@@ -150,8 +154,6 @@ public:
         emit busyChanged();
     }
     QString status() const { return {}; }
-    QString themeAccent() const { return QStringLiteral("#FFD60A"); }
-    QString themeAccentForeground() const { return QStringLiteral("black"); }
     QObject *timelineObject() { return &timeline; }
 
     Q_INVOKABLE bool load(const QUrl &) { return false; }
@@ -196,7 +198,6 @@ signals:
     void videosChanged();
     void busyChanged();
     void statusChanged();
-    void themeAccentChanged();
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
     void frameStepped(double from, double to);
@@ -204,6 +205,7 @@ signals:
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);
+    void exportReopenFailed();
     void skippedVideos(int count);
 
 private:
@@ -244,6 +246,10 @@ public:
     explicit QmlHarness(QObject &backend, const QByteArray &source = {}) {
         m_engine.addImageProvider(QStringLiteral("thumbs"), new ThumbProvider);
         m_engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        m_engine.rootContext()->setContextProperty(QStringLiteral("theme"), &m_theme);
+        // English, from the catalog in src/, so counted strings get their forms.
+        QCoreApplication::installTranslator(&m_translator);
+        m_engine.rootContext()->setContextProperty(QStringLiteral("translator"), &m_translator);
         const QUrl url = QUrl::fromLocalFile(mainQmlPath());
         if (source.isEmpty())
             m_engine.load(url);
@@ -253,6 +259,8 @@ public:
             m_window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
     }
 
+    ~QmlHarness() { QCoreApplication::removeTranslator(&m_translator); }
+
     QQuickWindow *window() const { return m_window; }
     QQmlApplicationEngine &engine() { return m_engine; }
     QQuickItem *editBar() const {
@@ -260,6 +268,11 @@ public:
     }
 
 private:
+    // Declared before the engine, so it outlives the bindings that read it.
+    QTemporaryDir m_themeDir;
+    Theme m_theme{m_themeDir.path()};
+    Translator m_translator{m_themeDir.filePath(QStringLiteral("language")),
+                            QFileInfo(QString::fromUtf8(__FILE__)).dir().absoluteFilePath(QStringLiteral("../src/i18n"))};
     QQmlApplicationEngine m_engine;
     QQuickWindow *m_window = nullptr;
 };
@@ -334,6 +347,13 @@ private slots:
     void exportHeightsNeverUpscale();
     void themeAccentReadsOmarchyColors();
     void themeAccentForegroundKeepsContrast();
+    void themeFollowsOmarchyInstalledLater();
+    void themeFollowsASymlinkSwitch();
+    void themeFollowsHyprlandRounding();
+    void translatorFallsBackToEnglish();
+    void translatorFollowsTheLanguageFile();
+    void translatorPicksPluralForms();
+    void catalogsMatchTheCode();
     void portalPickerReplacesAnUnansweredRequest();
 
 private:
@@ -2286,8 +2306,7 @@ void BackendTests::themeAccentReadsOmarchyColors() {
     const QString colorsPath = m_dir.filePath(QStringLiteral("colors.toml"));
 
     // No file at all — the non-omarchy case — keeps the fallback.
-    QCOMPARE(Backend::accentFromColorsFile(m_dir.filePath(QStringLiteral("missing.toml")), fallback),
-             fallback);
+    QCOMPARE(Theme::readAccent(m_dir.filePath(QStringLiteral("missing.toml"))), fallback);
 
     const auto writeColors = [&colorsPath](const char *contents) {
         QFile file(colorsPath);
@@ -2299,45 +2318,290 @@ void BackendTests::themeAccentReadsOmarchyColors() {
                 "mode = \"dark\"\n"
                 "background = \"#121212\"\n"
                 "accent = \"#33ccff\"\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#33ccff"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("#33ccff"));
 
     writeColors("accent = '#aabbcc'\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#aabbcc"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("#aabbcc"));
 
     // Themes annotate their palette, and the note is not part of the colour.
     writeColors("accent = \"#4ECDC4\"          # secondary-400 -- the paired accent\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#4ECDC4"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("#4ECDC4"));
 
     writeColors("accent = '#aabbcc'  # single quoted, with a note\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#aabbcc"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("#aabbcc"));
 
     // Unquoted, the colour's own '#' opens it and a later one opens a comment.
     writeColors("accent = #4ECDC4 # secondary-400\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("#4ECDC4"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("#4ECDC4"));
 
     // A named colour keeps working with a note after it.
     writeColors("accent = teal # not a hex value at all\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), QStringLiteral("teal"));
+    QCOMPARE(Theme::readAccent(colorsPath), QStringLiteral("teal"));
 
     // A value that isn't a color keeps the fallback rather than breaking bindings.
     writeColors("accent = \"not-a-color\"\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), fallback);
+    QCOMPARE(Theme::readAccent(colorsPath), fallback);
 
     // As does a theme without an accent at all.
     writeColors("background = \"#121212\"\n");
-    QCOMPARE(Backend::accentFromColorsFile(colorsPath, fallback), fallback);
+    QCOMPARE(Theme::readAccent(colorsPath), fallback);
+}
+
+static bool writeFile(const QString &path, const QByteArray &contents) {
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(contents) == contents.size();
 }
 
 void BackendTests::themeAccentForegroundKeepsContrast() {
-    QCOMPARE(Backend::foregroundFor(QStringLiteral("#FFD60A")), QStringLiteral("black"));
-    QCOMPARE(Backend::foregroundFor(QStringLiteral("#222266")), QStringLiteral("white"));
-    QCOMPARE(Backend::foregroundFor(QStringLiteral("garbage")), QStringLiteral("black"));
+    QTemporaryDir dir;
+    QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("theme")));
+    const QString colors = dir.filePath(QStringLiteral("theme/colors.toml"));
+
+    Theme fallback(dir.path());
+    QCOMPARE(fallback.accent(), QStringLiteral("#FFD60A"));
+    QCOMPARE(fallback.accentForeground(), QStringLiteral("black"));
+
+    QVERIFY(writeFile(colors, "accent = \"#222266\"\n"));
+    QCOMPARE(Theme(dir.path()).accentForeground(), QStringLiteral("white"));
+
+    // Named colours are accents too, and get a foreground like any other.
+    QVERIFY(writeFile(colors, "accent = teal\n"));
+    QCOMPARE(Theme(dir.path()).accentForeground(), QStringLiteral("white"));
+
+    // Saturated red and green read better in black, by relative luminance,
+    // than the white a plain brightness cut-off would pick.
+    QVERIFY(writeFile(colors, "accent = \"#ff0000\"\n"));
+    QCOMPARE(Theme(dir.path()).accentForeground(), QStringLiteral("black"));
+    QVERIFY(writeFile(colors, "accent = \"#00a000\"\n"));
+    QCOMPARE(Theme(dir.path()).accentForeground(), QStringLiteral("black"));
+}
+
+void BackendTests::themeFollowsOmarchyInstalledLater() {
+    // The app starts before Omarchy's state directory exists, and picks up
+    // the accent once a theme lands there, without a restart.
+    QTemporaryDir dir;
+    const QString current = dir.filePath(QStringLiteral("state/omarchy/current"));
+    Theme theme(current);
+    QCOMPARE(theme.accent(), QStringLiteral("#FFD60A"));
+
+    QVERIFY(QDir().mkpath(current + QStringLiteral("/theme")));
+    QVERIFY(writeFile(current + QStringLiteral("/theme/colors.toml"), "accent = \"#112233\"\n"));
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#112233"));
+
+    // A theme switch replaces the file, and the watch follows it.
+    QVERIFY(QFile::remove(current + QStringLiteral("/theme/colors.toml")));
+    QVERIFY(writeFile(current + QStringLiteral("/theme/colors.toml"), "accent = \"#445566\"\n"));
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#445566"));
+
+    // So does replacing the whole current directory, as a symlink swap does.
+    QVERIFY(QDir(current).removeRecursively());
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#FFD60A"));
+    QVERIFY(QDir().mkpath(current + QStringLiteral("/theme")));
+    QVERIFY(writeFile(current + QStringLiteral("/theme/colors.toml"), "accent = \"#778899\"\n"));
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#778899"));
+}
+
+void BackendTests::themeFollowsASymlinkSwitch() {
+    // A theme switch that swaps current/theme as a symlink between two theme
+    // directories, then an edit to the newly linked theme.
+    QTemporaryDir dir;
+    QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("themes/a")));
+    QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("themes/b")));
+    QVERIFY(QDir(dir.path()).mkpath(QStringLiteral("current")));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("themes/a/colors.toml")), "accent = \"#111111\"\n"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("themes/b/colors.toml")), "accent = \"#222222\"\n"));
+    const QString link = dir.filePath(QStringLiteral("current/theme"));
+    QVERIFY(QFile::link(dir.filePath(QStringLiteral("themes/a")), link));
+
+    Theme theme(dir.filePath(QStringLiteral("current")));
+    QCOMPARE(theme.accent(), QStringLiteral("#111111"));
+
+    QVERIFY(QFile::link(dir.filePath(QStringLiteral("themes/b")), link + QStringLiteral(".next")));
+    QVERIFY(std::rename(QFile::encodeName(link + QStringLiteral(".next")).constData(),
+                        QFile::encodeName(link).constData()) == 0);
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#222222"));
+
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("themes/b/colors.toml")), "accent = \"#333333\"\n"));
+    QTRY_COMPARE(theme.accent(), QStringLiteral("#333333"));
+}
+
+void BackendTests::themeFollowsHyprlandRounding() {
+    QTemporaryDir dir;
+    const QString response = dir.filePath(QStringLiteral("response.json"));
+    const QString command = dir.filePath(QStringLiteral("hyprctl"));
+    QVERIFY(writeFile(command, "#!/bin/sh\ncat '" + response.toUtf8() + "'\n"));
+    QVERIFY(QFile::setPermissions(command, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    QVERIFY(writeFile(response, "{\"int\":0}"));
+
+    Theme theme(dir.path(), nullptr, command);
+    QCOMPARE(theme.radius(), 0);
+    QVERIFY(writeFile(response, "{\"int\":6}"));
+    QTRY_COMPARE(theme.radius(), 6);
+}
+
+void BackendTests::translatorFallsBackToEnglish() {
+    QTemporaryDir dir;
+    Translator translator(dir.filePath(QStringLiteral("language")), dir.path());
+    QCOMPARE(translator.language(), QStringLiteral("en"));
+    QVERIFY(translator.translate("Main", "Export").isNull());
+}
+
+void BackendTests::translatorFollowsTheLanguageFile() {
+    QTemporaryDir dir;
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("language")), "pt-BR\n"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("pt.json")), R"({"Export": "Exportar", "Open": "Abrir"})"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("pt-BR.json")), R"({"Open": "Abrir vídeo"})"));
+
+    Translator translator(dir.filePath(QStringLiteral("language")), dir.path());
+    QCOMPARE(translator.language(), QStringLiteral("pt-BR"));
+    QCOMPARE(translator.translate("Main", "Open"), QStringLiteral("Abrir vídeo"));
+    QCOMPARE(translator.translate("Main", "Export"), QStringLiteral("Exportar"));
+    QVERIFY(translator.translate("Main", "Quit").isNull());
+
+    // A language switch replaces the file, and the app follows it.
+    QVERIFY(QFile::remove(dir.filePath(QStringLiteral("language"))));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("language")), "en\n"));
+    QTRY_COMPARE(translator.language(), QStringLiteral("en"));
+    QVERIFY(translator.translate("Main", "Export").isNull());
+
+    // A first pick can create Omarchy's config directory, too.
+    const QString later = dir.filePath(QStringLiteral("config/omarchy/language"));
+    Translator fresh(later, dir.path());
+    QCOMPARE(fresh.language(), QStringLiteral("en"));
+    QVERIFY(QDir().mkpath(QFileInfo(later).absolutePath()));
+    QVERIFY(writeFile(later, "pt\n"));
+    QTRY_COMPARE(fresh.language(), QStringLiteral("pt"));
+    QCOMPARE(fresh.translate("Main", "Export"), QStringLiteral("Exportar"));
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
+}
+
+void BackendTests::translatorPicksPluralForms() {
+    QTemporaryDir dir;
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("language")), "ru\n"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("ru.json")),
+                      R"({"%n clips": {"one": "%n клип", "few": "%n клипа", "many": "%n клипов", "other": "%n клипа"}})"));
+
+    Translator translator(dir.filePath(QStringLiteral("language")), dir.path());
+    QCOMPARE(translator.translate("Main", "%n clips", nullptr, 21), QStringLiteral("%n клип"));
+    QCOMPARE(translator.translate("Main", "%n clips", nullptr, 22), QStringLiteral("%n клипа"));
+    QCOMPARE(translator.translate("Main", "%n clips", nullptr, 25), QStringLiteral("%n клипов"));
+    QCOMPARE(Translator::pluralCategory(QStringLiteral("ar"), 11), QStringLiteral("many"));
+    QCOMPARE(Translator::pluralCategory(QStringLiteral("ja"), 1), QStringLiteral("other"));
+
+    // A counted string Russian lacks falls back to English, with English
+    // rules: 21 is "one" in Russian but plural in English.
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("en.json")), R"({"%n files": {"one": "%n file", "other": "%n files"}})"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("language")), "uk\n"));
+    QTRY_COMPARE(translator.language(), QStringLiteral("uk"));
+    QCOMPARE(translator.translate("Main", "%n files", nullptr, 21), QStringLiteral("%n files"));
+    QCOMPARE(translator.translate("Main", "%n files", nullptr, 1), QStringLiteral("%n file"));
+
+    // The translator set the default locale; later tests expect English.
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
+}
+
+static QString sourceDir() {
+    return QFileInfo(QString::fromUtf8(__FILE__)).dir().absoluteFilePath(QStringLiteral("../src"));
+}
+
+static QJsonObject readCatalog(const QString &path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return QJsonDocument::fromJson(file.readAll()).object();
+}
+
+static QStringList placeholders(const QString &text) {
+    static const QRegularExpression placeholder(QStringLiteral("%L?[1-9n]"));
+    QStringList found;
+    for (auto it = placeholder.globalMatch(text); it.hasNext();)
+        found << it.next().captured();
+    found.sort();
+    return found;
+}
+
+void BackendTests::catalogsMatchTheCode() {
+    // Every string the code hands to qsTr(), tr() or translate() is in
+    // en.json, counted ones as plural forms, and nothing else is.
+    static const QRegularExpression call(
+        QStringLiteral(R"re(\b(?:qsTr|tr)\(\s*"((?:\\.|[^"\\])*)"(\s*,\s*"[^"]*"\s*,)?|translate\(\s*"[^"]*"\s*,\s*"((?:\\.|[^"\\])*)")re"));
+    QMap<QString, bool> used;
+    const QDir src(sourceDir());
+    for (const QFileInfo &info : src.entryInfoList({"*.qml", "*.js", "*.cpp", "*.h"}, QDir::Files)) {
+        QFile file(info.filePath());
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QStringList code;
+        for (const QString &line : QString::fromUtf8(file.readAll()).split('\n'))
+            if (!line.trimmed().startsWith(QStringLiteral("//")) && !line.trimmed().startsWith('*'))
+                code << line;
+        for (auto it = call.globalMatch(code.join('\n')); it.hasNext();) {
+            const auto match = it.next();
+            QString text = match.captured(1).isNull() ? match.captured(3) : match.captured(1);
+            text.replace(QStringLiteral("\\\""), QStringLiteral("\"")).replace(QStringLiteral("\\'"), QStringLiteral("'"));
+            used[text] = used.value(text) || !match.captured(2).isEmpty();
+        }
+    }
+    const QJsonObject english = readCatalog(src.filePath(QStringLiteral("i18n/en.json")));
+    QVERIFY(!english.isEmpty());
+    for (auto it = used.cbegin(); it != used.cend(); ++it) {
+        QVERIFY2(english.contains(it.key()), qPrintable(it.key() + " is missing from en.json"));
+        QVERIFY2(english.value(it.key()).isObject() == it.value(),
+                 qPrintable(it.key() + (it.value() ? " needs plural forms" : " is not counted")));
+    }
+    for (const QString &key : english.keys())
+        QVERIFY2(used.contains(key), qPrintable(key + " in en.json is no longer used"));
+
+    // Each catalog is compiled in, and its translations fit the English:
+    // the same placeholders, and the plural forms its language uses.
+    QFile qrc(src.filePath(QStringLiteral("resources.qrc")));
+    QVERIFY(qrc.open(QIODevice::ReadOnly));
+    const QString resources = QString::fromUtf8(qrc.readAll());
+    for (const QFileInfo &info : QDir(src.filePath(QStringLiteral("i18n"))).entryInfoList({"*.json"}, QDir::Files)) {
+        const QString language = info.completeBaseName();
+        QVERIFY2(resources.contains(QStringLiteral("<file alias=\"i18n/%1\">i18n/%1</file>").arg(info.fileName())),
+                 qPrintable(info.fileName() + " is not in resources.qrc"));
+        if (language == QStringLiteral("en"))
+            continue;
+        // Each plural category the language uses, and how many counts reach it.
+        QHash<QString, int> reach{{QStringLiteral("other"), 2}};
+        for (long long n = 0; n <= 1000; ++n)
+            ++reach[Translator::pluralCategory(language, n)];
+        ++reach[Translator::pluralCategory(language, 1000000)];
+        const QList<QString> used = reach.keys();
+        const QSet<QString> categories(used.begin(), used.end());
+        const QJsonObject catalog = readCatalog(info.filePath());
+        QVERIFY2(!catalog.isEmpty(), qPrintable(info.fileName() + " is empty or not JSON"));
+        for (auto it = catalog.begin(); it != catalog.end(); ++it) {
+            const QString where = info.fileName() + ": " + it.key();
+            QVERIFY2(english.contains(it.key()), qPrintable(where + " is not in en.json"));
+            if (english.value(it.key()).isString()) {
+                QVERIFY2(it.value().isString() && !it.value().toString().isEmpty(), qPrintable(where));
+                QCOMPARE(placeholders(it.value().toString()), placeholders(it.key()));
+                continue;
+            }
+            const QJsonObject forms = it.value().toObject();
+            const QStringList given = forms.keys();
+            QVERIFY2(QSet<QString>(given.begin(), given.end()) == categories, qPrintable(where + " has the wrong plural forms"));
+            // Every form keeps the other placeholders, and only a form for a
+            // single count ("a file", "two files") may leave the number out.
+            QStringList wanted = placeholders(it.key());
+            wanted.removeAll(QStringLiteral("%n"));
+            for (const QString &form : given) {
+                const QString text = forms.value(form).toString();
+                QVERIFY2(!text.isEmpty(), qPrintable(where + " " + form + " needs a translation"));
+                QStringList found = placeholders(text);
+                const bool counted = found.removeAll(QStringLiteral("%n")) > 0;
+                QVERIFY2(found == wanted, qPrintable(where + " " + form + " has the wrong placeholders"));
+                QVERIFY2(counted || reach.value(form) == 1, qPrintable(where + " " + form + " leaves out the count"));
+            }
+        }
+    }
 }
 
 static bool dropUrls(QQuickWindow *window, const QList<QUrl> &urls) {
     QMimeData mime;
     mime.setUrls(urls);
-    const QPoint point(window->width() / 2, window->height() / 3);
+    const QPointF point(window->width() / 2, window->height() / 3);
     QDragEnterEvent enter(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &enter);
     if (!enter.isAccepted()) {
@@ -2532,4 +2796,4 @@ void BackendTests::portalPickerReplacesAnUnansweredRequest() {
 }
 
 QTEST_MAIN(BackendTests)
-#include "backend_tests.moc"
+#include "omacut_tests.moc"

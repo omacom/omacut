@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QFileSystemWatcher>
 #include <QObject>
 #include <QString>
 #include <QUrl>
@@ -26,8 +25,6 @@ class Backend : public QObject {
     Q_PROPERTY(bool probing READ probing NOTIFY busyChanged)
     Q_PROPERTY(bool exporting READ exporting NOTIFY busyChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
-    Q_PROPERTY(QString themeAccent READ themeAccent NOTIFY themeAccentChanged)
-    Q_PROPERTY(QString themeAccentForeground READ themeAccentForeground NOTIFY themeAccentChanged)
     Q_PROPERTY(QObject *timeline READ timeline CONSTANT)
 
 public:
@@ -44,16 +41,7 @@ public:
     bool probing() const { return m_probing; }
     bool exporting() const { return m_busy; }
     QString status() const { return m_status; }
-    QString themeAccent() const { return m_themeAccent; }
-    QString themeAccentForeground() const;
     Timeline *timeline() { return &m_timeline; }
-
-    // The accent from an omarchy colors.toml, or the fallback when the file is
-    // missing or holds no usable accent — which is what keeps omacut working on
-    // distros without omarchy themes.
-    static QString accentFromColorsFile(const QString &path, const QString &fallback);
-    // "black" or "white", whichever stays legible on the given color.
-    static QString foregroundFor(const QString &color);
 
     // Start over with a video. Probing runs off the UI thread: false means
     // refused outright (busy, or not an absolute local path); the outcome
@@ -95,7 +83,6 @@ signals:
     void videosChanged();
     void busyChanged();
     void statusChanged();
-    void themeAccentChanged();
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
     void frameStepped(double from, double to);
@@ -103,6 +90,9 @@ signals:
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);
+    // An export over one of its own videos saved, but the saved file
+    // wouldn't reopen, so the clips no longer match it.
+    void exportReopenFailed();
     // An addVideos batch settled with some videos loaded and this many
     // skipped, so the UI can summarize instead of stacking errors.
     void skippedVideos(int count);
@@ -112,8 +102,6 @@ private:
     void setStatus(const QString &status);
     void failExport(const QString &tmpPath, const QString &message);
     void wireFilePicker();
-    void loadThemeAccent();
-    void watchTheme();
 
     struct Video {
         ffmpeg::VideoInfo info;
@@ -167,6 +155,4 @@ private:
     // The hidden file a frame is being written to, until it's renamed.
     QString m_framePart;
     QString m_status;
-    QString m_themeAccent;
-    QFileSystemWatcher m_themeWatcher;
 };
