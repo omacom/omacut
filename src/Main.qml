@@ -37,7 +37,9 @@ ApplicationWindow {
     onQuitAsksChanged: if (!quitAsks) quitConfirmVisible = false
     // Editing shortcuts go quiet while a dialog or the help overlay is up,
     // a probe is about to replace the timeline, or a handle is dragged.
-    readonly property bool editing: hasVideo && timeline.duration > 0 && !quitConfirmVisible && !openConfirmVisible && !helpVisible && !backend.probing && !editBar.interacting
+    // A confirmation or the shortcuts overlay is up, and has the keyboard.
+    readonly property bool overlayOpen: quitConfirmVisible || openConfirmVisible || helpVisible
+    readonly property bool editing: hasVideo && timeline.duration > 0 && !overlayOpen && !backend.probing && !editBar.interacting
 
     Material.theme: Material.Dark
     Material.accent: win.accent
@@ -172,9 +174,7 @@ ApplicationWindow {
         }
         if (win.quitAsks) {
             close.accepted = false;
-            if (player.playbackState === MediaPlayer.PlayingState)
-                player.pause();
-            win.quitConfirmVisible = true;
+            requestQuit();
             return;
         }
         forceQuit();
@@ -200,7 +200,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Space"
         context: Qt.ApplicationShortcut
-        enabled: win.hasVideo && !win.quitConfirmVisible && !win.openConfirmVisible && !win.helpVisible
+        enabled: win.hasVideo && !win.overlayOpen
         onActivated: togglePlay()
     }
 
@@ -264,14 +264,6 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         enabled: win.editing
         onActivated: altStep(1)
-    }
-
-    Connections {
-        target: backend
-        function onFrameStepped(from, to) {
-            if (win.editing && !win.playing() && Math.abs(editBar.playheadSec - from) < 0.000001)
-                win.seekTo(to);
-        }
     }
 
     Shortcut {
@@ -405,7 +397,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+O"
         context: Qt.ApplicationShortcut
-        enabled: !win.quitConfirmVisible && !win.openConfirmVisible && !win.helpVisible && !backend.busy
+        enabled: !win.overlayOpen && !backend.busy
         onActivated: openVideo()
     }
 
@@ -420,7 +412,7 @@ ApplicationWindow {
         sequence: "Q"
         context: Qt.ApplicationShortcut
         onActivated: {
-            if (!win.quitConfirmVisible && !win.openConfirmVisible && !win.helpVisible)
+            if (!win.overlayOpen)
                 requestQuit();
         }
     }
@@ -892,7 +884,7 @@ ApplicationWindow {
         objectName: "videoDropArea"
         anchors.fill: parent
         z: 5
-        enabled: !win.quitConfirmVisible && !win.openConfirmVisible && !win.helpVisible && !backend.busy
+        enabled: !win.overlayOpen && !backend.busy
         // Only local files: "file:-report" or "file:http://..." would reach
         // ffprobe as an option or an address, and "file:////host/..." is a
         // network share.
@@ -1066,6 +1058,10 @@ ApplicationWindow {
 
     Connections {
         target: backend
+        function onFrameStepped(from, to) {
+            if (win.editing && !win.playing() && Math.abs(editBar.playheadSec - from) < 0.000001)
+                win.seekTo(to);
+        }
         function onInfoChanged() {
             win.noticeText = "";
             noticeTimer.stop();
