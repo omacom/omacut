@@ -1601,14 +1601,24 @@ void BackendTests::qmlSpaceChordsSetTheClipEdges() {
     QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 15.0, 3000);
     QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier | Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 0.0, 15.0}}), 3000);
+    // The playhead stays at the cut, on the clip's last frame, as after
+    // dragging the end handle there, and pressing again trims nothing more.
+    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 14.999, 3000);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier | Qt::ShiftModifier);
+    QTest::qWait(50);
+    QCOMPARE(backend.timeline.clips(), (edit::Clips{{0, 0.0, 15.0}}));
 
-    // Same for the start, at 5 s. The clip now starts there, so the
-    // playhead's 5 s along the edit is 10 s into the video.
-    QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
-    QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
-    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 5.0, 3000);
+    // Same for the start, at 5 s. The playhead stays on its frame, which is
+    // now the clip's first: the start of the edit.
+    QQuickItem *editBar = harness.editBar();
+    editBar->setProperty("playheadSec", 5.0);
     QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 5.0, 15.0}}), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 0.0, 3000);
+    // So pressing it again trims nothing more, instead of another 5 s each time.
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+    QTest::qWait(50);
+    QCOMPARE(backend.timeline.clips(), (edit::Clips{{0, 5.0, 15.0}}));
 
     // The edges never cross: pulling the end onto the start leaves the clip be.
     QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
@@ -1616,6 +1626,23 @@ void BackendTests::qmlSpaceChordsSetTheClipEdges() {
     QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier | Qt::ShiftModifier);
     QTest::qWait(50);
     QCOMPARE(backend.timeline.clips(), (edit::Clips{{0, 5.0, 15.0}}));
+
+    // Trimming while the video is still loading to play leaves it to play
+    // once loaded, from the playhead's frame.
+    auto *player = window->findChild<QMediaPlayer *>();
+    QVERIFY(player);
+    editBar->setProperty("playheadSec", 2.0);
+    QVERIFY(player->setProperty("pendingMs", 1));
+    QVERIFY(player->setProperty("pendingPlay", true));
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 7.0, 15.0}}), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("pendingMs").toInt(), 7000, 3000);
+    QCOMPARE(player->property("pendingPlay").toBool(), true);
+    editBar->setProperty("playheadSec", 3.0);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier | Qt::ShiftModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 7.0, 10.0}}), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("pendingMs").toInt(), 9999, 3000);
+    QCOMPARE(player->property("pendingPlay").toBool(), true);
 }
 
 void BackendTests::qmlKeysSplitAndRemoveClips() {
@@ -1973,7 +2000,8 @@ void BackendTests::qmlQuitConfirmsUnexportedEdit() {
     QTest::keyClick(window, Qt::Key_Return);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), false, 3000);
     QCOMPARE(backend.exportCount, 0);
-    QCOMPARE(playhead(harness), 5.0);
+    // Right didn't seek: the playhead is still on the trimmed clip's first frame.
+    QCOMPARE(playhead(harness), 0.0);
 
     // Enter on the default Export focus exports, as does Ctrl+S.
     QTest::keyClick(window, Qt::Key_Q);
@@ -2002,6 +2030,7 @@ void BackendTests::qmlQuitConfirmsUnexportedEdit() {
     // A completed export cleans the edit; changing it again re-dirties.
     backend.announceExportDone();
     QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), false, 3000);
+    QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
     QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
     QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier | Qt::ShiftModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(), (edit::Clips{{0, 5.0, 15.0}}), 3000);

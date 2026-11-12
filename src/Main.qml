@@ -329,7 +329,16 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         autoRepeat: false
         enabled: win.editing
-        onActivated: timeline.trimTo(editBar.playheadSec, true)
+        onActivated: {
+            // The frame under the playhead becomes the clip's first, and the
+            // playhead stays on it: now the clip's start, not as far into the
+            // edit as before, which would be further into the footage.
+            var i = timeline.clipAt(editBar.playheadSec), was = timeline.clips[i].in;
+            timeline.trimTo(editBar.playheadSec, true);
+            // The edit's resync shows the frame, keeping a pending play.
+            if (timeline.clips[i].in !== was)
+                editBar.playheadSec = timeline.clipStart(i);
+        }
     }
 
     Shortcut {
@@ -337,7 +346,20 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         autoRepeat: false
         enabled: win.editing
-        onActivated: timeline.trimTo(editBar.playheadSec, false)
+        onActivated: {
+            // The clip now ends at the playhead, and the playhead stays at the
+            // cut, on the clip's last frame, as when dragging its end handle;
+            // the frame at the playhead itself now belongs to what follows.
+            var t = editBar.playheadSec, i = timeline.clipAt(t), was = timeline.clips[i].out;
+            // Within a millisecond of the end, the playhead is on the last
+            // frame already: the cut is here, so pressing again does nothing.
+            if (timeline.clipStart(i) + was - timeline.clips[i].in - t < 0.002)
+                return;
+            timeline.trimTo(t, false);
+            var clip = timeline.clips[i];
+            if (clip.out !== was)
+                editBar.playheadSec = timeline.clipStart(i) + clip.out - clip.in - 0.001;
+        }
     }
 
     Shortcut {
