@@ -88,6 +88,9 @@ signals:
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);
+    // An export over one of its own videos saved, but the saved file
+    // wouldn't reopen, so the clips no longer match it.
+    void exportReopenFailed();
     // An addVideos batch settled with some videos loaded and this many
     // skipped, so the UI can summarize instead of stacking errors.
     void skippedVideos(int count);

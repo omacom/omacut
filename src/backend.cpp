@@ -104,7 +104,7 @@ bool Backend::checkedPath(const QUrl &url, QString *path) {
     // as an option, and "file:http://..." as a network address.
     *path = url.toLocalFile();
     if (!url.isLocalFile() || !QDir::isAbsolutePath(*path)) {
-        emit loadError(QStringLiteral("Only local files can be opened."));
+        emit loadError(tr("Only local files can be opened."));
         return false;
     }
     return true;
@@ -140,11 +140,12 @@ void Backend::applyProbe(const PendingVideo &pending, const ffmpeg::VideoInfo &i
     if (!info.ok) {
         // An export that rewrote its own source reports done either way;
         // the reopen failing is the part the user needs explained.
-        if (pending.exportReload)
+        if (pending.exportReload) {
             emit exportDone(pending.path);
-        emit loadError(pending.exportReload
-            ? QStringLiteral("Saved, but couldn't reopen it, so the clips no longer match the file.")
-            : info.error);
+            emit exportReopenFailed();
+        } else {
+            emit loadError(info.error);
+        }
         if (pending.batch)
             ++m_batchSkipped;
     } else {
@@ -306,7 +307,7 @@ void Backend::stepFrame(double t, int direction) {
                 if (guard->m_timeline.clips() != clips || guard->m_videos.value(clip.source).thumbKey != video.thumbKey)
                     return;
                 if (times.isEmpty()) {
-                    emit guard->frameStepFailed(QStringLiteral("Could not read video frame times."));
+                    emit guard->frameStepFailed(tr("Could not read video frame times."));
                     return;
                 }
                 guard->m_videos[clip.source].frameTimes = times;
@@ -359,7 +360,7 @@ void Backend::saveFrame(double t) {
     const QString ffprobeBin = ffmpeg::toolPath("ffprobe");
     const QString ffmpegBin = ffmpeg::toolPath("ffmpeg");
     if (ffprobeBin.isEmpty() || ffmpegBin.isEmpty()) {
-        emit frameFailed(QStringLiteral("ffmpeg is not installed."));
+        emit frameFailed(tr("ffmpeg is not installed."));
         return;
     }
 
@@ -390,7 +391,7 @@ void Backend::saveFrame(double t) {
             m_framePart.clear();
             if (QFileInfo(partPath).size() <= 0) {
                 QFile::remove(partPath);
-                emit frameFailed(QStringLiteral("There's no frame there."));
+                emit frameFailed(tr("There's no frame there."));
                 return;
             }
             const QString stem = source.absolutePath() + QLatin1Char('/') + source.completeBaseName();
@@ -398,7 +399,7 @@ void Backend::saveFrame(double t) {
             for (int n = 2; !QFile::rename(partPath, pngPath); ++n) {
                 if (!QFileInfo::exists(pngPath) || n > 1000) {
                     QFile::remove(partPath);
-                    emit frameFailed(QStringLiteral("Could not write %1.").arg(pngPath));
+                    emit frameFailed(tr("Could not write %1.").arg(pngPath));
                     return;
                 }
                 pngPath = stem + QStringLiteral("-frame-%1.png").arg(n);
@@ -426,7 +427,7 @@ void Backend::runFrameStep(const QString &program, const QStringList &args,
             m_framePart.clear();
             if (!partPath.isEmpty())
                 QFile::remove(partPath);
-            emit frameFailed(err.isEmpty() ? QStringLiteral("ffmpeg failed.") : err);
+            emit frameFailed(err.isEmpty() ? tr("ffmpeg failed.") : err);
             return;
         }
         done(out);
@@ -479,7 +480,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     }
     const double clipLen = edit::duration(clips);
     if (segments.isEmpty() || clipLen <= 0.0) {
-        emit exportFailed("The selected clip has no length.");
+        emit exportFailed(tr("The selected clip has no length."));
         return;
     }
 
@@ -489,19 +490,19 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     const QString selectedPath = dst.toLocalFile();
     const QString outPath = mp4PathFor(selectedPath);
     if (outPath != selectedPath && QFileInfo::exists(outPath)) {
-        emit exportFailed(QStringLiteral("%1 already exists.")
+        emit exportFailed(tr("%1 already exists.")
                               .arg(QFileInfo(outPath).fileName()));
         return;
     }
 
     const QString ffmpegBin = ffmpeg::toolPath("ffmpeg");
     if (ffmpegBin.isEmpty()) {
-        emit exportFailed("`ffmpeg` was not found on your PATH.");
+        emit exportFailed(tr("`ffmpeg` was not found on your PATH."));
         return;
     }
 
     setBusy(true);
-    setStatus(QStringLiteral("Exporting 0%"));
+    setStatus(tr("Exporting %1%").arg(0));
 
     // Encode to a sibling temp file and atomically replace the target only after
     // success, so failed/cancelled exports preserve any existing file.
@@ -530,7 +531,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                     if (!ok)
                         continue;
                     const int percent = qBound(0, qRound(outSecs / clipLen * 100.0), 100);
-                    setStatus(QStringLiteral("Exporting %1%").arg(percent));
+                    setStatus(tr("Exporting %1%").arg(percent));
                 }
             });
 
@@ -542,11 +543,11 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                 const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
                 proc->deleteLater();
                 if (exitStatus != QProcess::NormalExit || code != 0) {
-                    failExport(tmpPath, err.isEmpty() ? QStringLiteral("ffmpeg trim failed.") : err);
+                    failExport(tmpPath, err.isEmpty() ? tr("ffmpeg trim failed.") : err);
                     return;
                 }
                 if (!replaceWithTemp(tmpPath, outPath)) {
-                    failExport(tmpPath, QStringLiteral("Could not write the exported file."));
+                    failExport(tmpPath, tr("Could not write the exported file."));
                     return;
                 }
                 setBusy(false);
@@ -576,7 +577,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                 *completed = true;
                 const QString err = proc->errorString();
                 proc->deleteLater();
-                failExport(tmpPath, err.isEmpty() ? QStringLiteral("Could not start ffmpeg.") : err);
+                failExport(tmpPath, err.isEmpty() ? tr("Could not start ffmpeg.") : err);
             });
     proc->start(ffmpegBin, args);
 }

@@ -14,6 +14,9 @@
 #include <QFile>
 #include <QImage>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QRegularExpression>
 #include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -32,6 +35,7 @@
 #include "portalfilepicker.h"
 #include "theme.h"
 #include "thumbprovider.h"
+#include "translator.h"
 
 // A fake org.freedesktop.portal.Request: only Close() matters here.
 class FakePortalRequest : public QObject {
@@ -195,6 +199,7 @@ signals:
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);
+    void exportReopenFailed();
     void skippedVideos(int count);
 
 private:
@@ -235,6 +240,9 @@ public:
         m_engine.addImageProvider(QStringLiteral("thumbs"), new ThumbProvider);
         m_engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
         m_engine.rootContext()->setContextProperty(QStringLiteral("theme"), &m_theme);
+        // English, from the catalog in src/, so counted strings get their forms.
+        QCoreApplication::installTranslator(&m_translator);
+        m_engine.rootContext()->setContextProperty(QStringLiteral("translator"), &m_translator);
         const QUrl url = QUrl::fromLocalFile(mainQmlPath());
         if (source.isEmpty())
             m_engine.load(url);
@@ -243,6 +251,8 @@ public:
         if (!m_engine.rootObjects().isEmpty())
             m_window = qobject_cast<QQuickWindow *>(m_engine.rootObjects().first());
     }
+
+    ~QmlHarness() { QCoreApplication::removeTranslator(&m_translator); }
 
     QQuickWindow *window() const { return m_window; }
     QQmlApplicationEngine &engine() { return m_engine; }
@@ -254,6 +264,8 @@ private:
     // Declared before the engine, so it outlives the bindings that read it.
     QTemporaryDir m_themeDir;
     Theme m_theme{m_themeDir.path()};
+    Translator m_translator{m_themeDir.filePath(QStringLiteral("language")),
+                            QFileInfo(QString::fromUtf8(__FILE__)).dir().absoluteFilePath(QStringLiteral("../src/i18n"))};
     QQmlApplicationEngine m_engine;
     QQuickWindow *m_window = nullptr;
 };
@@ -330,6 +342,10 @@ private slots:
     void themeFollowsOmarchyInstalledLater();
     void themeFollowsASymlinkSwitch();
     void themeFollowsHyprlandRounding();
+    void translatorFallsBackToEnglish();
+    void translatorFollowsTheLanguageFile();
+    void translatorPicksPluralForms();
+    void catalogsMatchTheCode();
     void portalPickerReplacesAnUnansweredRequest();
 
 private:
@@ -2376,6 +2392,165 @@ void BackendTests::themeFollowsHyprlandRounding() {
     QCOMPARE(theme.radius(), 0);
     QVERIFY(writeFile(response, "{\"int\":6}"));
     QTRY_COMPARE(theme.radius(), 6);
+}
+
+void BackendTests::translatorFallsBackToEnglish() {
+    QTemporaryDir dir;
+    Translator translator(dir.filePath(QStringLiteral("language")), dir.path());
+    QCOMPARE(translator.language(), QStringLiteral("en"));
+    QVERIFY(translator.translate("Main", "Export").isNull());
+}
+
+void BackendTests::translatorFollowsTheLanguageFile() {
+    QTemporaryDir dir;
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("language")), "pt-BR\n"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("pt.json")), R"({"Export": "Exportar", "Open": "Abrir"})"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("pt-BR.json")), R"({"Open": "Abrir vídeo"})"));
+
+    Translator translator(dir.filePath(QStringLiteral("language")), dir.path());
+    QCOMPARE(translator.language(), QStringLiteral("pt-BR"));
+    QCOMPARE(translator.translate("Main", "Open"), QStringLiteral("Abrir vídeo"));
+    QCOMPARE(translator.translate("Main", "Export"), QStringLiteral("Exportar"));
+    QVERIFY(translator.translate("Main", "Quit").isNull());
+
+    // A language switch replaces the file, and the app follows it.
+    QVERIFY(QFile::remove(dir.filePath(QStringLiteral("language"))));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("language")), "en\n"));
+    QTRY_COMPARE(translator.language(), QStringLiteral("en"));
+    QVERIFY(translator.translate("Main", "Export").isNull());
+
+    // A first pick can create Omarchy's config directory, too.
+    const QString later = dir.filePath(QStringLiteral("config/omarchy/language"));
+    Translator fresh(later, dir.path());
+    QCOMPARE(fresh.language(), QStringLiteral("en"));
+    QVERIFY(QDir().mkpath(QFileInfo(later).absolutePath()));
+    QVERIFY(writeFile(later, "pt\n"));
+    QTRY_COMPARE(fresh.language(), QStringLiteral("pt"));
+    QCOMPARE(fresh.translate("Main", "Export"), QStringLiteral("Exportar"));
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
+}
+
+void BackendTests::translatorPicksPluralForms() {
+    QTemporaryDir dir;
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("language")), "ru\n"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("ru.json")),
+                      R"({"%n clips": {"one": "%n клип", "few": "%n клипа", "many": "%n клипов", "other": "%n клипа"}})"));
+
+    Translator translator(dir.filePath(QStringLiteral("language")), dir.path());
+    QCOMPARE(translator.translate("Main", "%n clips", nullptr, 21), QStringLiteral("%n клип"));
+    QCOMPARE(translator.translate("Main", "%n clips", nullptr, 22), QStringLiteral("%n клипа"));
+    QCOMPARE(translator.translate("Main", "%n clips", nullptr, 25), QStringLiteral("%n клипов"));
+    QCOMPARE(Translator::pluralCategory(QStringLiteral("ar"), 11), QStringLiteral("many"));
+    QCOMPARE(Translator::pluralCategory(QStringLiteral("ja"), 1), QStringLiteral("other"));
+
+    // A counted string Russian lacks falls back to English, with English
+    // rules: 21 is "one" in Russian but plural in English.
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("en.json")), R"({"%n files": {"one": "%n file", "other": "%n files"}})"));
+    QVERIFY(writeFile(dir.filePath(QStringLiteral("language")), "uk\n"));
+    QTRY_COMPARE(translator.language(), QStringLiteral("uk"));
+    QCOMPARE(translator.translate("Main", "%n files", nullptr, 21), QStringLiteral("%n files"));
+    QCOMPARE(translator.translate("Main", "%n files", nullptr, 1), QStringLiteral("%n file"));
+
+    // The translator set the default locale; later tests expect English.
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
+}
+
+static QString sourceDir() {
+    return QFileInfo(QString::fromUtf8(__FILE__)).dir().absoluteFilePath(QStringLiteral("../src"));
+}
+
+static QJsonObject readCatalog(const QString &path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return QJsonDocument::fromJson(file.readAll()).object();
+}
+
+static QStringList placeholders(const QString &text) {
+    static const QRegularExpression placeholder(QStringLiteral("%L?[1-9n]"));
+    QStringList found;
+    for (auto it = placeholder.globalMatch(text); it.hasNext();)
+        found << it.next().captured();
+    found.sort();
+    return found;
+}
+
+void BackendTests::catalogsMatchTheCode() {
+    // Every string the code hands to qsTr(), tr() or translate() is in
+    // en.json, counted ones as plural forms, and nothing else is.
+    static const QRegularExpression call(
+        QStringLiteral(R"re(\b(?:qsTr|tr)\(\s*"((?:\\.|[^"\\])*)"(\s*,\s*"[^"]*"\s*,)?|translate\(\s*"[^"]*"\s*,\s*"((?:\\.|[^"\\])*)")re"));
+    QMap<QString, bool> used;
+    const QDir src(sourceDir());
+    for (const QFileInfo &info : src.entryInfoList({"*.qml", "*.js", "*.cpp", "*.h"}, QDir::Files)) {
+        QFile file(info.filePath());
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QStringList code;
+        for (const QString &line : QString::fromUtf8(file.readAll()).split('\n'))
+            if (!line.trimmed().startsWith(QStringLiteral("//")) && !line.trimmed().startsWith('*'))
+                code << line;
+        for (auto it = call.globalMatch(code.join('\n')); it.hasNext();) {
+            const auto match = it.next();
+            QString text = match.captured(1).isNull() ? match.captured(3) : match.captured(1);
+            text.replace(QStringLiteral("\\\""), QStringLiteral("\"")).replace(QStringLiteral("\\'"), QStringLiteral("'"));
+            used[text] = used.value(text) || !match.captured(2).isEmpty();
+        }
+    }
+    const QJsonObject english = readCatalog(src.filePath(QStringLiteral("i18n/en.json")));
+    QVERIFY(!english.isEmpty());
+    for (auto it = used.cbegin(); it != used.cend(); ++it) {
+        QVERIFY2(english.contains(it.key()), qPrintable(it.key() + " is missing from en.json"));
+        QVERIFY2(english.value(it.key()).isObject() == it.value(),
+                 qPrintable(it.key() + (it.value() ? " needs plural forms" : " is not counted")));
+    }
+    for (const QString &key : english.keys())
+        QVERIFY2(used.contains(key), qPrintable(key + " in en.json is no longer used"));
+
+    // Each catalog is compiled in, and its translations fit the English:
+    // the same placeholders, and the plural forms its language uses.
+    QFile qrc(src.filePath(QStringLiteral("resources.qrc")));
+    QVERIFY(qrc.open(QIODevice::ReadOnly));
+    const QString resources = QString::fromUtf8(qrc.readAll());
+    for (const QFileInfo &info : QDir(src.filePath(QStringLiteral("i18n"))).entryInfoList({"*.json"}, QDir::Files)) {
+        const QString language = info.completeBaseName();
+        QVERIFY2(resources.contains(QStringLiteral("<file alias=\"i18n/%1\">i18n/%1</file>").arg(info.fileName())),
+                 qPrintable(info.fileName() + " is not in resources.qrc"));
+        if (language == QStringLiteral("en"))
+            continue;
+        // Each plural category the language uses, and how many counts reach it.
+        QHash<QString, int> reach{{QStringLiteral("other"), 2}};
+        for (long long n = 0; n <= 1000; ++n)
+            ++reach[Translator::pluralCategory(language, n)];
+        ++reach[Translator::pluralCategory(language, 1000000)];
+        const QList<QString> used = reach.keys();
+        const QSet<QString> categories(used.begin(), used.end());
+        const QJsonObject catalog = readCatalog(info.filePath());
+        QVERIFY2(!catalog.isEmpty(), qPrintable(info.fileName() + " is empty or not JSON"));
+        for (auto it = catalog.begin(); it != catalog.end(); ++it) {
+            const QString where = info.fileName() + ": " + it.key();
+            QVERIFY2(english.contains(it.key()), qPrintable(where + " is not in en.json"));
+            if (english.value(it.key()).isString()) {
+                QVERIFY2(it.value().isString() && !it.value().toString().isEmpty(), qPrintable(where));
+                QCOMPARE(placeholders(it.value().toString()), placeholders(it.key()));
+                continue;
+            }
+            const QJsonObject forms = it.value().toObject();
+            const QStringList given = forms.keys();
+            QVERIFY2(QSet<QString>(given.begin(), given.end()) == categories, qPrintable(where + " has the wrong plural forms"));
+            // Every form keeps the other placeholders, and only a form for a
+            // single count ("a file", "two files") may leave the number out.
+            QStringList wanted = placeholders(it.key());
+            wanted.removeAll(QStringLiteral("%n"));
+            for (const QString &form : given) {
+                const QString text = forms.value(form).toString();
+                QVERIFY2(!text.isEmpty(), qPrintable(where + " " + form + " needs a translation"));
+                QStringList found = placeholders(text);
+                const bool counted = found.removeAll(QStringLiteral("%n")) > 0;
+                QVERIFY2(found == wanted, qPrintable(where + " " + form + " has the wrong placeholders"));
+                QVERIFY2(counted || reach.value(form) == 1, qPrintable(where + " " + form + " leaves out the count"));
+            }
+        }
+    }
 }
 
 static bool dropUrls(QQuickWindow *window, const QList<QUrl> &urls) {
