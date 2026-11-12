@@ -4,9 +4,9 @@ import QtQuick.Controls
 // A question over the dimmed window, answered from the keyboard or the mouse.
 // Focus starts on initialFocus; the arrows and Tab move it between the
 // buttons, wrapping around; Return, Enter or Space presses the focused one;
-// Alt+ a button's underlined letter presses that one; a click outside
-// dismisses it, as does Escape, which the owner handles. The owner shows it,
-// and hides it on chosen or dismissed.
+// a button's underlined letter, with or without Alt, presses that one; a
+// click outside dismisses it, as does Escape, which the owner handles. The
+// owner shows it, and hides it on chosen or dismissed.
 Rectangle {
     id: dialog
     anchors.fill: parent

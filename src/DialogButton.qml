@@ -4,7 +4,8 @@ import QtQuick.Controls
 // A dialog button the way Omarchy's apps draw them (Omawrite's square dialog
 // buttons, as Plain uses them): the window's corners, capped small, a bright
 // border on the one with focus, and the accent on the primary one. Its
-// mnemonic letter is underlined, and Alt+ that letter presses it.
+// mnemonic letter is underlined, and that letter presses it, with or without
+// Alt: no dialog here has a text field for the bare letter to type into.
 Button {
     id: control
     property bool primary: false
@@ -45,9 +46,11 @@ Button {
     }
     HoverHandler { cursorShape: Qt.PointingHandCursor }
     Shortcut {
-        sequence: "Alt+" + control.mnemonic
+        sequences: [control.mnemonic, "Alt+" + control.mnemonic]
         enabled: control.visible && control.mnemonic !== ""
         context: Qt.ApplicationShortcut
+        // Q both asks to quit and answers Quit: holding it must not do both.
+        autoRepeat: false
         onActivated: control.clicked()
     }
 }
