@@ -9,7 +9,9 @@
 #include <QUrl>
 
 #include "backend.h"
+#include "theme.h"
 #include "thumbprovider.h"
+#include "translator.h"
 
 int main(int argc, char *argv[]) {
     // Qt's ffmpeg backend falls through to Vulkan video when VA-API is missing,
@@ -30,14 +32,23 @@ int main(int argc, char *argv[]) {
     // Modern, themeable controls (the same family Quickshell builds on).
     QQuickStyle::setStyle("Material");
 
+    // Installed before anything is translated, and every qsTr() binding is
+    // re-evaluated when the Omarchy language changes.
+    Translator translator;
+    app.installTranslator(&translator);
+
+    Theme theme;
     auto *provider = new ThumbProvider();
     Backend backend(provider, &app);
 
     QQmlApplicationEngine engine;
+    QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
+    engine.rootContext()->setContextProperty("translator", &translator);
 
     // The engine takes ownership of the image provider.
     engine.addImageProvider("thumbs", provider);
 
+    engine.rootContext()->setContextProperty("theme", &theme);
     engine.rootContext()->setContextProperty("backend", &backend);
 
     engine.load(QUrl("qrc:/Main.qml"));
