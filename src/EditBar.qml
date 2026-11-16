@@ -26,6 +26,14 @@ Item {
     property color accent: "#FFD60A"
     property color accentForeground: "black"
     property bool zoomed: false
+
+    // To screen readers and automation the bar is a slider over the edit:
+    // its value is the playhead, and stepping it moves the playhead a second.
+    Accessible.role: Accessible.Slider
+    Accessible.name: qsTr("Timeline")
+    Accessible.description: qsTr("%n clips", "", clips.length)
+    Accessible.onIncreaseAction: area.seek(Math.min(durationSec, playheadSec + 1))
+    Accessible.onDecreaseAction: area.seek(Math.max(0, playheadSec - 1))
     // Frozen at zoom time, so the view doesn't shift under an edit.
     property real viewStartSec: 0
     property real viewEndSec: 0
@@ -295,6 +303,13 @@ Item {
                 height: root.height
                 z: moving || (area.mode === EditBar.Trim && area.clipIndex === index) ? 1 : 0
                 opacity: moving ? 0.85 : 1
+                // Named by its place and its stretch of the edit; pressing it
+                // moves the playhead to its start.
+                readonly property var clip: root.clips[index] || { start: 0, end: 0 }
+                Accessible.role: Accessible.Button
+                Accessible.name: qsTr("Clip %1 of %2, %3 to %4").arg(index + 1).arg(root.clips.length)
+                    .arg(Format.fmt(clip.start)).arg(Format.fmt(clip.end))
+                Accessible.onPressAction: area.seek(clip.start)
                 // While clips move, each carries its own footage.
                 Film {
                     anchors.fill: parent; anchors.margins: root.frameW
@@ -323,6 +338,16 @@ Item {
                         text: "×"; font.pixelSize: 16; font.weight: Font.DemiBold
                         color: remove.hot ? root.accentForeground : "white"
                     }
+                }
+                // The × above only shows on hover, so screen readers and
+                // automation would never find it. This invisible twin stays
+                // present while another clip would remain, and takes no input.
+                Item {
+                    anchors.fill: remove
+                    visible: root.clips.length > 1
+                    Accessible.role: Accessible.Button
+                    Accessible.name: qsTr("Remove clip %1").arg(clipItem.index + 1)
+                    Accessible.onPressAction: root.timeline.removeClip(clipItem.index)
                 }
             }
         }
