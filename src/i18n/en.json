@@ -1,5 +1,9 @@
 {
   "%1 already exists.": "%1 already exists.",
+  "%n clips": {
+    "one": "%n clip",
+    "other": "%n clips"
+  },
   "`ffmpeg` was not found on your PATH.": "`ffmpeg` was not found on your PATH.",
   "`ffprobe` was not found on your PATH. Install ffmpeg.": "`ffprobe` was not found on your PATH. Install ffmpeg.",
   "Add a video": "Add a video",
@@ -7,6 +11,7 @@
   "All files": "All files",
   "Cancel": "Cancel",
   "Cannot open video: %1": "Cannot open video: %1",
+  "Clip %1 of %2, %3 to %4": "Clip %1 of %2, %3 to %4",
   "Clip end to playhead": "Clip end to playhead",
   "Clip start to playhead": "Clip start to playhead",
   "Could not determine the video duration.": "Could not determine the video duration.",
@@ -53,6 +58,7 @@
   "Previous / next clip edge": "Previous / next clip edge",
   "Quality": "Quality",
   "Quit": "Quit",
+  "Remove clip %1": "Remove clip %1",
   "Remove the clip": "Remove the clip",
   "Save the playhead frame as a PNG": "Save the playhead frame as a PNG",
   "Save Video File": "Save Video File",
@@ -69,6 +75,7 @@
   "The selected clip has no length.": "The selected clip has no length.",
   "The XDG desktop portal file chooser is not available.": "The XDG desktop portal file chooser is not available.",
   "There's no frame there.": "There's no frame there.",
+  "Timeline": "Timeline",
   "Undo (Ctrl Shift Z redo)": "Undo (Ctrl Shift Z redo)",
   "Unexported edit": "Unexported edit",
   "Video files": "Video files",

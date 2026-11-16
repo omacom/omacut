@@ -647,6 +647,11 @@ ApplicationWindow {
         ToolTip.visible: iconHover.hovered && tipText !== ""
         ToolTip.text: tipText
 
+        // Screen readers and automation see a named button they can press.
+        Accessible.role: Accessible.Button
+        Accessible.name: tipText
+        Accessible.onPressAction: if (iconButton.enabled) iconButton.clicked()
+
         Canvas {
             id: iconCanvas
             anchors.centerIn: parent
@@ -867,6 +872,8 @@ ApplicationWindow {
             Label {
                 anchors.centerIn: parent
                 visible: win.statusText === "" && timeline.duration > 0 && !editBar.trimming
+                Accessible.name: Format.fmt(editBar.playheadSec) + " (" + Format.fmt(win.timeline.duration) + ")"
+                    + (editBar.zoomed ? " · " + qsTr("zoomed") : "")
                 textFormat: Text.StyledText
                 text: Format.fmt(editBar.playheadSec) + " (" + Format.fmt(win.timeline.duration) + ")"
                     + (editBar.zoomed ? " · <font color=\"" + win.accent + "\">" + qsTr("zoomed") + "</font>" : "")
@@ -941,6 +948,9 @@ ApplicationWindow {
         TapHandler {
             onTapped: win.helpVisible = !win.helpVisible
         }
+        Accessible.role: Accessible.Button
+        Accessible.name: qsTr("Show these shortcuts")
+        Accessible.onPressAction: win.helpVisible = !win.helpVisible
     }
 
     // --- hotkey overlay ---
