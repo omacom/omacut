@@ -1,5 +1,6 @@
 #include "portalfilepicker.h"
 
+#include <QCoreApplication>
 #include <QDBusConnection>
 #include <QDBusArgument>
 #include <QDBusInterface>
@@ -117,7 +118,7 @@ void registerPortalFilterTypes() {
 
 PortalFileFilter videoFilter() {
     return {
-        QStringLiteral("Video files"),
+        QCoreApplication::translate("PortalFilePicker", "Video files"),
         {
             {1, QStringLiteral("video/*")},
             {0, QStringLiteral("*.avi")},
@@ -135,12 +136,12 @@ PortalFileFilter videoFilter() {
 PortalFileFilters videoFilters() {
     return {
         videoFilter(),
-        {QStringLiteral("All files"), {{0, QStringLiteral("*")}}},
+        {QCoreApplication::translate("PortalFilePicker", "All files"), {{0, QStringLiteral("*")}}},
     };
 }
 
 PortalFileFilter mp4Filter() {
-    return {QStringLiteral("MP4 video"), {{0, QStringLiteral("*.mp4")}}};
+    return {QCoreApplication::translate("PortalFilePicker", "MP4 video"), {{0, QStringLiteral("*.mp4")}}};
 }
 
 PortalFileFilters mp4Filters() {
@@ -169,21 +170,21 @@ PortalFilePicker::PortalFilePicker(QObject *parent) : FilePicker(parent) {
 
 void PortalFilePicker::openVideo() {
     QVariantMap options;
-    options.insert(QStringLiteral("accept_label"), QStringLiteral("Open"));
+    options.insert(QStringLiteral("accept_label"), tr("Open"));
     options.insert(QStringLiteral("modal"), true);
     options.insert(QStringLiteral("multiple"), false);
     options.insert(QStringLiteral("current_folder"), portalPathBytes(openFolder()));
     options.insert(QStringLiteral("filters"), QVariant::fromValue(videoFilters()));
     options.insert(QStringLiteral("current_filter"), QVariant::fromValue(videoFilter()));
 
-    requestFile(QStringLiteral("OpenFile"), QStringLiteral("Open Video File"), options, Action::Open);
+    requestFile(QStringLiteral("OpenFile"), tr("Open Video File"), options, Action::Open);
 }
 
 void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, const QList<int> &scaleHeights) {
     const QFileInfo target(suggestedUrl.toLocalFile());
 
     QVariantMap options;
-    options.insert(QStringLiteral("accept_label"), QStringLiteral("Export"));
+    options.insert(QStringLiteral("accept_label"), tr("Export"));
     options.insert(QStringLiteral("modal"), true);
     options.insert(QStringLiteral("current_folder"), portalPathBytes(target.absolutePath()));
     options.insert(QStringLiteral("current_name"), target.fileName());
@@ -193,17 +194,17 @@ void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, const QList<int> &s
     // A "Quality" combo in the save dialog, only when there's a real downscale
     // to offer — sources at or below 720p just export as they are.
     if (!scaleHeights.isEmpty()) {
-        PortalChoiceOptions qualities = {{QStringLiteral("original"), QStringLiteral("Original")}};
+        PortalChoiceOptions qualities = {{QStringLiteral("original"), tr("Original")}};
         for (const int height : scaleHeights)
             qualities.append({QString::number(height), QStringLiteral("%1p").arg(height)});
         options.insert(QStringLiteral("choices"),
                        QVariant::fromValue(PortalChoices{{QStringLiteral("quality"),
-                                                          QStringLiteral("Quality"),
+                                                          tr("Quality"),
                                                           qualities,
                                                           QStringLiteral("original")}}));
     }
 
-    requestFile(QStringLiteral("SaveFile"), QStringLiteral("Save Video File"),
+    requestFile(QStringLiteral("SaveFile"), tr("Save Video File"),
                 options, Action::Export);
 }
 
@@ -240,7 +241,7 @@ void PortalFilePicker::requestFile(const QString &method, const QString &title,
                           QStringLiteral("org.freedesktop.portal.FileChooser"),
                           bus);
     if (!portal.isValid()) {
-        emit failed(QStringLiteral("The XDG desktop portal file chooser is not available."));
+        emit failed(tr("The XDG desktop portal file chooser is not available."));
         return;
     }
 
@@ -257,7 +258,7 @@ void PortalFilePicker::requestFile(const QString &method, const QString &title,
     m_pendingAction = action;
     if (!connectToRequestPath(predictedPath)) {
         clearPending();
-        emit failed(QStringLiteral("Could not listen for the portal file picker response."));
+        emit failed(tr("Could not listen for the portal file picker response."));
         return;
     }
 
@@ -279,7 +280,7 @@ void PortalFilePicker::requestFile(const QString &method, const QString &title,
 
         if (reply.isError()) {
             clearPending();
-            emit failed(QStringLiteral("The portal file picker failed: %1")
+            emit failed(tr("The portal file picker failed: %1")
                             .arg(reply.error().message()));
             return;
         }
@@ -294,7 +295,7 @@ void PortalFilePicker::requestFile(const QString &method, const QString &title,
                 this, SLOT(handleResponse(uint,QVariantMap)));
             if (!connectToRequestPath(actualPath)) {
                 clearPending();
-                emit failed(QStringLiteral("Could not listen for the portal file picker response."));
+                emit failed(tr("Could not listen for the portal file picker response."));
             }
         }
     });

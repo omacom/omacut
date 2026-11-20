@@ -1,6 +1,5 @@
 #include "backend.h"
 
-#include <QColor>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -8,7 +7,6 @@
 #include <QPointer>
 #include <QProcess>
 #include <QTemporaryFile>
-#include <QTextStream>
 #include <QThreadPool>
 #include <QTimer>
 #include <QVariantMap>
@@ -23,16 +21,6 @@
 #include "thumbprovider.h"
 
 namespace {
-const QString kDefaultAccent = QStringLiteral("#FFD60A");
-
-QString omarchyCurrentDir() {
-    return QDir::homePath() + QStringLiteral("/.local/state/omarchy/current");
-}
-
-QString omarchyColorsPath() {
-    return omarchyCurrentDir() + QStringLiteral("/theme/colors.toml");
-}
-
 QString mp4PathFor(const QString &path) {
     const QFileInfo file(path);
     if (file.suffix().compare(QStringLiteral("mp4"), Qt::CaseInsensitive) == 0)
@@ -55,22 +43,10 @@ Backend::Backend(ThumbProvider *provider, QObject *parent)
     : Backend(provider, new PortalFilePicker(), parent) {}
 
 Backend::Backend(ThumbProvider *provider, FilePicker *filePicker, QObject *parent)
-    : QObject(parent), m_provider(provider), m_filePicker(filePicker),
-      m_themeAccent(kDefaultAccent) {
+    : QObject(parent), m_provider(provider), m_filePicker(filePicker) {
     if (!m_filePicker->parent())
         m_filePicker->setParent(this);
     wireFilePicker();
-
-    // Follow omarchy theme switches live. The theme lives behind a symlink that
-    // gets swapped, so the reload also re-arms the watch paths every time.
-    const auto themeChanged = [this] {
-        watchTheme();
-        loadThemeAccent();
-    };
-    connect(&m_themeWatcher, &QFileSystemWatcher::directoryChanged, this, themeChanged);
-    connect(&m_themeWatcher, &QFileSystemWatcher::fileChanged, this, themeChanged);
-    watchTheme();
-    loadThemeAccent();
 }
 
 Backend::~Backend() {
@@ -106,78 +82,6 @@ void Backend::setStatus(const QString &status) {
     emit statusChanged();
 }
 
-QString Backend::accentFromColorsFile(const QString &path, const QString &fallback) {
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-        return fallback;
-
-    QTextStream in(&file);
-    while (!in.atEnd()) {
-        const QString line = in.readLine().trimmed();
-        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
-            continue;
-
-        const int equals = line.indexOf(QLatin1Char('='));
-        if (equals < 0 || line.left(equals).trimmed() != QStringLiteral("accent"))
-            continue;
-
-        QString value = line.mid(equals + 1).trimmed();
-
-        // A value can carry a trailing comment. Inside quotes the '#' belongs
-        // to the string; outside them it starts one -- except the leading '#'
-        // of a bare hex colour, which is the value itself.
-        if (value.startsWith(QLatin1Char('"')) || value.startsWith(QLatin1Char('\''))) {
-            const QChar quote = value.front();
-            const int closing = value.indexOf(quote, 1);
-            value = closing > 0 ? value.mid(1, closing - 1) : value.mid(1);
-        } else {
-            const int comment =
-                value.indexOf(QLatin1Char('#'), value.startsWith(QLatin1Char('#')) ? 1 : 0);
-            if (comment >= 0)
-                value = value.left(comment).trimmed();
-        }
-
-        return QColor::fromString(value).isValid() ? value : fallback;
-    }
-    return fallback;
-}
-
-QString Backend::foregroundFor(const QString &color) {
-    const QColor parsed = QColor::fromString(color);
-    if (!parsed.isValid())
-        return QStringLiteral("black");
-    const double luminance = 0.299 * parsed.redF()
-        + 0.587 * parsed.greenF() + 0.114 * parsed.blueF();
-    return luminance < 0.5 ? QStringLiteral("white") : QStringLiteral("black");
-}
-
-QString Backend::themeAccentForeground() const {
-    return foregroundFor(m_themeAccent);
-}
-
-void Backend::loadThemeAccent() {
-    const QString accent = accentFromColorsFile(omarchyColorsPath(), kDefaultAccent);
-    if (accent == m_themeAccent)
-        return;
-    m_themeAccent = accent;
-    emit themeAccentChanged();
-}
-
-void Backend::watchTheme() {
-    const QStringList watched = m_themeWatcher.files() + m_themeWatcher.directories();
-    if (!watched.isEmpty())
-        m_themeWatcher.removePaths(watched);
-
-    const QString currentDir = omarchyCurrentDir();
-    const QString themeDir = currentDir + QStringLiteral("/theme");
-    if (QDir(currentDir).exists())
-        m_themeWatcher.addPath(currentDir);
-    if (QDir(themeDir).exists())
-        m_themeWatcher.addPath(themeDir);
-    if (QFileInfo::exists(omarchyColorsPath()))
-        m_themeWatcher.addPath(omarchyColorsPath());
-}
-
 bool Backend::isVideoPath(const QString &path) const {
     const QString target = QFileInfo(path).canonicalFilePath();
     for (const Video &video : m_videos) {
@@ -200,7 +104,7 @@ bool Backend::checkedPath(const QUrl &url, QString *path) {
     // as an option, and "file:http://..." as a network address.
     *path = url.toLocalFile();
     if (!url.isLocalFile() || !QDir::isAbsolutePath(*path)) {
-        emit loadError(QStringLiteral("Only local files can be opened."));
+        emit loadError(tr("Only local files can be opened."));
         return false;
     }
     return true;
@@ -236,11 +140,12 @@ void Backend::applyProbe(const PendingVideo &pending, const ffmpeg::VideoInfo &i
     if (!info.ok) {
         // An export that rewrote its own source reports done either way;
         // the reopen failing is the part the user needs explained.
-        if (pending.exportReload)
+        if (pending.exportReload) {
             emit exportDone(pending.path);
-        emit loadError(pending.exportReload
-            ? QStringLiteral("Saved, but couldn't reopen it, so the clips no longer match the file.")
-            : info.error);
+            emit exportReopenFailed();
+        } else {
+            emit loadError(info.error);
+        }
         if (pending.batch)
             ++m_batchSkipped;
     } else {
@@ -373,6 +278,71 @@ void Backend::exportDialog() {
     m_filePicker->exportVideo(suggestedExportUrl(), exportHeights(frame.width, frame.height));
 }
 
+void Backend::stepFrame(double t, int direction) {
+    if (m_steppingFrame || busy() || m_timeline.duration() <= 0 || !direction)
+        return;
+    t = qBound(0.0, t, m_timeline.duration());
+    const edit::Clips clips = m_timeline.clips();
+    int index = m_timeline.clipAt(t);
+    // An edge belongs to the following clip, but stepping left from it
+    // should show the previous clip's last frame. The player can round
+    // that edge up by half a millisecond when reporting its position.
+    constexpr double tolerance = 0.0005;
+    if (direction < 0 && index > 0 && t - m_timeline.clipStart(index) <= tolerance)
+        --index;
+    const edit::Clip clip = clips.at(index);
+    const double clipStart = m_timeline.clipStart(index);
+    const bool atClipEnd = t >= m_timeline.clipStart(index + 1);
+    const Video video = m_videos.at(clip.source);
+    m_steppingFrame = true;
+    const QPointer<Backend> guard(this);
+    QThreadPool::globalInstance()->start([guard, video, clips, clip, clipStart, atClipEnd, t, direction] {
+        const auto times = video.frameTimes.isEmpty()
+            ? ffmpeg::frameTimes(video.info.path, video.info.start) : video.frameTimes;
+        QMetaObject::invokeMethod(QCoreApplication::instance(),
+            [guard, video, clips, clip, clipStart, atClipEnd, t, direction, times] {
+                if (!guard)
+                    return;
+                guard->m_steppingFrame = false;
+                if (guard->m_timeline.clips() != clips || guard->m_videos.value(clip.source).thumbKey != video.thumbKey)
+                    return;
+                if (times.isEmpty()) {
+                    emit guard->frameStepFailed(tr("Could not read video frame times."));
+                    return;
+                }
+                guard->m_videos[clip.source].frameTimes = times;
+                const double sourceTime = atClipEnd ? clip.out : clip.in + t - clipStart;
+                // Match the player's millisecond resolution, including rounded
+                // timestamps at fractional frame rates.
+                double target = direction < 0 ? clip.in : clip.out;
+                if (direction > 0) {
+                    for (double time : times) {
+                        if (time > sourceTime + tolerance && time < clip.out) {
+                            target = time;
+                            break;
+                        }
+                    }
+                } else {
+                    // First find the frame currently on screen, then its predecessor.
+                    double shown = clip.in;
+                    for (double time : times) {
+                        if (time > sourceTime + tolerance || time >= clip.out)
+                            break;
+                        if (time >= clip.in) {
+                            target = shown;
+                            shown = time;
+                        }
+                    }
+                    // Only at/past the actual end: treating a frame just before
+                    // it as the end would keep returning that same frame.
+                    if (atClipEnd)
+                        target = shown;
+                }
+                emit guard->frameStepped(t, clipStart + target - clip.in);
+            }, Qt::QueuedConnection);
+    });
+}
+
 void Backend::saveFrame(double t) {
     if (m_savingFrame || m_videos.isEmpty() || m_timeline.duration() <= 0)
         return;
@@ -390,14 +360,14 @@ void Backend::saveFrame(double t) {
     const QString ffprobeBin = ffmpeg::toolPath("ffprobe");
     const QString ffmpegBin = ffmpeg::toolPath("ffmpeg");
     if (ffprobeBin.isEmpty() || ffmpegBin.isEmpty()) {
-        emit frameFailed(QStringLiteral("ffmpeg is not installed."));
+        emit frameFailed(tr("ffmpeg is not installed."));
         return;
     }
 
     // In the background, as a 4K frame takes long enough to stall the
     // window: first find the frame on screen, then write it.
     m_savingFrame = true;
-    runFrameStep(ffprobeBin, ffmpeg::shownFrameArgs(path, start + sourceTime),
+    runSaveFrameStep(ffprobeBin, ffmpeg::shownFrameArgs(path, start + sourceTime),
                  [this, path, start, sourceTime, ffmpegBin](const QByteArray &packetTimes) {
         const ffmpeg::ShownFrame shown = ffmpeg::shownFrame(packetTimes, start + sourceTime);
         const double frameTime = shown.time - start;
@@ -415,13 +385,13 @@ void Backend::saveFrame(double t) {
         const QString partPath = part.fileName();
         part.close();
         m_framePart = partPath;
-        runFrameStep(ffmpegBin, ffmpeg::frameArgs(path, frameTime, keyframeTime, partPath),
+        runSaveFrameStep(ffmpegBin, ffmpeg::frameArgs(path, frameTime, keyframeTime, partPath),
                      [this, source, partPath](const QByteArray &) {
             m_savingFrame = false;
             m_framePart.clear();
             if (QFileInfo(partPath).size() <= 0) {
                 QFile::remove(partPath);
-                emit frameFailed(QStringLiteral("There's no frame there."));
+                emit frameFailed(tr("There's no frame there."));
                 return;
             }
             const QString stem = source.absolutePath() + QLatin1Char('/') + source.completeBaseName();
@@ -429,7 +399,7 @@ void Backend::saveFrame(double t) {
             for (int n = 2; !QFile::rename(partPath, pngPath); ++n) {
                 if (!QFileInfo::exists(pngPath) || n > 1000) {
                     QFile::remove(partPath);
-                    emit frameFailed(QStringLiteral("Could not write %1.").arg(pngPath));
+                    emit frameFailed(tr("Could not write %1.").arg(pngPath));
                     return;
                 }
                 pngPath = stem + QStringLiteral("-frame-%1.png").arg(n);
@@ -442,7 +412,7 @@ void Backend::saveFrame(double t) {
     });
 }
 
-void Backend::runFrameStep(const QString &program, const QStringList &args,
+void Backend::runSaveFrameStep(const QString &program, const QStringList &args,
                            std::function<void(const QByteArray &)> done, const QString &partPath) {
     auto *proc = new QProcess(this);
     // A stuck file (say, on a hung network mount) mustn't block F for good.
@@ -457,7 +427,7 @@ void Backend::runFrameStep(const QString &program, const QStringList &args,
             m_framePart.clear();
             if (!partPath.isEmpty())
                 QFile::remove(partPath);
-            emit frameFailed(err.isEmpty() ? QStringLiteral("ffmpeg failed.") : err);
+            emit frameFailed(err.isEmpty() ? tr("ffmpeg failed.") : err);
             return;
         }
         done(out);
@@ -510,7 +480,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     }
     const double clipLen = edit::duration(clips);
     if (segments.isEmpty() || clipLen <= 0.0) {
-        emit exportFailed("The selected clip has no length.");
+        emit exportFailed(tr("The selected clip has no length."));
         return;
     }
 
@@ -518,16 +488,23 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     // dialog never asked the user about overwriting — refuse rather than
     // silently replace it.
     const QString selectedPath = dst.toLocalFile();
+    // Anything but an absolute local path would leave an empty or relative
+    // one, which the .mp4 suffix turns into a file in the working directory,
+    // or, with a host, "//host/..." that Linux reads as a local path.
+    if (!dst.isLocalFile() || !dst.host().isEmpty() || !QDir::isAbsolutePath(selectedPath)) {
+        emit exportFailed(QStringLiteral("Only local files can be exported to."));
+        return;
+    }
     const QString outPath = mp4PathFor(selectedPath);
     if (outPath != selectedPath && QFileInfo::exists(outPath)) {
-        emit exportFailed(QStringLiteral("%1 already exists.")
+        emit exportFailed(tr("%1 already exists.")
                               .arg(QFileInfo(outPath).fileName()));
         return;
     }
 
     const QString ffmpegBin = ffmpeg::toolPath("ffmpeg");
     if (ffmpegBin.isEmpty()) {
-        emit exportFailed("`ffmpeg` was not found on your PATH.");
+        emit exportFailed(tr("`ffmpeg` was not found on your PATH."));
         return;
     }
 
@@ -569,7 +546,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                     if (!ok)
                         continue;
                     const int percent = qBound(0, qRound(outSecs / clipLen * 100.0), 100);
-                    setStatus(QStringLiteral("Exporting %1%").arg(percent));
+                    setStatus(tr("Exporting %1%").arg(percent));
                 }
             });
 
@@ -581,11 +558,11 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                 const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
                 proc->deleteLater();
                 if (exitStatus != QProcess::NormalExit || code != 0) {
-                    failExport(tmpPath, err.isEmpty() ? QStringLiteral("ffmpeg trim failed.") : err);
+                    failExport(tmpPath, err.isEmpty() ? tr("ffmpeg trim failed.") : err);
                     return;
                 }
                 if (!replaceWithTemp(tmpPath, outPath)) {
-                    failExport(tmpPath, QStringLiteral("Could not write the exported file."));
+                    failExport(tmpPath, tr("Could not write the exported file."));
                     return;
                 }
                 setBusy(false);
@@ -615,7 +592,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                 *completed = true;
                 const QString err = proc->errorString();
                 proc->deleteLater();
-                failExport(tmpPath, err.isEmpty() ? QStringLiteral("Could not start ffmpeg.") : err);
+                failExport(tmpPath, err.isEmpty() ? tr("Could not start ffmpeg.") : err);
             });
     proc->start(ffmpegBin, args);
 }

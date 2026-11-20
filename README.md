@@ -8,7 +8,7 @@ Built using **Qt Quick (QML)** UI with the Material style — the same Qt stack 
 
 ## Editing
 
-The timeline shows your clips back to back, in the order they play, each framed with a handle at both ends over its own filmstrip. Whatever isn't in a clip is cut.
+The timeline shows your clips in the order they play, each framed with a handle at both ends over its own filmstrip. Clips sit over their own footage, so what you cut stays on the timeline, dimmed, between them, and nothing moves when you trim: dragging a handle back over the dimmed footage restores it. Playback and export skip whatever isn't in a clip. The timeline only changes scale when you zoom, or add, remove or reorder clips.
 
 - **Double-click a clip** to split it there.
 - **Drag a handle** to trim that clip. A trimmed clip can grow back into its video, up to either end.
@@ -19,19 +19,21 @@ The timeline shows your clips back to back, in the order they play, each framed 
 
 Handles catch on neighbouring clip edges and the playhead.
 
+Confirmations are answered from the keyboard: the arrows and Tab move between the buttons, Enter presses one, a button's underlined letter presses that one (with or without Alt), and Escape backs out.
+
 ## Hotkeys
 
 - *Space*: Start/stop video playback.
 - *0–9*: Jump to 0%–90% of the edit.
 - *Left/Right*: Move the playhead by 1 second.
 - *Shift+Left/Right*: Move the playhead by 5 seconds.
-- *Alt+Left/Right*: Move the playhead by 0.2 seconds.
+- *Alt+Left/Right*: Pause and move the playhead by one video frame. Hold to move it by 0.2 seconds at a time.
 - *[ / ]*: Jump to the previous / next clip edge.
 - *S*: Split the clip at the playhead.
 - *X, Delete*: Remove the clip under the playhead.
 - *Alt+[ / Alt+]*: Move the clip under the playhead earlier / later.
 - *Ctrl+Space*: Move the start of the clip under the playhead to the playhead.
-- *Alt+Space*: Move the end of the clip under the playhead to the playhead.
+- *Ctrl+Shift+Space*: Move the end of the clip under the playhead to the playhead.
 - *Ctrl+Z / Ctrl+Shift+Z*: Undo / redo.
 - *Z*: Zoom to the clip under the playhead for fine tuning (Z again zooms back out).
 - *F*: Save the frame under the playhead as a PNG next to its video.
@@ -54,24 +56,31 @@ Exports are always written as MP4 files, regardless of the input video's contain
 
 ## Build
 
-Uses Qt's own build tool, `qmake6` (no cmake needed):
+Built with CMake:
 
 ```bash
-./bin/build
+bin/build
 ```
 
 This produces a single `omacut` binary in `build/`.
 
-Requirements:
-
-- A C++17 compiler and Qt6: `qt6-base`, `qt6-declarative` (Qt Quick + Controls),
-  `qt6-multimedia`
+Requirements: a C++17 compiler, `cmake`, and Qt 6 (`qt6-base`, `qt6-declarative`, `qt6-multimedia`). The package's PKGBUILD in `omacom/omarchy-pkgs` lists everything, and CI installs from it.
 
 ## Test
 
 ```bash
-./bin/test
+bin/test
 ```
+
+Runs the Qt Test suite through `ctest`; it needs `ffmpeg` to make its sample videos. The tests run offscreen with Qt's software renderer, so no windows open and screenshots hold real pixels. Any QML warning fails the test that caused it.
+
+`qmlTimelineViewDependsOnlyOnTheEdit` makes random edits the way a person might (splits, trims, handle drags, joins, moves, removals, added videos, zooms, undo and redo) and after each one checks the timeline against a freshly opened editor showing the same edit, down to the pixel. It also checks that the zoomed-out track is covered end to end, that trimming a clip shorter moves no other clip, and that nothing in the filmstrip reloads or moves during a drag. When it fails, it prints the edits that led there and saves both pictures to `/tmp`. Run it longer, or against a real recording, before a release:
+
+```bash
+OMACUT_FUZZ_SEEDS=50 OMACUT_FUZZ_VIDEO=~/Videos/some-recording.mp4 build/tests/backend_tests qmlTimelineViewDependsOnlyOnTheEdit
+```
+
+Set `OMACUT_TEST_ON_SCREEN=1` to watch the tests in real windows instead.
 
 ## License
 

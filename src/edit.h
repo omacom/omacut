@@ -21,6 +21,9 @@ using Clips = QList<Clip>;
 constexpr double minimumClip = 0.1;
 
 double duration(const Clips &clips);
+// True when next picks up where clip left off in the same source. A millisecond
+// covers the float noise of a split. A larger gap is a cut and must stay one.
+bool continues(const Clip &clip, const Clip &next);
 // Neighbours that carry on where the one before left off in the same source,
 // merged: what an export encodes.
 Clips merged(const Clips &clips);

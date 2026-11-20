@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QFileSystemWatcher>
 #include <QObject>
 #include <QString>
 #include <QUrl>
@@ -18,15 +17,14 @@ class FilePicker;
 // videos and the clips cut from them, and drives export.
 class Backend : public QObject {
     Q_OBJECT
-    // The first video, which names the project and sets the export's frame.
+    // The first video, which names the project. The first clip's video sets the export's frame.
     Q_PROPERTY(QUrl source READ source NOTIFY infoChanged)
     // Each video a clip can come from, by source index: {url, thumbKey}.
     Q_PROPERTY(QVariantList videos READ videoList NOTIFY videosChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(bool probing READ probing NOTIFY busyChanged)
+    Q_PROPERTY(bool exporting READ exporting NOTIFY busyChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
-    Q_PROPERTY(QString themeAccent READ themeAccent NOTIFY themeAccentChanged)
-    Q_PROPERTY(QString themeAccentForeground READ themeAccentForeground NOTIFY themeAccentChanged)
     Q_PROPERTY(QObject *timeline READ timeline CONSTANT)
 
 public:
@@ -41,25 +39,17 @@ public:
     // set of videos is about to change, so opening or adding must wait.
     bool busy() const { return m_busy || m_probing; }
     bool probing() const { return m_probing; }
+    bool exporting() const { return m_busy; }
     QString status() const { return m_status; }
-    QString themeAccent() const { return m_themeAccent; }
-    QString themeAccentForeground() const;
     Timeline *timeline() { return &m_timeline; }
-
-    // The accent from an omarchy colors.toml, or the fallback when the file is
-    // missing or holds no usable accent — which is what keeps omacut working on
-    // distros without omarchy themes.
-    static QString accentFromColorsFile(const QString &path, const QString &fallback);
-    // "black" or "white", whichever stays legible on the given color.
-    static QString foregroundFor(const QString &color);
 
     // Start over with a video. Probing runs off the UI thread: false means
     // refused outright (busy, or not an absolute local path); the outcome
     // itself arrives via infoChanged or loadError.
-    Q_INVOKABLE bool load(const QUrl &url);
+    bool load(const QUrl &url);
     // Add a video as a clip after the one under t, sequence seconds. Like
     // load(), the probe finishes in the background.
-    Q_INVOKABLE bool addVideo(const QUrl &url, double t);
+    bool addVideo(const QUrl &url, double t);
     // Add several videos in order, each after the previous one lands, the
     // way a multi-file drop should behave. Failures are skipped; once the
     // batch settles, skippedVideos says how many, if any loaded.
@@ -72,11 +62,13 @@ public:
     Q_INVOKABLE void exportDialog();
 
     // Suggested "<name>_trimmed.mp4" target next to the source.
-    Q_INVOKABLE QUrl suggestedExportUrl() const;
+    QUrl suggestedExportUrl() const;
     // Saves the frame under t (seconds along the edit) as a PNG next to that
     // clip's video, in the background. One at a time; frameSaved or
     // frameFailed says how it went.
     Q_INVOKABLE void saveFrame(double t);
+    // Resolve the adjacent displayed frame without blocking the UI.
+    Q_INVOKABLE void stepFrame(double t, int direction);
 
     // Write the clips to dst. A non-zero scaleHeight downscales the shorter
     // side to that size.
@@ -91,12 +83,16 @@ signals:
     void videosChanged();
     void busyChanged();
     void statusChanged();
-    void themeAccentChanged();
     void exportDone(const QString &path);
     void exportFailed(const QString &message);
+    void frameStepped(double from, double to);
+    void frameStepFailed(const QString &message);
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);
+    // An export over one of its own videos saved, but the saved file
+    // wouldn't reopen, so the clips no longer match it.
+    void exportReopenFailed();
     // An addVideos batch settled with some videos loaded and this many
     // skipped, so the UI can summarize instead of stacking errors.
     void skippedVideos(int count);
@@ -106,16 +102,15 @@ private:
     void setStatus(const QString &status);
     void failExport(const QString &tmpPath, const QString &message);
     void wireFilePicker();
-    void loadThemeAccent();
-    void watchTheme();
 
     struct Video {
         ffmpeg::VideoInfo info;
         QUrl url;
         int thumbKey = 0;
+        QList<double> frameTimes;
     };
-    // The local path behind url, or an empty string (and a loadError) when
-    // it isn't an absolute local file ffprobe can safely be handed.
+    // Whether url is an absolute local file ffprobe can safely be handed,
+    // putting its path in path; if not, says why with a loadError.
     bool checkedPath(const QUrl &url, QString *path);
     struct PendingVideo {
         QUrl url;
@@ -134,7 +129,7 @@ private:
     void applyProbe(const PendingVideo &pending, const ffmpeg::VideoInfo &info);
     // One step of saving a frame: runs program, then done with its output.
     // A failure ends the save, removing partPath if given.
-    void runFrameStep(const QString &program, const QStringList &args,
+    void runSaveFrameStep(const QString &program, const QStringList &args,
                       std::function<void(const QByteArray &)> done,
                       const QString &partPath = QString());
     // Whether path is the file behind one of the loaded videos.
@@ -156,9 +151,8 @@ private:
     int m_batchAdded = 0;
     int m_batchSkipped = 0;
     bool m_savingFrame = false;
+    bool m_steppingFrame = false;
     // The hidden file a frame is being written to, until it's renamed.
     QString m_framePart;
     QString m_status;
-    QString m_themeAccent;
-    QFileSystemWatcher m_themeWatcher;
 };

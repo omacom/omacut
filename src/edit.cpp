@@ -1,5 +1,7 @@
 #include "edit.h"
 
+#include <cmath>
+
 namespace edit {
 
 double duration(const Clips &clips) {
@@ -9,10 +11,14 @@ double duration(const Clips &clips) {
     return total;
 }
 
+bool continues(const Clip &clip, const Clip &next) {
+    return clip.source == next.source && std::abs(clip.out - next.in) <= 0.001;
+}
+
 Clips merged(const Clips &clips) {
     Clips result;
     for (const Clip &clip : clips) {
-        if (!result.isEmpty() && result.last().source == clip.source && result.last().out == clip.in)
+        if (!result.isEmpty() && continues(result.last(), clip))
             result.last().out = clip.out;
         else
             result.append(clip);

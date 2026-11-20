@@ -27,6 +27,9 @@ struct VideoInfo {
 // Probe a file for a usable video stream and duration (runs ffprobe).
 VideoInfo probe(const QString &path);
 
+// Sorted presentation timestamps, relative to the video start. Empty on failure.
+QList<double> frameTimes(const QString &path, double start);
+
 // Grab a single frame at `time` seconds, scaled to `height` px.
 // Returns a null QImage on failure. If `stopRequested` is set and starts
 // returning true while the ffmpeg child is running, the child is killed and
