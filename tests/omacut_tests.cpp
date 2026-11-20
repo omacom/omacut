@@ -412,6 +412,7 @@ private slots:
     void qmlDialogsAnswerFromTheKeyboard();
     void qmlDialogsAnswerToABareLetter();
     void qmlDialogUnderlinesTheMnemonicInTheLabel();
+    void qmlDialogPrintsMnemonicMissingFromTheLabel();
     void stubBackendMatchesTheRealOne();
     void portalPickerReplacesAnUnansweredRequest();
 
@@ -2254,6 +2255,38 @@ void BackendTests::qmlDialogUnderlinesTheMnemonicInTheLabel() {
     QCOMPARE(dialogButton(window, QStringLiteral("Export"))->property("formattedText").toString(),
              QStringLiteral("<u>E</u>xport"));
 }
+
+void BackendTests::qmlDialogPrintsMnemonicMissingFromTheLabel() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    const QByteArray source = R"(
+import QtQuick
+import QtQuick.Window
+Window {
+    width: 420
+    height: 160
+    DialogButton {
+        objectName: "sample"
+        anchors.centerIn: parent
+        text: "Beenden"
+        mnemonic: "Q"
+        onClicked: sampleClicks += 1
+    }
+    property int sampleClicks: 0
+}
+)";
+    QmlHarness harness(backend, source);
+    QQuickWindow *window = harness.window();
+    QVERIFY(window);
+    window->show();
+    window->requestActivate();
+    QTest::qWait(50);
+    QQuickItem *button = window->findChild<QQuickItem *>(QStringLiteral("sample"));
+    QVERIFY(button);
+    QCOMPARE(button->property("formattedText").toString(), QStringLiteral("Beenden (<u>Q</u>)"));
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("sampleClicks").toInt(), 1, 3000);
+}
+
 
 
 void BackendTests::qmlOpenConfirmsUnexportedEdit() {
