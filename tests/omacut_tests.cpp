@@ -413,6 +413,7 @@ private slots:
     void qmlDialogsAnswerToABareLetter();
     void qmlDialogUnderlinesTheMnemonicInTheLabel();
     void qmlDialogPrintsMnemonicMissingFromTheLabel();
+    void qmlDialogEscapesMarkupInTheLabel();
     void stubBackendMatchesTheRealOne();
     void portalPickerReplacesAnUnansweredRequest();
 
@@ -2286,6 +2287,31 @@ Window {
     QTest::keyClick(window, Qt::Key_Q);
     QTRY_COMPARE_WITH_TIMEOUT(window->property("sampleClicks").toInt(), 1, 3000);
 }
+
+void BackendTests::qmlDialogEscapesMarkupInTheLabel() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    const QByteArray source = R"(
+import QtQuick
+import QtQuick.Window
+Window {
+    width: 420
+    height: 160
+    DialogButton {
+        objectName: "sample"
+        anchors.centerIn: parent
+        text: "A < B & C"
+        mnemonic: "B"
+    }
+}
+)";
+    QmlHarness harness(backend, source);
+    QQuickWindow *window = harness.window();
+    QVERIFY(window);
+    QQuickItem *button = window->findChild<QQuickItem *>(QStringLiteral("sample"));
+    QVERIFY(button);
+    QCOMPARE(button->property("formattedText").toString(), QStringLiteral("A &lt; <u>B</u> &amp; C"));
+}
+
 
 
 
