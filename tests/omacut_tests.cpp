@@ -3265,7 +3265,8 @@ void BackendTests::stubBackendMatchesTheRealOne() {
 static bool dropUrls(QQuickWindow *window, const QList<QUrl> &urls) {
     QMimeData mime;
     mime.setUrls(urls);
-    const QPointF point(window->width() / 2, window->height() / 3);
+    // Qt 6.11 takes a QPoint here. QPointF no longer converts.
+    const QPoint point(window->width() / 2, window->height() / 3);
     QDragEnterEvent enter(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &enter);
     if (!enter.isAccepted()) {
