@@ -1097,6 +1097,9 @@ void BackendTests::exportPreservesFilesBesideTheDestination() {
     QCOMPARE(failedSpy.count(), 0);
     QCOMPARE(doneSpy.count(), 1);
     QVERIFY(ffmpeg::probe(outPath).ok);
+    const QFileDevice::Permissions perms = QFileInfo(outPath).permissions();
+    QVERIFY(perms & QFile::ReadGroup);
+    QVERIFY(perms & QFile::ReadOther);
     QVERIFY(existing.open(QIODevice::ReadOnly));
     QCOMPARE(existing.readAll(), original);
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);

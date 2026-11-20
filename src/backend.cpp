@@ -527,7 +527,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     auto completed = std::make_shared<bool>(false);
 
     setBusy(true);
-    setStatus(QStringLiteral("Exporting 0%"));
+    setStatus(tr("Exporting %1%").arg(0));
 
     // ffmpeg -progress writes key=value blocks to stdout as it encodes;
     // out_time_us against the kept length gives the percentage.
@@ -565,6 +565,9 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                     failExport(tmpPath, tr("Could not write the exported file."));
                     return;
                 }
+                // The temporary file was private; the export is as shareable as any.
+                QFile::setPermissions(outPath, QFile::ReadOwner | QFile::WriteOwner
+                                                   | QFile::ReadGroup | QFile::ReadOther);
                 setBusy(false);
                 setStatus(QString());
                 // Written over one of its own videos: the clips' times point
