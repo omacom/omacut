@@ -411,6 +411,7 @@ private slots:
     void catalogsMatchTheCode();
     void qmlDialogsAnswerFromTheKeyboard();
     void qmlDialogsAnswerToABareLetter();
+    void qmlDialogUnderlinesTheMnemonicInTheLabel();
     void stubBackendMatchesTheRealOne();
     void portalPickerReplacesAnUnansweredRequest();
 
@@ -2234,6 +2235,26 @@ void BackendTests::qmlQuitAsksWhileExporting() {
     QTRY_VERIFY_WITH_TIMEOUT(!window->isVisible(), 3000);
     QCOMPARE(quitSpy.count(), 1);
 }
+
+void BackendTests::qmlDialogUnderlinesTheMnemonicInTheLabel() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), true, 3000);
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
+
+    QCOMPARE(dialogButton(window, QStringLiteral("Cancel"))->property("formattedText").toString(),
+             QStringLiteral("<u>C</u>ancel"));
+    QCOMPARE(dialogButton(window, QStringLiteral("Quit"))->property("formattedText").toString(),
+             QStringLiteral("<u>Q</u>uit"));
+    QCOMPARE(dialogButton(window, QStringLiteral("Export"))->property("formattedText").toString(),
+             QStringLiteral("<u>E</u>xport"));
+}
+
 
 void BackendTests::qmlOpenConfirmsUnexportedEdit() {
     ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
