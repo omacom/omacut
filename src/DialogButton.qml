@@ -18,10 +18,21 @@ Button {
     Keys.onReturnPressed: clicked()
     Keys.onEnterPressed: clicked()
 
-    // The text with its mnemonic underlined, the first match either case.
+    // StyledText would otherwise treat &, < and > in a translation as markup.
+    function escapeStyled(value) {
+        return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    }
+
+    // The mnemonic underlined at its first match, either case. A translation
+    // that does not contain that letter still has to show it (plain#10): the
+    // key is the same one the English label uses, drawn after the words.
     readonly property string formattedText: {
-        var at = mnemonic.length ? text.toLowerCase().indexOf(mnemonic.toLowerCase()) : -1
-        return at < 0 ? text : text.slice(0, at) + "<u>" + text.charAt(at) + "</u>" + text.slice(at + 1)
+        if (!mnemonic.length)
+            return escapeStyled(text)
+        var at = text.toLowerCase().indexOf(mnemonic.toLowerCase())
+        if (at < 0)
+            return escapeStyled(text) + " (<u>" + escapeStyled(mnemonic) + "</u>)"
+        return escapeStyled(text.slice(0, at)) + "<u>" + escapeStyled(text.charAt(at)) + "</u>" + escapeStyled(text.slice(at + 1))
     }
 
     contentItem: Label {
