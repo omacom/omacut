@@ -31,7 +31,7 @@ Button {
             return escapeStyled(text)
         var at = text.toLowerCase().indexOf(mnemonic.toLowerCase())
         if (at < 0)
-            return escapeStyled(text)
+            return escapeStyled(text) + " (<u>" + escapeStyled(mnemonic) + "</u>)"
         return escapeStyled(text.slice(0, at)) + "<u>" + escapeStyled(text.charAt(at)) + "</u>" + escapeStyled(text.slice(at + 1))
     }
 
