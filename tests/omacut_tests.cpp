@@ -340,6 +340,7 @@ private slots:
     void exportDialogDelegatesSuggestedUrl();
     void suggestedExportUrlAlwaysUsesMp4();
     void exportClipWritesMp4();
+    void exportPreservesFilesBesideTheDestination();
     void frameStepsFollowPresentationTimes();
     void frameStepFailuresHaveTheirOwnNotice();
     void saveFrameWritesPngBesideTheSource();
@@ -1075,6 +1076,37 @@ void BackendTests::exportClipWritesMp4() {
              qPrintable(formatName(mp4Path)));
 }
 
+void BackendTests::exportPreservesFilesBesideTheDestination() {
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(videoUrl()));
+    waitForProbe(backend);
+
+    const QString outPath = m_dir.filePath(QStringLiteral("beside-existing.mp4"));
+    const QString sibling = outPath + QStringLiteral(".omacut-part.mp4");
+    const QByteArray original("another file that must survive the export");
+    QFile existing(sibling);
+    QVERIFY(existing.open(QIODevice::WriteOnly));
+    QCOMPARE(existing.write(original), original.size());
+    existing.close();
+
+    backend.exportClips(QUrl::fromLocalFile(outPath), wholeVideo(1.0));
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 20000);
+    QCOMPARE(failedSpy.count(), 0);
+    QCOMPARE(doneSpy.count(), 1);
+    QVERIFY(ffmpeg::probe(outPath).ok);
+    const QFileDevice::Permissions perms = QFileInfo(outPath).permissions();
+    QVERIFY(perms & QFile::ReadGroup);
+    QVERIFY(perms & QFile::ReadOther);
+    QVERIFY(existing.open(QIODevice::ReadOnly));
+    QCOMPARE(existing.readAll(), original);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCOMPARE(QDir(m_dir.path()).entryList({QStringLiteral("beside-existing.mp4.omacut-*.mp4")}, QDir::Files),
+             QStringList{QStringLiteral("beside-existing.mp4.omacut-part.mp4")});
+}
+
 void BackendTests::exportOddSizedWebmWritesEvenMp4() {
     // Region and window captures can have odd dimensions (which VP9/WebM
     // allows and libx264 refuses unless rounded down to even).
@@ -1284,7 +1316,8 @@ void BackendTests::exportClipCanReplaceSourceFile() {
     QVERIFY(ffmpeg::probe(sourcePath).ok);
     QVERIFY2(formatName(sourcePath).contains(QStringLiteral("mp4")),
              qPrintable(formatName(sourcePath)));
-    QVERIFY(!QFileInfo::exists(sourcePath + QStringLiteral(".omacut-part.mp4")));
+    QVERIFY(QDir(m_dir.path()).entryList({QStringLiteral("replace-source.mp4.omacut-*.mp4")},
+                                       QDir::Files).isEmpty());
 }
 
 void BackendTests::exportOverASourceStartsOverFromTheSavedFile() {
@@ -1458,7 +1491,8 @@ void BackendTests::failedExportPreservesExistingFile() {
     QFile check(outPath);
     QVERIFY(check.open(QIODevice::ReadOnly));
     QCOMPARE(check.readAll(), original);
-    QVERIFY(!QFileInfo::exists(outPath + QStringLiteral(".omacut-part.mp4")));
+    QVERIFY(QDir(m_dir.path()).entryList({QStringLiteral("keep-me.mp4.omacut-*.mp4")},
+                                       QDir::Files).isEmpty());
 }
 
 void BackendTests::qmlDoesNotCreateAudioOutputWithoutVideo() {
