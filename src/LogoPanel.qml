@@ -116,7 +116,7 @@ DialogPanel {
                 onClicked: panel.changeRequested()
             }
             Chip {
-                label: qsTr("Add another logo")
+                label: qsTr("Add image")
                 onClicked: panel.addRequested()
             }
             Chip {

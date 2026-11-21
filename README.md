@@ -16,7 +16,7 @@ The timeline shows your clips in the order they play, each framed with a handle 
 - **Hold a clip, then drag it** to move it before or after the others.
 - **Hover a clip** and click its **×** to remove it.
 - **Click +** to add another video after the clip under the playhead.
-- **Click the image button** to put your logo on the video: choose a PNG, JPEG, WebP or BMP (transparency is kept), then drag it in the preview wherever you want it, or use the buttons for the corners and centre. Resize it by dragging a corner handle or scrolling the wheel over it; size and opacity are also sliders in the same panel. The logo is drawn over every clip when you export, at the same place and share of the frame whatever size you export at, and it stays when you open another video. Placing, resizing and fading the logo can all be undone with Ctrl+Z, in order with your cuts. Add as many logos as you like with *Add another logo*. Each has its own strip above the clips: drag it to move the logo in time, drag its ends to set when it starts and stops showing, or use *From the playhead* / *Until the playhead*. *Fade in* and *Fade out* make it appear and disappear gradually.
+- **Click the image button** to put your logo on the video: choose a PNG, JPEG, WebP or BMP (transparency is kept), then drag it in the preview wherever you want it, or use the buttons for the corners and centre. Resize it by dragging a corner handle or scrolling the wheel over it; size and opacity are also sliders in the same panel. The logo is drawn over every clip when you export, at the same place and share of the frame whatever size you export at, and it stays when you open another video. Placing, resizing and fading the logo can all be undone with Ctrl+Z, in order with your cuts. Press *I* (or *Add image* in the panel) to add more images the same way: a video usually has one logo, but can carry other pictures too. Each has its own strip above the clips: drag it to move the logo in time, drag its ends to set when it starts and stops showing, or use *From the playhead* / *Until the playhead*. *Fade in* and *Fade out* make it appear and disappear gradually.
 
 Handles catch on neighbouring clip edges and the playhead.
 
@@ -39,6 +39,7 @@ Confirmations are answered from the keyboard: the arrows and Tab move between th
 - *Z*: Zoom to the clip under the playhead for fine tuning (Z again zooms back out).
 - *F*: Save the frame under the playhead as a PNG next to its video.
 - *L*: Add a logo, or show or hide its controls.
+- *I*: Add another image over the video.
 - *Ctrl+O*: Open a new file to edit.
 - *Ctrl+Shift+O*: Add a video after the clip under the playhead.
 - *Ctrl+S*: Export the current edit.

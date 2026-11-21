@@ -3565,6 +3565,11 @@ void BackendTests::qmlLogoIsChosenShownAndDragged() {
     backend.logo.setSize(0.2);
     backend.logo.setOpacity(1.0);
 
+    // I always asks for another image, to add beside this one.
+    QTest::keyClick(window, Qt::Key_I);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.logoAddCount, 1, 3000);
+    QCOMPARE(backend.logoDialogCount, 1);
+
     // L now shows and hides its controls, and no longer asks for a picture.
     QTest::keyClick(window, Qt::Key_L);
     QTRY_VERIFY_WITH_TIMEOUT(!panel->isVisible(), 3000);

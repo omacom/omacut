@@ -392,6 +392,16 @@ ApplicationWindow {
         onActivated: win.showLogo()
     }
 
+    // Another image over the video, beside the logo: the same thing underneath,
+    // but a video usually has one logo and may have other pictures.
+    Shortcut {
+        sequence: "I"
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: win.editing && !backend.busy
+        onActivated: backend.addLogoDialog()
+    }
+
     Shortcut {
         sequence: "Ctrl+Z"
         context: Qt.ApplicationShortcut
@@ -1204,6 +1214,7 @@ ApplicationWindow {
                         { keys: "Ctrl Space", action: qsTr("Clip start to playhead") },
                         { keys: "Ctrl Shift Space", action: qsTr("Clip end to playhead") },
                         { keys: "L", action: qsTr("Add a logo, or show its controls") },
+                        { keys: "I", action: qsTr("Add an image over the video") },
                         { keys: "Ctrl Z", action: qsTr("Undo (Ctrl Shift Z redo)") },
                         { keys: "Z", action: qsTr("Zoom to the clip") },
                         { keys: "F", action: qsTr("Save the playhead frame as a PNG") },
