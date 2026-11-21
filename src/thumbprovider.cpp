@@ -1,10 +1,13 @@
 #include "thumbprovider.h"
 
+#include <QMap>
 #include <QMutexLocker>
 #include <QQuickTextureFactory>
 #include <QRunnable>
 
+#include <algorithm>
 #include <atomic>
+#include <utility>
 
 #include "ffmpeg.h"
 
@@ -14,14 +17,10 @@ constexpr int kDefaultHeight = 90;
 // hundred frames, plenty for a long zoomed filmstrip.
 constexpr int kCacheKB = 48 * 1024;
 
-class ThumbResponse : public QQuickImageResponse, public QRunnable {
-public:
-    ThumbResponse(ThumbProvider *provider, QString cacheId, QString path, double time, int height)
-        : m_provider(provider), m_cacheId(std::move(cacheId)), m_path(std::move(path)),
-          m_time(time), m_height(height) {
-        setAutoDelete(false);
-    }
+}  // namespace
 
+class ThumbResponse : public QQuickImageResponse {
+public:
     QQuickTextureFactory *textureFactory() const override {
         return QQuickTextureFactory::textureFactoryForImage(m_image);
     }
@@ -31,31 +30,114 @@ public:
     // (and its ffmpeg) busy for a frame nobody is waiting for.
     // The engine still waits for finished() before deleting a cancelled response.
     void cancel() override { m_cancelled = true; }
+    bool cancelled() const { return m_cancelled.load(std::memory_order_relaxed); }
 
-    void run() override {
-        if (!m_cancelled && !m_path.isEmpty()) {
-            m_image = ffmpeg::thumbnail(m_path, m_time, m_height, [this] {
-                return m_cancelled.load(std::memory_order_relaxed)
-                    || m_provider->stopping()->load(std::memory_order_relaxed);
-            });
-            // A frame cancelled just as it finished is not cached either:
-            // nobody is waiting for it, and the cache slot is worth more.
-            if (!m_image.isNull() && !m_cancelled)
-                m_provider->store(m_cacheId, m_image);
-        }
+    // Hands over the frame, or none, and says it is done.
+    void complete(QImage image) {
+        m_image = std::move(image);
         emit finished();
     }
 
 private:
-    ThumbProvider *m_provider;
-    QString m_cacheId;
-    QString m_path;
-    double m_time;
-    int m_height;
     QImage m_image;
     std::atomic<bool> m_cancelled = false;
 };
 
+// One frame by its own seek.
+class SingleJob : public QRunnable {
+public:
+    SingleJob(ThumbProvider *provider, ThumbProvider::Request request)
+        : m_provider(provider), m_request(std::move(request)) {}
+
+    void run() override {
+        ThumbResponse *response = m_request.response;
+        QImage image;
+        if (!response->cancelled() && !m_request.path.isEmpty()) {
+            ++m_provider->m_singleRuns;
+            image = ffmpeg::thumbnail(m_request.path, m_request.time, m_request.height, [this, response] {
+                return response->cancelled() || m_provider->stopping()->load(std::memory_order_relaxed);
+            });
+            // A frame cancelled just as it finished is not cached either:
+            // nobody is waiting for it, and the cache slot is worth more.
+            if (!image.isNull() && !response->cancelled())
+                m_provider->store(m_request.cacheId, image);
+        }
+        response->complete(image);
+    }
+
+private:
+    ThumbProvider *m_provider;
+    ThumbProvider::Request m_request;
+};
+
+// Frames on a regular step from one video, in one pass over it.
+class BatchJob : public QRunnable {
+public:
+    BatchJob(ThumbProvider *provider, QList<ThumbProvider::Request> requests, double step)
+        : m_provider(provider), m_requests(std::move(requests)), m_step(step),
+          m_start(m_requests.first().time) {
+        m_count = qRound((m_requests.last().time - m_start) / m_step) + 1;
+    }
+
+    void run() override {
+        const QString path = m_requests.first().path;
+        const int height = m_requests.first().height;
+        QList<bool> done(m_requests.size(), false);
+        const auto stop = [this, &done] {
+            if (m_provider->stopping()->load(std::memory_order_relaxed))
+                return true;
+            // Only while someone still waits on a frame not yet delivered.
+            for (int i = 0; i < m_requests.size(); ++i)
+                if (!done[i] && !m_requests[i].response->cancelled())
+                    return false;
+            return true;
+        };
+        if (!path.isEmpty() && !stop()) {
+            ++m_provider->m_batchRuns;
+            ffmpeg::thumbnailRun(path, m_start, m_step, m_count, height,
+                                 [&](int index, const QImage &image) {
+                // The requests are in time order, so each frame's wait is the
+                // next not yet answered one on its step.
+                for (int i = 0; i < m_requests.size(); ++i) {
+                    if (done[i] || qRound((m_requests[i].time - m_start) / m_step) != index)
+                        continue;
+                    ThumbResponse *response = m_requests[i].response;
+                    if (!response->cancelled())
+                        m_provider->store(m_requests[i].cacheId, image);
+                    done[i] = true;
+                    response->complete(image);
+                }
+            }, stop);
+        }
+        // What the pass didn't bring (it ended early, failed, or was cut short
+        // past the video's last frame) is asked for one by one, which also
+        // covers the end of the video.
+        for (int i = 0; i < m_requests.size(); ++i) {
+            if (done[i])
+                continue;
+            ThumbResponse *response = m_requests[i].response;
+            QImage image;
+            if (!response->cancelled() && !path.isEmpty() && !m_provider->stopping()->load(std::memory_order_relaxed)) {
+                ++m_provider->m_singleRuns;
+                image = ffmpeg::thumbnail(path, m_requests[i].time, height, [this, response] {
+                    return response->cancelled() || m_provider->stopping()->load(std::memory_order_relaxed);
+                });
+                if (!image.isNull() && !response->cancelled())
+                    m_provider->store(m_requests[i].cacheId, image);
+            }
+            response->complete(image);
+        }
+    }
+
+private:
+    ThumbProvider *m_provider;
+    QList<ThumbProvider::Request> m_requests;
+    double m_step;
+    double m_start;
+    int m_count = 1;
+};
+
+namespace {
 // A cache hit answers at once, without touching the pool.
 class ReadyResponse : public QQuickImageResponse {
 public:
@@ -114,7 +196,71 @@ QQuickImageResponse *ThumbProvider::requestImageResponse(const QString &id, cons
         QMutexLocker lock(&m_mutex);
         path = m_paths.value(key);
     }
-    auto *response = new ThumbResponse(this, cacheId, path, time, height);
-    m_pool.start(response);
+    auto *response = new ThumbResponse;
+    bool queueDispatch = false;
+    {
+        QMutexLocker lock(&m_mutex);
+        m_pending.append({response, cacheId, path, key, height, time});
+        queueDispatch = !std::exchange(m_dispatchQueued, true);
+    }
+    // Not yet: the rest of this filmstrip's frames are being asked for right
+    // now, and are worth seeing before deciding how to get them.
+    if (queueDispatch)
+        QMetaObject::invokeMethod(&m_dispatcher, [this] { dispatch(); }, Qt::QueuedConnection);
     return response;
+}
+
+void ThumbProvider::dispatch() {
+    QList<Request> requests;
+    {
+        QMutexLocker lock(&m_mutex);
+        requests.swap(m_pending);
+        m_dispatchQueued = false;
+    }
+    // Each video at each size on its own, in time order.
+    QMap<QPair<int, int>, QList<Request>> groups;
+    for (const Request &request : requests) {
+        if (request.response->cancelled()) {
+            request.response->complete({});
+            continue;
+        }
+        groups[{request.key, request.height}].append(request);
+    }
+    for (QList<Request> &group : groups) {
+        std::sort(group.begin(), group.end(), [](const Request &a, const Request &b) { return a.time < b.time; });
+        // Runs of frames on one regular step, no further apart than a pass
+        // pays for. Frames that fit none go alone.
+        qsizetype from = 0;
+        while (from < group.size()) {
+            qsizetype to = from + 1;
+            double step = 0.0;
+            while (to < group.size()) {
+                const double gap = group[to].time - group[to - 1].time;
+                if (gap < 0.05 || gap > maxBatchStep + 1e-6)
+                    break;
+                if (step == 0.0)
+                    step = gap;
+                // A frame already cached leaves a hole: a whole number of steps.
+                const double steps = gap / step;
+                if (qAbs(steps - qRound(steps)) > 0.02)
+                    break;
+                ++to;
+            }
+            QList<Request> run = group.mid(from, to - from);
+            from = to;
+            if (run.size() < 2) {
+                m_pool.start(new SingleJob(this, run.first()));
+                continue;
+            }
+            // A long run is cut, so the first frames don't wait for the last.
+            constexpr qsizetype maxRun = 48;
+            for (qsizetype at = 0; at < run.size(); at += maxRun) {
+                QList<Request> part = run.mid(at, maxRun);
+                if (part.size() < 2)
+                    m_pool.start(new SingleJob(this, part.first()));
+                else
+                    m_pool.start(new BatchJob(this, part, step));
+            }
+        }
+    }
 }
