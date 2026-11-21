@@ -8,6 +8,7 @@
 #include <functional>
 
 #include "ffmpeg.h"
+#include "logo.h"
 #include "timeline.h"
 
 class ThumbProvider;
@@ -26,6 +27,8 @@ class Backend : public QObject {
     Q_PROPERTY(bool exporting READ exporting NOTIFY busyChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(QObject *timeline READ timeline CONSTANT)
+    // The logo drawn over the exported video, if one is set.
+    Q_PROPERTY(QObject *logo READ logoObject CONSTANT)
 
 public:
     explicit Backend(ThumbProvider *provider, QObject *parent = nullptr);
@@ -42,6 +45,8 @@ public:
     bool exporting() const { return m_busy; }
     QString status() const { return m_status; }
     Timeline *timeline() { return &m_timeline; }
+    Logo *logo() { return &m_logo; }
+    QObject *logoObject() { return &m_logo; }
 
     // Start over with a video. Probing runs off the UI thread: false means
     // refused outright (busy, or not an absolute local path); the outcome
@@ -58,7 +63,9 @@ public:
     // Open native desktop file dialogs.
     Q_INVOKABLE void openVideoDialog();
     Q_INVOKABLE void addVideoDialog(double t);
-    // Exports the clips as they are when the dialog opens.
+    // Asks for an image to use as the logo.
+    Q_INVOKABLE void openLogoDialog();
+    // Exports the clips, and the logo, as they are when the dialog opens.
     Q_INVOKABLE void exportDialog();
 
     // Suggested "<name>_trimmed.mp4" target next to the source.
@@ -70,9 +77,10 @@ public:
     // Resolve the adjacent displayed frame without blocking the UI.
     Q_INVOKABLE void stepFrame(double t, int direction);
 
-    // Write the clips to dst. A non-zero scaleHeight downscales the shorter
-    // side to that size.
-    void exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight = 0);
+    // Write the clips to dst, with the logo over them if one is given. A
+    // non-zero scaleHeight downscales the shorter side to that size.
+    void exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight = 0,
+                     const logo::Settings &logoSettings = {});
 
     // The downscale heights worth offering for a source: only ones strictly
     // below the source's shorter side, so exports never upscale.
@@ -90,6 +98,8 @@ signals:
     void frameSaved(const QString &path);
     void frameFailed(const QString &message);
     void loadError(const QString &message);
+    // An image chosen as the logo that can't be used, and why.
+    void logoError(const QString &message);
     // An export over one of its own videos saved, but the saved file
     // wouldn't reopen, so the clips no longer match it.
     void exportReopenFailed();
@@ -138,12 +148,14 @@ private:
     ThumbProvider *m_provider;
     FilePicker *m_filePicker;
     Timeline m_timeline;
+    Logo m_logo;
     QList<Video> m_videos;
     int m_nextThumbKey = 0;
     // The open dialog adds a video at this sequence time, rather than starting over.
     bool m_adding = false;
     double m_addAt = 0.0;
     edit::Clips m_exportDialogClips;
+    logo::Settings m_exportDialogLogo;
     bool m_busy = false;
     bool m_probing = false;
     QList<PendingVideo> m_probeQueue;

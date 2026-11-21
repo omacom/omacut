@@ -306,8 +306,25 @@ QStringList frameArgs(const QString &path, double frameTime, double keyframeTime
     };
 }
 
+QSize exportFrameSize(int width, int height, int scaleHeight) {
+    // libx264 needs even sides: the frame is fitted into, or cropped to, them.
+    int w = width / 2 * 2;
+    int h = height / 2 * 2;
+    if (scaleHeight > 0 && w > 0 && h > 0) {
+        if (w > h) {
+            w = qRound(double(w) * scaleHeight / h) / 2 * 2;
+            h = scaleHeight;
+        } else {
+            h = qRound(double(h) * scaleHeight / w) / 2 * 2;
+            w = scaleHeight;
+        }
+    }
+    return {w, h};
+}
+
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
-                     int width, int height, int scaleHeight) {
+                     int width, int height, int scaleHeight,
+                     const logo::Settings &logoSettings) {
     bool audio = false;
     bool mixed = false;
     for (const Segment &segment : segments) {
@@ -360,7 +377,24 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
                      .arg(audio ? "[a]" : "");
     else
         graph += QString("[v]") + (audio ? "[a]" : "");
-    args << "-filter_complex" << graph << "-map" << "[v]";
+    // The logo is one more input, after the segments. A still picture
+    // is repeated for as long as the video goes on, so it is there throughout.
+    // The image is scaled to its pixel size first, so the overlay lands exactly where
+    // the position says, with its alpha kept and faded by the opacity.
+    QString video = QStringLiteral("[v]");
+    if (logoSettings.active()) {
+        const QSize frame = exportFrameSize(width, height, scaleHeight);
+        const QRect box = logo::pixelBox(logoSettings, frame.width(), frame.height());
+        args << "-i" << logoSettings.path;
+        QString prepared = QString("[%1:v:0]format=rgba,scale=%2:%3")
+                               .arg(segments.size()).arg(box.width()).arg(box.height());
+        if (logoSettings.opacity < 0.999)
+            prepared += QString(",colorchannelmixer=aa=%1").arg(logoSettings.opacity, 0, 'f', 3);
+        graph += QString(";%1[logo];[v][logo]overlay=x=%2:y=%3:format=auto[vl]")
+                     .arg(prepared).arg(box.left()).arg(box.top());
+        video = QStringLiteral("[vl]");
+    }
+    args << "-filter_complex" << graph << "-map" << video;
     if (audio)
         args << "-map" << "[a]" << "-c:a" << "aac";
     // +faststart puts the moov atom up front so shared clips start playing

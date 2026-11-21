@@ -23,15 +23,18 @@ ApplicationWindow {
     property bool helpVisible: false
     property bool quitConfirmVisible: false
     property bool openConfirmVisible: false
+    // The panel with the logo's controls.
+    property bool logoPanelOpen: false
     readonly property string statusText: noticeText !== "" ? noticeText : backend.status
     // Right-to-left languages mirror the window; the Translator sets the
     // application's layout direction.
     readonly property bool rightToLeft: Qt.application.layoutDirection === Qt.RightToLeft
 
     readonly property var timeline: backend.timeline
+    readonly property var logo: backend.logo
     // Quitting only warns about unexported edits. One clip spanning the whole
     // first video is never dirty — that's just the source.
-    readonly property bool unexported: hasVideo && timeline.unexported
+    readonly property bool unexported: hasVideo && (timeline.unexported || logo.unexported)
     // Quitting mid-export would stop it, so that asks too, edited or not.
     readonly property bool quitAsks: unexported || backend.exporting
     onQuitAsksChanged: if (!quitAsks) quitConfirmVisible = false
@@ -79,6 +82,17 @@ ApplicationWindow {
     // counts the skipped, since each error replaces the last.
     function dropVideos(urls) {
         return backend.addVideos(urls, editBar.playheadSec);
+    }
+    // The logo button and L: choose an image the first time, then show or
+    // hide its controls.
+    function showLogo() {
+        if (backend.busy)
+            return;
+        if (!logo.active) {
+            backend.openLogoDialog();
+            return;
+        }
+        logoPanelOpen = !logoPanelOpen;
     }
     function exportVideo() {
         if (!win.hasVideo || timeline.duration <= 0 || backend.busy)
@@ -371,6 +385,14 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "L"
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: win.editing && !backend.busy
+        onActivated: win.showLogo()
+    }
+
+    Shortcut {
         sequence: "Ctrl+Z"
         context: Qt.ApplicationShortcut
         enabled: win.editing && timeline.canUndo
@@ -436,6 +458,8 @@ ApplicationWindow {
                 win.openConfirmVisible = false;
             else if (win.helpVisible)
                 win.helpVisible = false;
+            else if (win.logoPanelOpen)
+                win.logoPanelOpen = false;
         }
     }
 
@@ -679,6 +703,19 @@ ApplicationWindow {
                     ctx.moveTo(5, 12);
                     ctx.lineTo(19, 12);
                     ctx.stroke();
+                } else if (iconButton.iconName === "image") {
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(4, 5, 16, 14);
+                    ctx.beginPath();
+                    ctx.arc(9, 10, 1.6, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.beginPath();
+                    ctx.moveTo(4.5, 18);
+                    ctx.lineTo(10, 13);
+                    ctx.lineTo(14, 16.5);
+                    ctx.lineTo(16.5, 14.5);
+                    ctx.lineTo(19.5, 17.5);
+                    ctx.stroke();
                 } else if (iconButton.iconName === "download") {
                     ctx.beginPath();
                     ctx.moveTo(12, 4);
@@ -739,6 +776,58 @@ ApplicationWindow {
                 }
             }
 
+            // The logo, over the picture itself rather than the black around
+            // it, where and as big as the export will put it. It can be dragged.
+            Item {
+                id: logoLayer
+                objectName: "logoLayer"
+                readonly property rect frame: videoOut.contentRect.width > 0
+                    ? videoOut.contentRect : Qt.rect(0, 0, videoOut.width, videoOut.height)
+                x: frame.x
+                y: frame.y
+                width: frame.width
+                height: frame.height
+                visible: win.hasVideo && win.logo.active
+
+                Image {
+                    id: logoImage
+                    objectName: "logoImage"
+                    // Read so a change of any of them redraws it.
+                    readonly property rect box: {
+                        var changed = [win.logo.x, win.logo.y, win.logo.size, win.logo.aspect];
+                        return win.logo.box(logoLayer.width, logoLayer.height);
+                    }
+                    x: box.x
+                    y: box.y
+                    width: box.width
+                    height: box.height
+                    source: win.logo.source
+                    opacity: win.logo.opacity
+                    fillMode: Image.Stretch
+                    sourceSize.width: 1024
+                    asynchronous: true
+                    smooth: true
+                    mipmap: true
+
+                    MouseArea {
+                        id: logoDrag
+                        anchors.fill: parent
+                        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                        // Where in the logo it was taken, so it doesn't jump to the pointer.
+                        property real grabX: 0
+                        property real grabY: 0
+                        onPressed: (mouse) => { grabX = mouse.x; grabY = mouse.y; }
+                        onPositionChanged: (mouse) => {
+                            if (!pressed || logoLayer.width <= 0 || logoLayer.height <= 0)
+                                return;
+                            var at = mapToItem(logoLayer, mouse.x, mouse.y);
+                            win.logo.setCenter((at.x - grabX + logoImage.width / 2) / logoLayer.width,
+                                               (at.y - grabY + logoImage.height / 2) / logoLayer.height);
+                        }
+                    }
+                }
+            }
+
             // Only the empty state opens on a preview click: with a video
             // loaded, a stray click must not reach the file picker at all.
             MouseArea {
@@ -790,6 +879,18 @@ ApplicationWindow {
             }
         }
 
+        // --- logo ---
+        LogoPanel {
+            id: logoPanel
+            visible: win.hasVideo && win.logo.active && win.logoPanelOpen
+            Layout.fillWidth: true
+            Layout.preferredHeight: implicitHeight
+            frameWidth: logoLayer.width
+            frameHeight: logoLayer.height
+            onChangeRequested: backend.openLogoDialog()
+            onCloseRequested: win.logoPanelOpen = false
+        }
+
         // --- timeline ---
         RowLayout {
             visible: win.hasVideo
@@ -831,6 +932,15 @@ ApplicationWindow {
                 tipText: qsTr("Add a video")
                 enabled: timeline.duration > 0 && !backend.busy
                 onClicked: addVideo()
+            }
+
+            IconButton {
+                Layout.preferredWidth: 44
+                Layout.preferredHeight: 44
+                iconName: "image"
+                tipText: qsTr("Logo")
+                enabled: timeline.duration > 0 && !backend.busy
+                onClicked: win.showLogo()
             }
 
             IconButton {
@@ -987,6 +1097,7 @@ ApplicationWindow {
                         { keys: "Alt [ / ]", action: qsTr("Move the clip earlier / later") },
                         { keys: "Ctrl Space", action: qsTr("Clip start to playhead") },
                         { keys: "Ctrl Shift Space", action: qsTr("Clip end to playhead") },
+                        { keys: "L", action: qsTr("Add a logo, or show its controls") },
                         { keys: "Ctrl Z", action: qsTr("Undo (Ctrl Shift Z redo)") },
                         { keys: "Z", action: qsTr("Zoom to the clip") },
                         { keys: "F", action: qsTr("Save the playhead frame as a PNG") },
@@ -1056,6 +1167,14 @@ ApplicationWindow {
         }
     }
 
+    // Choosing a logo shows its controls; removing it puts them away.
+    Connections {
+        target: win.logo
+        function onActiveChanged() {
+            win.logoPanelOpen = win.logo.active;
+        }
+    }
+
     Connections {
         target: backend
         function onFrameStepped(from, to) {
@@ -1093,6 +1212,9 @@ ApplicationWindow {
         }
         function onLoadError(message) {
             win.showNotice(qsTr("Cannot open video: %1").arg(message));
+        }
+        function onLogoError(message) {
+            win.showNotice(qsTr("Cannot use this image: %1").arg(message));
         }
         function onExportReopenFailed() {
             win.showNotice(qsTr("Saved, but couldn't reopen it, so the clips no longer match the file."));

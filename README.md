@@ -16,6 +16,7 @@ The timeline shows your clips in the order they play, each framed with a handle 
 - **Hold a clip, then drag it** to move it before or after the others.
 - **Hover a clip** and click its **×** to remove it.
 - **Click +** to add another video after the clip under the playhead.
+- **Click the image button** to put your logo on the video: choose a PNG, JPEG, WebP or BMP (transparency is kept), then drag it in the preview wherever you want it, or use the buttons for the corners and centre. Its size and opacity are sliders in the same panel. The logo is drawn over every clip when you export, at the same place and share of the frame whatever size you export at, and it stays when you open another video.
 
 Handles catch on neighbouring clip edges and the playhead.
 
@@ -37,6 +38,7 @@ Confirmations are answered from the keyboard: the arrows and Tab move between th
 - *Ctrl+Z / Ctrl+Shift+Z*: Undo / redo.
 - *Z*: Zoom to the clip under the playhead for fine tuning (Z again zooms back out).
 - *F*: Save the frame under the playhead as a PNG next to its video.
+- *L*: Add a logo, or show or hide its controls.
 - *Ctrl+O*: Open a new file to edit.
 - *Ctrl+Shift+O*: Add a video after the clip under the playhead.
 - *Ctrl+S*: Export the current edit.
