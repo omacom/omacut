@@ -399,6 +399,9 @@ private slots:
     void trimArgsFitDifferentVideosTogether();
     void trimArgsScaleTheShorterSide();
     void exportHeightsNeverUpscale();
+    void filmstripFramesCloseTogetherShareOnePass();
+    void filmstripFramesFarApartAreSeekedOneByOne();
+    void filmstripBatchHandlesCacheHolesAndTheEnd();
     void thumbnailPastTheLastFrameShowsTheLastOne();
     void themeAccentReadsOmarchyColors();
     void themeAccentForegroundKeepsContrast();
@@ -2707,6 +2710,158 @@ void BackendTests::trimArgsScaleTheShorterSide() {
     QCOMPARE(filterGraph(ffmpeg::trimArgs(segment, QStringLiteral("out.mp4"), 1920, 1080, 1080)),
              QStringLiteral("[0:V:0][0:a:0]concat=n=1:v=1:a=1[joined][a];"
                             "[joined]scale='if(gt(iw,ih),-2,1080)':'if(gt(iw,ih),1080,-2)'[v]"));
+}
+
+// How many pixels of frame differ visibly from the other, in the rows from top to bottom.
+static int differingPixels(const QImage &a, const QImage &b, int top, int bottom) {
+    int count = 0;
+    for (int y = top; y < bottom; ++y)
+        for (int x = 0; x < a.width(); ++x) {
+            const QColor p = a.pixelColor(x, y), q = b.pixelColor(x, y);
+            if (qAbs(p.red() - q.red()) + qAbs(p.green() - q.green()) + qAbs(p.blue() - q.blue()) > 90)
+                ++count;
+        }
+    return count;
+}
+
+// Asks the provider for these frames of a video, all at once the way a
+// filmstrip does, and returns them (null for one that failed).
+static QList<QImage> fetchFrames(ThumbProvider &provider, int key, const QList<double> &times, int height) {
+    QList<QQuickImageResponse *> responses;
+    int finished = 0;
+    for (const double time : times) {
+        auto *response = provider.requestImageResponse(
+            QStringLiteral("%1/%2").arg(key).arg(qRound(time * 1000)), QSize(0, height));
+        QObject::connect(response, &QQuickImageResponse::finished, response, [&finished] { ++finished; });
+        responses << response;
+    }
+    QTest::qWaitFor([&] { return finished == times.size(); }, 30000);
+    QList<QImage> images;
+    for (QQuickImageResponse *response : responses) {
+        QQuickTextureFactory *factory = response->textureFactory();
+        images << (factory ? factory->image() : QImage());
+        delete factory;
+        delete response;
+    }
+    return images;
+}
+
+void BackendTests::filmstripFramesCloseTogetherShareOnePass() {
+    const QString path = makeVideo(QStringLiteral("film-close.mp4"), 6.0, false, QStringLiteral("160x90"), QStringLiteral("25"));
+    QVERIFY(!path.isEmpty());
+    ThumbProvider provider;
+    provider.setVideo(1, path);
+
+    const QList<double> times = {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5};
+    const QList<QImage> frames = fetchFrames(provider, 1, times, 90);
+    QCOMPARE(frames.size(), times.size());
+    // One ffmpeg for the whole strip, not one each.
+    QCOMPARE(provider.batchRuns(), 1);
+    QCOMPARE(provider.singleRuns(), 0);
+    for (int i = 0; i < frames.size(); ++i) {
+        QVERIFY2(!frames[i].isNull(), qPrintable(QString::number(times[i])));
+        QCOMPARE(frames[i].height(), 90);
+        // The frame a seek to that time gives, give or take a frame at 25 fps
+        // (the clock in the test picture moves with it).
+        const QImage seeked = ffmpeg::thumbnail(path, times[i], 90);
+        QCOMPARE(frames[i].size(), seeked.size());
+        QVERIFY2(differingPixels(frames[i], seeked, 0, 90) < frames[i].width() * 90 / 8, qPrintable(QString::number(times[i])));
+        // And each is its own moment: not the same frame repeated.
+        if (i > 0)
+            QVERIFY(differingPixels(frames[i], frames[i - 1], 0, 90) > 0);
+    }
+
+    // Asked for again, they come from the cache: nothing runs.
+    const QList<QImage> again = fetchFrames(provider, 1, times, 90);
+    QCOMPARE(again.size(), times.size());
+    for (const QImage &image : again)
+        QVERIFY(!image.isNull());
+    QCOMPARE(provider.batchRuns(), 1);
+    QCOMPARE(provider.singleRuns(), 0);
+
+    // A tight step works as well, and a longer strip is cut into passes.
+    const QString longer = makeVideo(QStringLiteral("film-long.mp4"), 12.0, false, QStringLiteral("160x90"), QStringLiteral("25"));
+    QVERIFY(!longer.isEmpty());
+    provider.setVideo(2, longer);
+    QList<double> many;
+    for (int i = 0; i < 100; ++i)
+        many << i * 0.1;
+    const QList<QImage> strip = fetchFrames(provider, 2, many, 90);
+    QCOMPARE(strip.size(), many.size());
+    for (const QImage &image : strip)
+        QVERIFY(!image.isNull());
+    QCOMPARE(provider.batchRuns(), 1 + 3);
+    QCOMPARE(provider.singleRuns(), 0);
+}
+
+void BackendTests::filmstripFramesFarApartAreSeekedOneByOne() {
+    const QString path = makeVideo(QStringLiteral("film-far.mp4"), 12.0, false, QStringLiteral("160x90"), QStringLiteral("25"));
+    QVERIFY(!path.isEmpty());
+    ThumbProvider provider;
+    provider.setVideo(1, path);
+
+    // More than a second apart, a pass would decode more than the seeks do.
+    const QList<QImage> frames = fetchFrames(provider, 1, {0.0, 2.0, 4.0, 6.0}, 90);
+    QCOMPARE(frames.size(), 4);
+    for (const QImage &image : frames)
+        QVERIFY(!image.isNull());
+    QCOMPARE(provider.batchRuns(), 0);
+    QCOMPARE(provider.singleRuns(), 4);
+
+    // A strip at the step the ladder is about to leave, a second, still batches.
+    ThumbProvider second;
+    second.setVideo(1, path);
+    QCOMPARE(fetchFrames(second, 1, {0.0, 1.0, 2.0, 3.0}, 90).size(), 4);
+    QCOMPARE(second.batchRuns(), 1);
+
+    // Two videos, or two sizes, never share a pass.
+    ThumbProvider mixed;
+    mixed.setVideo(1, path);
+    mixed.setVideo(2, path);
+    QList<QQuickImageResponse *> responses;
+    int finished = 0;
+    for (const QString &id : {QStringLiteral("1/0"), QStringLiteral("1/500"), QStringLiteral("2/0"), QStringLiteral("2/500")}) {
+        auto *response = mixed.requestImageResponse(id, QSize(0, id.startsWith('1') ? 90 : 60));
+        QObject::connect(response, &QQuickImageResponse::finished, response, [&finished] { ++finished; });
+        responses << response;
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(finished, 4, 30000);
+    qDeleteAll(responses);
+    QCOMPARE(mixed.batchRuns(), 2);
+    QCOMPARE(mixed.singleRuns(), 0);
+
+    // A frame no longer wanted, asked for and dropped at once, costs nothing.
+    ThumbProvider cancelled;
+    cancelled.setVideo(1, path);
+    auto *response = cancelled.requestImageResponse(QStringLiteral("1/1000"), QSize(0, 90));
+    bool done = false;
+    QObject::connect(response, &QQuickImageResponse::finished, response, [&done] { done = true; });
+    response->cancel();
+    QTRY_VERIFY_WITH_TIMEOUT(done, 10000);
+    delete response;
+    QCOMPARE(cancelled.batchRuns() + cancelled.singleRuns(), 0);
+}
+
+void BackendTests::filmstripBatchHandlesCacheHolesAndTheEnd() {
+    const QString path = makeVideo(QStringLiteral("film-end.mp4"), 3.0, false, QStringLiteral("160x90"), QStringLiteral("25"));
+    QVERIFY(!path.isEmpty());
+    ThumbProvider provider;
+    provider.setVideo(1, path);
+
+    // Frames already cached leave holes in the strip: the rest still share a pass.
+    QVERIFY(!fetchFrames(provider, 1, {1.0}, 90).first().isNull());
+    QCOMPARE(provider.singleRuns(), 1);
+    const QList<QImage> holes = fetchFrames(provider, 1, {0.0, 0.5, 1.0, 1.5, 2.0}, 90);
+    for (const QImage &image : holes)
+        QVERIFY(!image.isNull());
+    QCOMPARE(provider.batchRuns(), 1);
+    QCOMPARE(provider.singleRuns(), 1);
+
+    // Frames at and past the video's end still show something: the last frame.
+    const QList<QImage> tail = fetchFrames(provider, 1, {2.5, 3.0, 3.5, 4.0}, 90);
+    QCOMPARE(tail.size(), 4);
+    for (int i = 0; i < tail.size(); ++i)
+        QVERIFY2(!tail[i].isNull(), qPrintable(QString::number(i)));
 }
 
 void BackendTests::exportHeightsNeverUpscale() {

@@ -224,6 +224,70 @@ QImage thumbnail(const QString &path, double time, int height,
     return image;
 }
 
+int thumbnailRun(const QString &path, double start, double step, int count, int height,
+                 const std::function<void(int, const QImage &)> &onFrame,
+                 const std::function<bool()> &stopRequested) {
+    const QString ffmpeg = toolPath("ffmpeg");
+    if (ffmpeg.isEmpty() || count < 1 || step <= 0.0)
+        return 0;
+
+    // fps keeps one frame per step; -t bounds the pass to the span asked for.
+    const QStringList args = {
+        "-nostdin", "-loglevel", "error", "-an", "-sn",
+        "-ss", QString::number(qMax(start, 0.0), 'f', 3),
+        "-t", QString::number(count * step, 'f', 3),
+        "-i", path,
+        "-vf", QString("fps=1/%1,scale=-1:%2").arg(step, 0, 'f', 4).arg(height),
+        "-frames:v", QString::number(count),
+        "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+    };
+    QProcess proc;
+    proc.start(ffmpeg, args);
+
+    // The output is JPEGs back to back; each starts with the same marker, and
+    // the marker can't appear inside one, so a frame is complete once the
+    // next one starts (or the pass ends).
+    static const QByteArray marker = QByteArrayLiteral("\xFF\xD8\xFF");
+    QByteArray buffer;
+    int index = 0;
+    int delivered = 0;
+    const auto emitFrame = [&](const QByteArray &jpeg) {
+        QImage image;
+        if (image.loadFromData(jpeg, "JPEG")) {
+            onFrame(index, image);
+            ++delivered;
+        }
+        ++index;
+    };
+    const auto drain = [&](bool last) {
+        buffer.append(proc.readAllStandardOutput());
+        for (int next; (next = buffer.indexOf(marker, marker.size())) >= 0;) {
+            emitFrame(buffer.left(next));
+            buffer.remove(0, next);
+        }
+        if (last && !buffer.isEmpty()) {
+            emitFrame(buffer);
+            buffer.clear();
+        }
+    };
+
+    QElapsedTimer deadline;
+    deadline.start();
+    while (!proc.waitForFinished(kThumbPollMs)) {
+        if (proc.state() == QProcess::NotRunning)
+            break;
+        drain(false);
+        if ((stopRequested && stopRequested()) || deadline.elapsed() > kThumbTimeoutMs) {
+            proc.kill();
+            proc.waitForFinished(-1);
+            return delivered;
+        }
+    }
+    // A pass that failed part way still hands over what it decoded.
+    drain(proc.exitStatus() == QProcess::NormalExit);
+    return delivered;
+}
+
 QList<double> frameTimes(const QString &path, double start) {
     QProcess proc;
     proc.start(toolPath("ffprobe"), {"-v", "error", "-select_streams", "V:0",

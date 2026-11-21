@@ -38,6 +38,19 @@ QList<double> frameTimes(const QString &path, double start);
 QImage thumbnail(const QString &path, double time, int height = 90,
                  const std::function<bool()> &stopRequested = nullptr);
 
+// The frames at start, start + step, ... (count of them), scaled to `height`
+// px, decoded in one pass over the video instead of a seek for each. For
+// frames close together that is far cheaper: a seek decodes from the keyframe
+// before the frame, so every frame pays for the rest of its group of
+// pictures, while one pass decodes each picture once. onFrame(index, image)
+// is called as each arrives, so the first show up while the rest still
+// decode. Returns how many arrived: fewer than count when the video ends
+// early, or the pass fails or is stopped. `stopRequested` is polled as for
+// thumbnail().
+int thumbnailRun(const QString &path, double start, double step, int count, int height,
+                 const std::function<void(int, const QImage &)> &onFrame,
+                 const std::function<bool()> &stopRequested = nullptr);
+
 // ffprobe arguments listing the video packet times around `pts` (a packet
 // time, not a seek time), from far enough back to find the frame on screen.
 QStringList shownFrameArgs(const QString &path, double pts);
