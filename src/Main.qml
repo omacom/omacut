@@ -776,8 +776,9 @@ ApplicationWindow {
                 }
             }
 
-            // The logo, over the picture itself rather than the black around
-            // it, where and as big as the export will put it. It can be dragged.
+            // The logos, over the picture itself rather than the black around
+            // it, where and as big as the export will put each one, and as
+            // visible as it is at the playhead. They can be dragged.
             Item {
                 id: logoLayer
                 objectName: "logoLayer"
@@ -789,91 +790,113 @@ ApplicationWindow {
                 height: frame.height
                 visible: win.hasVideo && win.logo.active
 
-                Image {
-                    id: logoImage
-                    objectName: "logoImage"
-                    // Read so a change of any of them redraws it.
-                    readonly property rect box: {
-                        var changed = [win.logo.x, win.logo.y, win.logo.size, win.logo.aspect];
-                        return win.logo.box(logoLayer.width, logoLayer.height);
-                    }
-                    x: box.x
-                    y: box.y
-                    width: box.width
-                    height: box.height
-                    source: win.logo.source
-                    opacity: win.logo.opacity
-                    fillMode: Image.Stretch
-                    sourceSize.width: 1024
-                    asynchronous: true
-                    smooth: true
-                    mipmap: true
-
-                    MouseArea {
-                        id: logoDrag
-                        anchors.fill: parent
-                        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-                        // Where in the logo it was taken, so it doesn't jump to the pointer.
-                        property real grabX: 0
-                        property real grabY: 0
-                        onPressed: (mouse) => { grabX = mouse.x; grabY = mouse.y; win.logo.beginGesture(); }
-                        onReleased: win.logo.endGesture()
-                        onCanceled: win.logo.endGesture()
-                        onPositionChanged: (mouse) => {
-                            if (!pressed || logoLayer.width <= 0 || logoLayer.height <= 0)
-                                return;
-                            var at = mapToItem(logoLayer, mouse.x, mouse.y);
-                            win.logo.setCenter((at.x - grabX + logoImage.width / 2) / logoLayer.width,
-                                               (at.y - grabY + logoImage.height / 2) / logoLayer.height);
+                Repeater {
+                    model: win.logo.count
+                    delegate: Image {
+                        id: logoImage
+                        required property int index
+                        objectName: "logoImage" + index
+                        readonly property bool picked: index === win.logo.current
+                        // Read so a change of any logo redraws this one.
+                        readonly property rect box: {
+                            var changed = win.logo.items;
+                            return win.logo.boxOf(index, logoLayer.width, logoLayer.height);
                         }
-                    }
-                    // The wheel over the logo resizes it too.
-                    WheelHandler {
-                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                        onWheel: (event) => win.logo.setSize(win.logo.size * Math.pow(1.0015, event.angleDelta.y))
-                    }
+                        readonly property real shown: {
+                            var changed = win.logo.items;
+                            return win.logo.alphaOf(index, editBar.playheadSec, timeline.duration);
+                        }
+                        // Out of its time, the picked logo is still drawn faintly
+                        // while paused, so it can be found and dragged.
+                        readonly property real faint: picked && !win.playing() ? 0.25 : 0
+                        x: box.x
+                        y: box.y
+                        z: picked ? 1 : 0
+                        width: box.width
+                        height: box.height
+                        source: win.logo.items[index] ? win.logo.items[index].source : ""
+                        opacity: Math.max(shown, faint)
+                        visible: opacity > 0
+                        fillMode: Image.Stretch
+                        sourceSize.width: 1024
+                        asynchronous: true
+                        smooth: true
+                        mipmap: true
 
-                    // A handle on each corner: dragging one resizes the logo, keeping its shape and
-                    // the opposite corner where it is.
-                    Repeater {
-                        model: [{ hx: -1, hy: -1 }, { hx: 1, hy: -1 }, { hx: -1, hy: 1 }, { hx: 1, hy: 1 }]
-                        delegate: Rectangle {
-                            id: handle
-                            required property int index
-                            required property var modelData
-                            objectName: "logoHandle" + index
-                            width: 12
-                            height: 12
-                            radius: 2
-                            color: "white"
-                            border.color: theme.accent
-                            border.width: 2
-                            x: (modelData.hx < 0 ? 0 : logoImage.width) - width / 2
-                            y: (modelData.hy < 0 ? 0 : logoImage.height) - height / 2
+                        MouseArea {
+                            id: logoDrag
+                            anchors.fill: parent
+                            cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                            // Where in the logo it was taken, so it doesn't jump to the pointer.
+                            property real grabX: 0
+                            property real grabY: 0
+                            onPressed: (mouse) => {
+                                grabX = mouse.x;
+                                grabY = mouse.y;
+                                win.logo.select(logoImage.index);
+                                win.logo.beginGesture();
+                            }
+                            onReleased: win.logo.endGesture()
+                            onCanceled: win.logo.endGesture()
+                            onPositionChanged: (mouse) => {
+                                if (!pressed || logoLayer.width <= 0 || logoLayer.height <= 0)
+                                    return;
+                                var at = mapToItem(logoLayer, mouse.x, mouse.y);
+                                win.logo.setCenter((at.x - grabX + logoImage.width / 2) / logoLayer.width,
+                                                   (at.y - grabY + logoImage.height / 2) / logoLayer.height);
+                            }
+                        }
+                        // The wheel over the logo resizes it too.
+                        WheelHandler {
+                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                            onWheel: (event) => {
+                                win.logo.select(logoImage.index);
+                                win.logo.setSize(win.logo.size * Math.pow(1.0015, event.angleDelta.y));
+                            }
+                        }
 
-                            property real oppX: 0
-                            property real oppY: 0
-                            MouseArea {
-                                anchors.fill: parent
-                                anchors.margins: -4
-                                cursorShape: (handle.modelData.hx * handle.modelData.hy > 0)
-                                    ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor
-                                onReleased: win.logo.endGesture()
-                                onCanceled: win.logo.endGesture()
-                                onPressed: {
-                                    win.logo.beginGesture();
-                                    handle.oppX = logoImage.x + (handle.modelData.hx < 0 ? logoImage.width : 0);
-                                    handle.oppY = logoImage.y + (handle.modelData.hy < 0 ? logoImage.height : 0);
-                                }
-                                onPositionChanged: (mouse) => {
-                                    if (!pressed || logoLayer.width <= 0)
-                                        return;
-                                    var at = mapToItem(logoLayer, mouse.x, mouse.y);
-                                    var w = handle.modelData.hx < 0 ? handle.oppX - at.x : at.x - handle.oppX;
-                                    win.logo.setSize(Math.max(w, 1) / logoLayer.width);
-                                    var box = win.logo.box(logoLayer.width, logoLayer.height);
-                                    win.logo.setCenter((handle.oppX + handle.modelData.hx * box.width / 2) / logoLayer.width,
-                                                       (handle.oppY + handle.modelData.hy * box.height / 2) / logoLayer.height);
+                        // A handle on each corner of the picked logo: dragging one
+                        // resizes it, keeping its shape and the opposite corner where it is.
+                        Repeater {
+                            model: logoImage.picked ? [{ hx: -1, hy: -1 }, { hx: 1, hy: -1 }, { hx: -1, hy: 1 }, { hx: 1, hy: 1 }] : []
+                            delegate: Rectangle {
+                                id: handle
+                                required property int index
+                                required property var modelData
+                                objectName: "logoHandle" + index
+                                width: 12
+                                height: 12
+                                radius: 2
+                                color: "white"
+                                border.color: theme.accent
+                                border.width: 2
+                                x: (modelData.hx < 0 ? 0 : logoImage.width) - width / 2
+                                y: (modelData.hy < 0 ? 0 : logoImage.height) - height / 2
+
+                                property real oppX: 0
+                                property real oppY: 0
+                                MouseArea {
+                                    anchors.fill: parent
+                                    anchors.margins: -4
+                                    cursorShape: (handle.modelData.hx * handle.modelData.hy > 0)
+                                        ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor
+                                    onReleased: win.logo.endGesture()
+                                    onCanceled: win.logo.endGesture()
+                                    onPressed: {
+                                        win.logo.beginGesture();
+                                        handle.oppX = logoImage.x + (handle.modelData.hx < 0 ? logoImage.width : 0);
+                                        handle.oppY = logoImage.y + (handle.modelData.hy < 0 ? logoImage.height : 0);
+                                    }
+                                    onPositionChanged: (mouse) => {
+                                        if (!pressed || logoLayer.width <= 0)
+                                            return;
+                                        var at = mapToItem(logoLayer, mouse.x, mouse.y);
+                                        var w = handle.modelData.hx < 0 ? handle.oppX - at.x : at.x - handle.oppX;
+                                        win.logo.setSize(Math.max(w, 1) / logoLayer.width);
+                                        var box = win.logo.box(logoLayer.width, logoLayer.height);
+                                        win.logo.setCenter((handle.oppX + handle.modelData.hx * box.width / 2) / logoLayer.width,
+                                                           (handle.oppY + handle.modelData.hy * box.height / 2) / logoLayer.height);
+                                    }
                                 }
                             }
                         }
@@ -941,6 +964,8 @@ ApplicationWindow {
             frameWidth: logoLayer.width
             frameHeight: logoLayer.height
             onChangeRequested: backend.openLogoDialog()
+            onAddRequested: backend.addLogoDialog()
+            playhead: editBar.playheadSec
             onCloseRequested: win.logoPanelOpen = false
         }
 
@@ -953,34 +978,56 @@ ApplicationWindow {
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever strips are above them.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: win.playing() ? "pause" : "play"
                 tipText: win.playing() ? qsTr("Pause") : qsTr("Play")
                 enabled: timeline.duration > 0
                 onClicked: togglePlay()
             }
 
-            EditBar {
-                id: editBar
-                objectName: "editBar"
+            ColumnLayout {
                 Layout.fillWidth: true
-                // Frozen while a probe is in flight: it is about to replace
-                // or extend the timeline the bar is showing.
-                enabled: !backend.probing
-                accent: win.accent
-                accentForeground: win.accentForeground
-                onScrub: (seconds) => {
-                    player.pause();
-                    seekTo(seconds);
+                spacing: 6
+
+                // The logos' strips, on the clips' time scale.
+                LogoTrack {
+                    id: logoTrack
+                    visible: win.hasVideo && win.logo.active
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: implicitHeight
+                    bar: editBar
+                    enabled: !backend.probing
+                    onClicked: win.logoPanelOpen = true
                 }
-                onScrubClip: (index, sourceTime) => {
-                    player.pause();
-                    player.show(index, sourceTime, false);
+
+                EditBar {
+                    id: editBar
+                    objectName: "editBar"
+                    Layout.fillWidth: true
+                    // Frozen while a probe is in flight: it is about to replace
+                    // or extend the timeline the bar is showing.
+                    enabled: !backend.probing
+                    accent: win.accent
+                    accentForeground: win.accentForeground
+                    onScrub: (seconds) => {
+                        player.pause();
+                        seekTo(seconds);
+                    }
+                    onScrubClip: (index, sourceTime) => {
+                        player.pause();
+                        player.show(index, sourceTime, false);
+                    }
                 }
             }
 
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever strips are above them.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: "plus"
                 tipText: qsTr("Add a video")
                 enabled: timeline.duration > 0 && !backend.busy
@@ -990,6 +1037,9 @@ ApplicationWindow {
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever strips are above them.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: "image"
                 tipText: qsTr("Logo")
                 enabled: timeline.duration > 0 && !backend.busy
@@ -999,6 +1049,9 @@ ApplicationWindow {
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever strips are above them.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: "download"
                 tipText: qsTr("Export")
                 enabled: timeline.duration > 0 && !backend.busy

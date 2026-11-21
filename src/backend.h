@@ -65,6 +65,8 @@ public:
     Q_INVOKABLE void addVideoDialog(double t);
     // Asks for an image to use as the logo.
     Q_INVOKABLE void openLogoDialog();
+    // The same, to add another logo beside the ones there are.
+    Q_INVOKABLE void addLogoDialog();
     // Exports the clips, and the logo, as they are when the dialog opens.
     Q_INVOKABLE void exportDialog();
 
@@ -80,7 +82,7 @@ public:
     // Write the clips to dst, with the logo over them if one is given. A
     // non-zero scaleHeight downscales the shorter side to that size.
     void exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight = 0,
-                     const logo::Settings &logoSettings = {});
+                     const QList<logo::Settings> &logos = {});
 
     // The downscale heights worth offering for a source: only ones strictly
     // below the source's shorter side, so exports never upscale.
@@ -155,7 +157,9 @@ private:
     bool m_adding = false;
     double m_addAt = 0.0;
     edit::Clips m_exportDialogClips;
-    logo::Settings m_exportDialogLogo;
+    QList<logo::Settings> m_exportDialogLogos;
+    // The image dialog adds a logo, rather than changing the picked one.
+    bool m_addingLogo = false;
     bool m_busy = false;
     bool m_probing = false;
     QList<PendingVideo> m_probeQueue;

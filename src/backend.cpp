@@ -63,9 +63,12 @@ void Backend::wireFilePicker() {
             load(url);
     });
     connect(m_filePicker, &FilePicker::exportSelected, this, [this](const QUrl &url, int scaleHeight) {
-        exportClips(url, m_exportDialogClips, scaleHeight, m_exportDialogLogo);
+        exportClips(url, m_exportDialogClips, scaleHeight, m_exportDialogLogos);
     });
-    connect(m_filePicker, &FilePicker::imageSelected, this, [this](const QUrl &url) { m_logo.setSource(url); });
+    connect(m_filePicker, &FilePicker::imageSelected, this, [this](const QUrl &url) {
+        const bool adding = std::exchange(m_addingLogo, false);
+        adding ? m_logo.addSource(url) : m_logo.setSource(url);
+    });
     connect(&m_logo, &Logo::failed, this, &Backend::logoError);
     m_logo.setTimeline(&m_timeline);
     connect(m_filePicker, &FilePicker::failed, this, &Backend::loadError);
@@ -276,6 +279,12 @@ void Backend::addVideoDialog(double t) {
 }
 
 void Backend::openLogoDialog() {
+    m_addingLogo = false;
+    m_filePicker->openImage();
+}
+
+void Backend::addLogoDialog() {
+    m_addingLogo = true;
     m_filePicker->openImage();
 }
 
@@ -284,7 +293,7 @@ void Backend::exportDialog() {
         return;
 
     m_exportDialogClips = m_timeline.clips();
-    m_exportDialogLogo = m_logo.settings();
+    m_exportDialogLogos = m_logo.all();
     const ffmpeg::VideoInfo &frame = m_videos.value(m_exportDialogClips.value(0).source).info;
     m_filePicker->exportVideo(suggestedExportUrl(), exportHeights(frame.width, frame.height));
 }
@@ -475,7 +484,7 @@ QUrl Backend::suggestedExportUrl() const {
 }
 
 void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight,
-                          const logo::Settings &logoSettings) {
+                          const QList<logo::Settings> &logos) {
     if (m_videos.isEmpty() || busy())
         return;
 
@@ -529,12 +538,14 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     QFile::remove(tmpPath);
     const ffmpeg::VideoInfo &frame = m_videos[frameSource].info;
     // A logo whose file has gone since it was chosen would only fail inside ffmpeg.
-    if (logoSettings.active() && !QFileInfo(logoSettings.path).isReadable()) {
-        failExport(tmpPath, tr("The logo %1 can't be read.").arg(QFileInfo(logoSettings.path).fileName()));
-        return;
+    for (const logo::Settings &logoSettings : logos) {
+        if (logoSettings.active() && !QFileInfo(logoSettings.path).isReadable()) {
+            failExport(tmpPath, tr("The logo %1 can't be read.").arg(QFileInfo(logoSettings.path).fileName()));
+            return;
+        }
     }
     const QStringList args = ffmpeg::trimArgs(segments, tmpPath, frame.width, frame.height, scaleHeight,
-                                              logoSettings);
+                                              logos);
 
     auto *proc = new QProcess(this);
     auto completed = std::make_shared<bool>(false);
@@ -561,7 +572,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
             });
 
     connect(proc, &QProcess::finished, this,
-            [this, proc, outPath, tmpPath, completed, clips, logoSettings](int code, QProcess::ExitStatus exitStatus) {
+            [this, proc, outPath, tmpPath, completed, clips, logos](int code, QProcess::ExitStatus exitStatus) {
                 if (*completed)
                     return;
                 *completed = true;
@@ -583,7 +594,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                 // result says the saved file couldn't be reopened.
                 if (!isVideoPath(outPath)) {
                     m_timeline.markExported(clips);
-                    m_logo.markExported(logoSettings);
+                    m_logo.markExported(logos);
                     emit exportDone(outPath);
                 } else {
                     // exportDone waits for the reopen probe to settle.

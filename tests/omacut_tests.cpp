@@ -177,10 +177,11 @@ public:
         lastAddAt = t;
     }
     Q_INVOKABLE void openLogoDialog() { ++logoDialogCount; }
+    Q_INVOKABLE void addLogoDialog() { ++logoAddCount; }
     Q_INVOKABLE void exportDialog() {
         ++exportCount;
         exportedClips = timeline.clips();
-        exportedLogo = logo.settings();
+        exportedLogo = logo.all();
     }
     Q_INVOKABLE void saveFrame(double) {}
     Q_INVOKABLE void stepFrame(double t, int direction) { emit frameStepped(t, t + direction * 0.04); }
@@ -206,8 +207,9 @@ public:
     Timeline timeline;
     Logo logo;
     edit::Clips exportedClips;
-    logo::Settings exportedLogo;
+    QList<logo::Settings> exportedLogo;
     int logoDialogCount = 0;
+    int logoAddCount = 0;
     int openCount = 0;
     int addCount = 0;
     double lastAddAt = -1;
@@ -417,6 +419,11 @@ private slots:
     void logoKeepsItsPlacementAndClampsIt();
     void logoCountsAsUnexportedUntilExported();
     void logoEditsUndoInOrderWithTheClips();
+    void logoFadesAndShowsOnlyBetweenItsTimes();
+    void severalLogosKeepTheirOwnSettings();
+    void trimArgsSwitchAndFadeLogosByTime();
+    void exportShowsALogoOnlyBetweenItsTimes();
+    void qmlLogoStripsSetWhenEachShows();
     void trimArgsOverlayTheLogo();
     void exportPutsTheLogoOverTheVideo();
     void exportRefusesALogoThatIsGone();
@@ -2744,6 +2751,13 @@ static QString makeLogoImage(const QString &path, const QSize &size, const QColo
     return image.save(path) ? path : QString();
 }
 
+// Whether a pixel is about a colour, by channel.
+static bool isColor(const QImage &image, int x, int y, const QColor &want, int tolerance = 60) {
+    const QColor got = image.pixelColor(x, y);
+    return qAbs(got.red() - want.red()) <= tolerance && qAbs(got.green() - want.green()) <= tolerance
+        && qAbs(got.blue() - want.blue()) <= tolerance;
+}
+
 static logo::Settings logoAt(const QString &path, double aspect, double x, double y, double size, double opacity = 1.0) {
     logo::Settings settings;
     settings.path = path;
@@ -2921,7 +2935,7 @@ void BackendTests::logoCountsAsUnexportedUntilExported() {
 
     // Exporting with it marks it done; changing it, again, makes it not.
     backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("state-out.mp4"))),
-                        backend.timeline()->clips(), 0, logo->settings());
+                        backend.timeline()->clips(), 0, logo->all());
     QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 30000);
     QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
     QVERIFY(!logo->unexported());
@@ -2992,10 +3006,355 @@ void BackendTests::logoEditsUndoInOrderWithTheClips() {
     QVERIFY(!logo.canUndo());
 }
 
+
+void BackendTests::logoFadesAndShowsOnlyBetweenItsTimes() {
+    logo::Settings settings = logoAt(QStringLiteral("/a.png"), 2.0, 0.5, 0.5, 0.25, 0.8);
+    // By default it is there for the whole edit, fully.
+    QCOMPARE(logo::alphaAt(settings, 0.0, 10.0), 0.8);
+    QCOMPARE(logo::alphaAt(settings, 10.0, 10.0), 0.8);
+    QCOMPARE(logo::endOf(settings, 10.0), 10.0);
+    // Shown from 2 to 6: nothing before or after.
+    settings.start = 2.0;
+    settings.end = 6.0;
+    QCOMPARE(logo::alphaAt(settings, 1.9, 10.0), 0.0);
+    QCOMPARE(logo::alphaAt(settings, 4.0, 10.0), 0.8);
+    QCOMPARE(logo::alphaAt(settings, 6.1, 10.0), 0.0);
+    // Fading in for a second and out for two: linear ramps, to its own opacity.
+    settings.fadeIn = 1.0;
+    settings.fadeOut = 2.0;
+    QCOMPARE(logo::alphaAt(settings, 2.0, 10.0), 0.0);
+    QVERIFY(qAbs(logo::alphaAt(settings, 2.5, 10.0) - 0.4) < 1e-9);
+    QVERIFY(qAbs(logo::alphaAt(settings, 3.0, 10.0) - 0.8) < 1e-9);
+    QVERIFY(qAbs(logo::alphaAt(settings, 5.0, 10.0) - 0.4) < 1e-9);
+    QVERIFY(qAbs(logo::alphaAt(settings, 6.0, 10.0)) < 1e-9);
+    // Fades never take more than the time it shows for, between them.
+    settings.fadeIn = 3.0;
+    settings.fadeOut = 3.0;
+    QCOMPARE(logo::fadeInOf(settings, 10.0), 3.0);
+    QCOMPARE(logo::fadeOutOf(settings, 10.0), 1.0);
+    // An end past the edit's end is its end.
+    settings.end = 50.0;
+    QCOMPARE(logo::endOf(settings, 10.0), 10.0);
+
+    // The model keeps these within bounds: a minimum time, within the edit.
+    Timeline timeline;
+    timeline.reset(10.0);
+    Logo logo;
+    logo.setTimeline(&timeline);
+    const QString png = makeLogoImage(m_dir.filePath(QStringLiteral("times-logo.png")), QSize(20, 10), Qt::red);
+    QVERIFY(logo.setSource(QUrl::fromLocalFile(png)));
+    QCOMPARE(logo.start(), 0.0);
+    QVERIFY(logo.end() < 0.0);
+    logo.setEnd(7.0);
+    QCOMPARE(logo.end(), 7.0);
+    logo.setStart(-4.0);
+    QCOMPARE(logo.start(), 0.0);
+    logo.setStart(9.0);
+    QVERIFY(qAbs(logo.start() - (7.0 - logo::minimumSpan)) < 1e-9);
+    logo.setStart(2.0);
+    logo.setEnd(1.0);
+    QVERIFY(qAbs(logo.end() - (2.0 + logo::minimumSpan)) < 1e-9);
+    // Ending at the edit's end means ending with it.
+    logo.setEnd(10.0);
+    QVERIFY(logo.end() < 0.0);
+    // Moving keeps how long it shows, and stays inside the edit.
+    logo.setEnd(6.0);
+    logo.moveTo(3.0);
+    QCOMPARE(logo.start(), 3.0);
+    QCOMPARE(logo.end(), 7.0);
+    logo.moveTo(99.0);
+    QCOMPARE(logo.start(), 6.0);
+    QVERIFY(logo.end() < 0.0);
+    logo.moveTo(-5.0);
+    QCOMPARE(logo.start(), 0.0);
+    QCOMPARE(logo.end(), 4.0);
+    // Fades are held to the time left.
+    logo.setFadeIn(3.0);
+    QCOMPARE(logo.fadeIn(), 3.0);
+    logo.setFadeOut(9.0);
+    QCOMPARE(logo.fadeOut(), 1.0);
+    logo.setFadeIn(-1.0);
+    QCOMPARE(logo.fadeIn(), 0.0);
+
+    // All of it can be undone.
+    logo.undo();
+    QCOMPARE(logo.fadeIn(), 3.0);
+    logo.undo();
+    QCOMPARE(logo.fadeOut(), 0.0);
+    // Shown 0 to 4 s, fading in for 3: two thirds there at 2 s, and gone by 5.
+    QVERIFY(qAbs(logo.alphaOf(0, 2.0, 10.0) - 2.0 / 3.0) < 1e-9);
+    QCOMPARE(logo.alphaOf(0, 5.0, 10.0), 0.0);
+    QCOMPARE(logo.alphaOf(7, 2.0, 10.0), 0.0);
+}
+
+void BackendTests::severalLogosKeepTheirOwnSettings() {
+    const QString red = makeLogoImage(m_dir.filePath(QStringLiteral("many-red.png")), QSize(40, 20), Qt::red);
+    const QString blue = makeLogoImage(m_dir.filePath(QStringLiteral("many-blue.png")), QSize(20, 20), Qt::blue);
+    const QString green = makeLogoImage(m_dir.filePath(QStringLiteral("many-green.png")), QSize(20, 10), Qt::green);
+    Timeline timeline;
+    timeline.reset(10.0);
+    Logo logo;
+    logo.setTimeline(&timeline);
+    QSignalSpy activeSpy(&logo, &Logo::activeChanged);
+    QCOMPARE(logo.count(), 0);
+    QCOMPARE(logo.current(), -1);
+
+    QVERIFY(logo.setSource(QUrl::fromLocalFile(red)));          // the first logo
+    QVERIFY(logo.addSource(QUrl::fromLocalFile(blue)));         // another, which is picked
+    QCOMPARE(logo.count(), 2);
+    QCOMPARE(logo.current(), 1);
+    QCOMPARE(logo.aspect(), 1.0);
+    logo.setSize(0.3);
+    logo.setStart(4.0);
+    logo.select(0);
+    QCOMPARE(logo.aspect(), 2.0);
+    QCOMPARE(logo.size(), 0.15);                                // not the other's
+    QCOMPARE(logo.start(), 0.0);
+    logo.setCenter(0.1, 0.2);
+    // Changing the picked one's image leaves the rest alone.
+    QVERIFY(logo.setSource(QUrl::fromLocalFile(green)));
+    QCOMPARE(logo.count(), 2);
+    QCOMPARE(logo.x(), 0.1);
+    QCOMPARE(logo.source(), QUrl::fromLocalFile(green));
+    logo.select(1);
+    QCOMPARE(logo.source(), QUrl::fromLocalFile(blue));
+    QCOMPARE(logo.size(), 0.3);
+    QCOMPARE(logo.start(), 4.0);
+    QCOMPARE(logo.itemList().size(), 2);
+    QCOMPARE(logo.itemList().at(1).toMap().value(QStringLiteral("start")).toDouble(), 4.0);
+    QCOMPARE(logo.all().size(), 2);
+    QCOMPARE(logo.boxOf(0, 160, 90).size(), logo::box(logo.all().at(0), 160, 90).size());
+    QVERIFY(logo.boxOf(5, 160, 90).isEmpty());
+
+    // Picking one is no edit: it makes no undo step, and an undo takes back the last real edit.
+    logo.select(0);
+    logo.undo();                                                // the green image
+    QCOMPARE(logo.source(), QUrl::fromLocalFile(red));
+    logo.undo();                                                // where it was put
+    QCOMPARE(logo.x(), 0.95);
+    QCOMPARE(logo.count(), 2);
+    logo.select(1);
+    QCOMPARE(logo.start(), 4.0);                                // the other's time is untouched
+    logo.redo();
+    logo.redo();
+    QCOMPARE(logo.source(), QUrl::fromLocalFile(green));        // both back, and the pick as it was then
+    QCOMPARE(logo.count(), 2);
+    logo.select(1);
+
+    // Removing the picked one picks a neighbour; removing the last leaves nothing, to export or not.
+    logo.remove();
+    QCOMPARE(logo.count(), 1);
+    QCOMPARE(logo.current(), 0);
+    QVERIFY(logo.unexported());
+    logo.remove();
+    QCOMPARE(logo.count(), 0);
+    QCOMPARE(logo.current(), -1);
+    QVERIFY(!logo.active());
+    QVERIFY(!logo.unexported());
+    QVERIFY(activeSpy.count() >= 2);
+
+    // clear() takes them all.
+    QVERIFY(logo.setSource(QUrl::fromLocalFile(red)));
+    QVERIFY(logo.addSource(QUrl::fromLocalFile(blue)));
+    logo.clear();
+    QCOMPARE(logo.count(), 0);
+}
+
+void BackendTests::trimArgsSwitchAndFadeLogosByTime() {
+    logo::Settings first = logoAt(QStringLiteral("/logos/a.png"), 2.0, 0.5, 0.5, 0.25);
+    first.start = 1.0;
+    first.end = 3.0;
+    logo::Settings second = logoAt(QStringLiteral("/logos/b.png"), 1.0, 1.0, 0.0, 0.1);
+    second.fadeIn = 0.5;
+    second.fadeOut = 0.25;
+    const QList<ffmpeg::Segment> segments = {{QStringLiteral("in.mp4"), 0.0, 4.0, true}};
+    const QStringList args = ffmpeg::trimArgs(segments, QStringLiteral("out.mp4"), 160, 90, 0, {first, second});
+    const QString graph = filterGraph(args);
+    // The first is shown between its times: switched on, no fades, so one picture is enough.
+    QVERIFY2(graph.contains(QStringLiteral("[1:v:0]format=rgba,scale=40:20[logo0];[v][logo0]overlay=x=60:y=35:format=auto:enable='between(t,1.000,3.000)'[v0]")),
+             qPrintable(graph));
+    // The second shows throughout and fades: a picture repeated for the edit, alpha faded at both ends.
+    QVERIFY2(graph.contains(QStringLiteral("[2:v:0]format=rgba,scale=")), qPrintable(graph));
+    QVERIFY2(graph.contains(QStringLiteral(",fade=t=in:st=0.000:d=0.500:alpha=1,fade=t=out:st=3.750:d=0.250:alpha=1[logo1];[v0][logo1]overlay=")), qPrintable(graph));
+    QVERIFY2(!graph.contains(QStringLiteral("enable='between(t,0.000")), qPrintable(graph));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-map")) + 1), QStringLiteral("[v1]"));
+    // Inputs in order: the video, the first logo as is, the second looped for 4 seconds.
+    const int a = args.indexOf(QStringLiteral("/logos/a.png"));
+    const int b = args.indexOf(QStringLiteral("/logos/b.png"));
+    QVERIFY(a > 0 && b > a);
+    QCOMPARE(args.at(a - 1), QStringLiteral("-i"));
+    QCOMPARE(args.mid(b - 7, 8), (QStringList{QStringLiteral("-loop"), QStringLiteral("1"), QStringLiteral("-framerate"),
+                                              QStringLiteral("60"), QStringLiteral("-t"), QStringLiteral("4.000"),
+                                              QStringLiteral("-i"), QStringLiteral("/logos/b.png")}));
+
+    // Fades that are longer than the time shown are shortened to fit.
+    logo::Settings brief = logoAt(QStringLiteral("/logos/c.png"), 1.0, 0.5, 0.5, 0.1);
+    brief.start = 1.0;
+    brief.end = 2.0;
+    brief.fadeIn = 5.0;
+    brief.fadeOut = 5.0;
+    const QString clipped = filterGraph(ffmpeg::trimArgs(segments, QStringLiteral("out.mp4"), 160, 90, 0, {brief}));
+    QVERIFY2(clipped.contains(QStringLiteral("fade=t=in:st=1.000:d=1.000:alpha=1")), qPrintable(clipped));
+    QVERIFY2(!clipped.contains(QStringLiteral("fade=t=out")), qPrintable(clipped));
+}
+
+void BackendTests::exportShowsALogoOnlyBetweenItsTimes() {
+    const QString blue = m_dir.filePath(QStringLiteral("times-blue.mp4"));
+    {
+        QProcess proc;
+        proc.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")),
+                   {QStringLiteral("-loglevel"), QStringLiteral("error"), QStringLiteral("-y"), QStringLiteral("-f"),
+                    QStringLiteral("lavfi"), QStringLiteral("-i"), QStringLiteral("color=c=0x0000ff:s=160x90:r=25:d=4"),
+                    QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"), blue});
+        QVERIFY(proc.waitForFinished(20000) && proc.exitCode() == 0);
+    }
+    const QString red = makeLogoImage(m_dir.filePath(QStringLiteral("times-red.png")), QSize(40, 20), Qt::red);
+    const QString green = makeLogoImage(m_dir.filePath(QStringLiteral("times-green.png")), QSize(40, 20), Qt::green);
+    ThumbProvider provider;
+    Backend backend(&provider, new FakeFilePicker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(QUrl::fromLocalFile(blue)));
+    waitForProbe(backend);
+    waitForBackgroundWork(backend);
+
+    // A red logo at the left from 1 to 3 seconds; a green one at the right for the whole video, fading in over 2 seconds and out over 1.
+    logo::Settings first = logoAt(red, 2.0, 0.2, 0.5, 0.2);
+    first.start = 1.0;
+    first.end = 3.0;
+    logo::Settings second = logoAt(green, 2.0, 0.8, 0.5, 0.2);
+    second.fadeIn = 2.0;
+    second.fadeOut = 1.0;
+    backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("times-out.mp4"))),
+                        backend.timeline()->clips(), 0, {first, second});
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 40000);
+    QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
+    const QString out = m_dir.filePath(QStringLiteral("times-out.mp4"));
+    const ffmpeg::VideoInfo info = ffmpeg::probe(out);
+    QVERIFY(info.ok);
+    QVERIFY2(qAbs(info.duration - 4.0) < 0.3, qPrintable(QString::number(info.duration)));
+
+    const QColor blueColor(0, 0, 255), redColor(255, 0, 0);
+    const auto frame = [&](double when) { return ffmpeg::thumbnail(out, when, 90); };
+    // Red (at x 32) only between 1 and 3 seconds.
+    QVERIFY(isColor(frame(0.5), 32, 45, blueColor));
+    QVERIFY(isColor(frame(2.0), 32, 45, redColor));
+    QVERIFY(isColor(frame(3.5), 32, 45, blueColor));
+    // Green (at x 128) is not there at the start, comes in by 2 seconds, and goes by the end.
+    const auto greenness = [&](double when) { return frame(when).pixelColor(128, 45).green(); };
+    QVERIFY2(greenness(0.05) < 40, qPrintable(QString::number(greenness(0.05))));
+    const int middle = greenness(1.0);
+    QVERIFY2(middle > 60 && middle < 200, qPrintable(QString::number(middle)));
+    QVERIFY2(greenness(2.5) > 200, qPrintable(QString::number(greenness(2.5))));
+    QVERIFY2(greenness(3.9) < 90, qPrintable(QString::number(greenness(3.9))));
+    // Always the same length as the video: the looped pictures do not stretch it.
+    QVERIFY(qAbs(info.duration - 4.0) < 0.3);
+}
+
+void BackendTests::qmlLogoStripsSetWhenEachShows() {
+    const QString red = makeLogoImage(m_dir.filePath(QStringLiteral("strip-red.png")), QSize(40, 20), Qt::red);
+    const QString blue = makeLogoImage(m_dir.filePath(QStringLiteral("strip-blue.png")), QSize(40, 20), Qt::blue);
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    auto *track = window->findChild<QQuickItem *>(QStringLiteral("logoTrack"));
+    auto *layer = window->findChild<QQuickItem *>(QStringLiteral("logoLayer"));
+    QVERIFY(track && layer);
+    const auto strips = [&] {
+        QList<QQuickItem *> found;
+        for (QQuickItem *child : track->childItems())
+            if (child->objectName() == QLatin1String("logoStrip"))
+                found.append(child);
+        return found;
+    };
+    const auto previews = [&] {
+        QList<QQuickItem *> found;
+        for (QQuickItem *child : layer->childItems())
+            if (child->objectName().startsWith(QLatin1String("logoImage")))
+                found.append(child);
+        return found;
+    };
+    QVERIFY(!track->isVisible());
+
+    // One strip per logo, along the track.
+    QVERIFY(backend.logo.setSource(QUrl::fromLocalFile(red)));
+    QVERIFY(backend.logo.addSource(QUrl::fromLocalFile(blue)));
+    QTRY_COMPARE_WITH_TIMEOUT(strips().size(), 2, 3000);
+    QVERIFY(track->isVisible());
+    // Both from the start to the end of the edit, so they share the track: each has a lane.
+    QTRY_VERIFY_WITH_TIMEOUT(strips().at(0)->y() != strips().at(1)->y(), 3000);
+    auto *editBar = window->findChild<QQuickItem *>(QStringLiteral("editBar"));
+    QVERIFY(editBar);
+    QVERIFY(qAbs(strips().at(0)->width() - editBar->width()) < 3.0);
+
+    // A logo's time set from its model moves its strip: 5 to 10 of 20 seconds.
+    backend.logo.select(0);
+    backend.logo.setEnd(10.0);
+    backend.logo.setStart(5.0);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(strips().at(0)->x() - editBar->width() * 0.25) < 3.0, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(strips().at(0)->width() - editBar->width() * 0.25) < 3.0, 3000);
+
+    // The controls are put away so the strips are in view, and the window is tall enough for them.
+    QTest::keyClick(window, Qt::Key_Escape);
+    window->resize(window->width(), 900);
+    QTRY_VERIFY_WITH_TIMEOUT(window->height() >= 900, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(strips().at(0)->mapToScene(QPointF(0, strips().at(0)->height())).y() < window->height(), 3000);
+    // Dragging the strip's right end changes when it stops: to 15 seconds.
+    QQuickItem *strip = strips().at(0);
+    const QPoint end = strip->mapToScene(QPointF(strip->width() - 3, strip->height() / 2)).toPoint();
+    const QPoint target = QPoint(int(editBar->mapToScene(QPointF(editBar->width() * 0.75, 0)).x()), end.y());
+    QTest::mousePress(window, Qt::LeftButton, {}, end);
+    QTest::mouseMove(window, end + QPoint(10, 0));
+    QTest::mouseMove(window, target);
+    QTest::mouseRelease(window, Qt::LeftButton, {}, target);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(backend.logo.end() - 15.0) < 0.6, 3000);
+    QCOMPARE(backend.logo.start(), 5.0);
+    // Dragging the body moves it in time, as long as it was.
+    strip = strips().at(0);
+    const double lengthWas = backend.logo.end() - backend.logo.start();
+    const QPoint body = strip->mapToScene(QPointF(strip->width() / 2, strip->height() / 2)).toPoint();
+    QTest::mousePress(window, Qt::LeftButton, {}, body);
+    QTest::mouseMove(window, body - QPoint(20, 0));
+    QTest::mouseMove(window, body - QPoint(int(editBar->width() * 0.1), 0));
+    QTest::mouseRelease(window, Qt::LeftButton, {}, body - QPoint(int(editBar->width() * 0.1), 0));
+    QTRY_VERIFY_WITH_TIMEOUT(backend.logo.start() < 4.0, 3000);
+    QVERIFY(qAbs((backend.logo.end() - backend.logo.start()) - lengthWas) < 0.1);
+    // A drag is a single undo step.
+    const double movedStart = backend.logo.start();
+    backend.logo.undo();
+    QVERIFY(qAbs(backend.logo.start() - 5.0) < 1e-6);
+    backend.logo.redo();
+    QVERIFY(qAbs(backend.logo.start() - movedStart) < 1e-6);
+
+    // The preview shows a logo only while the playhead is in its time (the picked one faintly otherwise).
+    backend.logo.setStart(8.0);
+    backend.logo.setEnd(12.0);
+    backend.logo.select(1);
+    window->findChild<QQuickItem *>(QStringLiteral("editBar"))->setProperty("playheadSec", 10.0);
+    QTRY_VERIFY_WITH_TIMEOUT(previews().size() == 2, 3000);
+    const auto opacityOf = [&](int index) {
+        for (QQuickItem *item : previews())
+            if (item->objectName() == QStringLiteral("logoImage%1").arg(index))
+                return item->opacity();
+        return -1.0;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(opacityOf(0) - 1.0) < 1e-6, 3000);
+    window->findChild<QQuickItem *>(QStringLiteral("editBar"))->setProperty("playheadSec", 2.0);
+    QTRY_VERIFY_WITH_TIMEOUT(opacityOf(0) < 0.3, 3000);            // not picked: gone, faint if it were picked
+    backend.logo.select(0);
+    QTRY_VERIFY_WITH_TIMEOUT(opacityOf(0) > 0.0 && opacityOf(0) <= 0.3, 3000);
+    backend.logo.setFadeIn(1.5);
+    backend.logo.setStart(1.0);
+    backend.logo.setEnd(6.0);
+    window->findChild<QQuickItem *>(QStringLiteral("editBar"))->setProperty("playheadSec", 1.75);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(opacityOf(0) - 0.5) < 0.01, 3000);
+}
+
 void BackendTests::trimArgsOverlayTheLogo() {
     const logo::Settings centred = logoAt(QStringLiteral("/logos/mark.png"), 2.0, 0.5, 0.5, 0.25);
     const QStringList args = ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true}},
-                                              QStringLiteral("out.mp4"), 160, 90, 0, centred);
+                                              QStringLiteral("out.mp4"), 160, 90, 0, {centred});
     // One more input, after the video's, for the picture; no seeking on it.
     const int at = args.indexOf(QStringLiteral("/logos/mark.png"));
     QVERIFY(at > 0);
@@ -3006,9 +3365,9 @@ void BackendTests::trimArgsOverlayTheLogo() {
     QCOMPARE(filterGraph(args),
              QStringLiteral("[0:V:0][0:a:0]concat=n=1:v=1:a=1[joined][a];"
                             "[joined]crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0[v];"
-                            "[1:v:0]format=rgba,scale=40:20[logo];"
-                            "[v][logo]overlay=x=60:y=35:format=auto[vl]"));
-    QCOMPARE(args.value(args.indexOf(QStringLiteral("-map")) + 1), QStringLiteral("[vl]"));
+                            "[1:v:0]format=rgba,scale=40:20[logo0];"
+                            "[v][logo0]overlay=x=60:y=35:format=auto[v0]"));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-map")) + 1), QStringLiteral("[v0]"));
     QVERIFY(args.contains(QStringLiteral("[a]")));
 
     // Faded when asked, and numbered after every segment, whatever their number.
@@ -3016,16 +3375,16 @@ void BackendTests::trimArgsOverlayTheLogo() {
     faded.opacity = 0.5;
     const QString two = filterGraph(ffmpeg::trimArgs({{QStringLiteral("a.mp4"), 0.0, 1.0, true},
                                                       {QStringLiteral("b.mp4"), 0.0, 1.0, true}},
-                                                     QStringLiteral("out.mp4"), 160, 90, 0, faded));
-    QVERIFY2(two.contains(QStringLiteral("[2:v:0]format=rgba,scale=40:20,colorchannelmixer=aa=0.500[logo]")), qPrintable(two));
+                                                     QStringLiteral("out.mp4"), 160, 90, 0, {faded}));
+    QVERIFY2(two.contains(QStringLiteral("[2:v:0]format=rgba,scale=40:20,colorchannelmixer=aa=0.500[logo0]")), qPrintable(two));
 
     // Placed in the frame the export has: scaled down, it keeps its fractions.
     const QSize frame = ffmpeg::exportFrameSize(160, 90, 60);
     QCOMPARE(frame.height(), 60);
     const QRect box = logo::pixelBox(centred, frame.width(), frame.height());
     const QString scaled = filterGraph(ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true}},
-                                                        QStringLiteral("out.mp4"), 160, 90, 60, centred));
-    QVERIFY2(scaled.contains(QStringLiteral("scale=%1:%2[logo]").arg(box.width()).arg(box.height())), qPrintable(scaled));
+                                                        QStringLiteral("out.mp4"), 160, 90, 60, {centred}));
+    QVERIFY2(scaled.contains(QStringLiteral("scale=%1:%2[logo0]").arg(box.width()).arg(box.height())), qPrintable(scaled));
     QVERIFY2(scaled.contains(QStringLiteral("overlay=x=%1:y=%2:").arg(box.left()).arg(box.top())), qPrintable(scaled));
     QCOMPARE(ffmpeg::exportFrameSize(1920, 1080, 720), QSize(1280, 720));
     QCOMPARE(ffmpeg::exportFrameSize(1080, 1920, 720), QSize(720, 1280));
@@ -3034,19 +3393,12 @@ void BackendTests::trimArgsOverlayTheLogo() {
     // Without audio, or with several videos of different shapes, it goes the same way.
     const QString silent = filterGraph(ffmpeg::trimArgs({{QStringLiteral("a.mp4"), 0.0, 1.0, false},
                                                          {QStringLiteral("b.mp4"), 0.0, 1.0, false}},
-                                                        QStringLiteral("out.mp4"), 160, 90, 0, centred));
-    QVERIFY(silent.endsWith(QStringLiteral("[v][logo]overlay=x=60:y=35:format=auto[vl]")));
+                                                        QStringLiteral("out.mp4"), 160, 90, 0, {centred}));
+    QVERIFY(silent.endsWith(QStringLiteral("[v][logo0]overlay=x=60:y=35:format=auto[v0]")));
 
     // An inactive logo adds nothing at all.
-    QCOMPARE(ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true}}, QStringLiteral("out.mp4"), 160, 90, 0, logo::Settings{}),
+    QCOMPARE(ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true}}, QStringLiteral("out.mp4"), 160, 90, 0, {}),
              ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true}}, QStringLiteral("out.mp4"), 160, 90));
-}
-
-// Whether a pixel is about a colour, by channel.
-static bool isColor(const QImage &image, int x, int y, const QColor &want, int tolerance = 60) {
-    const QColor got = image.pixelColor(x, y);
-    return qAbs(got.red() - want.red()) <= tolerance && qAbs(got.green() - want.green()) <= tolerance
-        && qAbs(got.blue() - want.blue()) <= tolerance;
 }
 
 void BackendTests::exportPutsTheLogoOverTheVideo() {
@@ -3073,7 +3425,7 @@ void BackendTests::exportPutsTheLogoOverTheVideo() {
     waitForBackgroundWork(backend);
     const auto exportWith = [&](const QString &name, const logo::Settings &settings, int scaleHeight = 0) {
         const int before = doneSpy.count() + failedSpy.count();
-        backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(name)), backend.timeline()->clips(), scaleHeight, settings);
+        backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(name)), backend.timeline()->clips(), scaleHeight, {settings});
         [&] { QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > before, 30000); }();
         return m_dir.filePath(name);
     };
@@ -3154,7 +3506,7 @@ void BackendTests::exportRefusesALogoThatIsGone() {
     QVERIFY(QFile::remove(png));
 
     const QString outPath = m_dir.filePath(QStringLiteral("gone-logo-out.mp4"));
-    backend.exportClips(QUrl::fromLocalFile(outPath), backend.timeline()->clips(), 0, settings);
+    backend.exportClips(QUrl::fromLocalFile(outPath), backend.timeline()->clips(), 0, {settings});
     QTRY_COMPARE_WITH_TIMEOUT(failedSpy.count(), 1, 10000);
     QVERIFY(failedSpy.first().first().toString().contains(QStringLiteral("gone-logo.png")));
     QCOMPARE(doneSpy.count(), 0);
@@ -3171,9 +3523,15 @@ void BackendTests::qmlLogoIsChosenShownAndDragged() {
     QQuickWindow *window = showEditor(harness, backend);
     QVERIFY2(window, qPrintable(mainQmlPath()));
     auto *layer = window->findChild<QQuickItem *>(QStringLiteral("logoLayer"));
-    auto *image = window->findChild<QQuickItem *>(QStringLiteral("logoImage"));
     auto *panel = window->findChild<QQuickItem *>(QStringLiteral("logoPanel"));
-    QVERIFY(layer && image && panel);
+    QVERIFY(layer && panel);
+    QQuickItem *image = nullptr;
+    const auto imageOf = [&](int index) -> QQuickItem * {
+        for (QQuickItem *child : layer->childItems())
+            if (child->objectName() == QStringLiteral("logoImage%1").arg(index))
+                return child;
+        return nullptr;
+    };
 
     // Nothing set: L asks for an image, and there is nothing to show yet.
     QVERIFY(!layer->isVisible());
@@ -3189,7 +3547,8 @@ void BackendTests::qmlLogoIsChosenShownAndDragged() {
 
     // Chosen, it shows where the export will put it, with its controls, and needs exporting.
     QVERIFY(backend.logo.setSource(QUrl::fromLocalFile(png)));
-    QTRY_VERIFY_WITH_TIMEOUT(layer->isVisible() && panel->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(layer->isVisible() && panel->isVisible() && imageOf(0), 3000);
+    image = imageOf(0);
     QVERIFY(window->property("unexported").toBool());
     QVERIFY(layer->width() > 0 && layer->height() > 0);
     const auto expected = [&] { return backend.logo.box(layer->width(), layer->height()); };
@@ -3257,7 +3616,7 @@ void BackendTests::qmlLogoIsChosenShownAndDragged() {
 
     // It is exported along with the edit, and stays when the next video opens.
     QVERIFY(window->property("quitAsks").toBool());
-    backend.exportedLogo = backend.logo.settings();
+    backend.exportedLogo = backend.logo.all();
     backend.announceExportDone();
     QTRY_VERIFY_WITH_TIMEOUT(!window->property("unexported").toBool(), 3000);
     backend.announceInfo();

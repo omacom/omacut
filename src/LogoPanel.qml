@@ -13,7 +13,10 @@ DialogPanel {
     // The size of the picture in the preview, which corners are worked out in.
     property real frameWidth: 0
     property real frameHeight: 0
+    // Where the playhead is, seconds along the edit, for starting or ending a logo there.
+    property real playhead: 0
     signal changeRequested()
+    signal addRequested()
     signal closeRequested()
 
     implicitHeight: body.implicitHeight + 24
@@ -54,6 +57,10 @@ DialogPanel {
         property alias from: slider.from
         property alias to: slider.to
         property real value: 0
+        // How the value is written beside the slider: scaled, to some digits, with a unit.
+        property real factor: 100
+        property int digits: 0
+        property string suffix: "%"
         signal moved(real value)
         spacing: 10
         Caption { text: setting.label; Layout.preferredWidth: 64 }
@@ -68,7 +75,7 @@ DialogPanel {
             onPressedChanged: pressed ? panel.logo.beginGesture() : panel.logo.endGesture()
         }
         Label {
-            text: Math.round(slider.value * 100) + "%"
+            text: (slider.value * setting.factor).toFixed(setting.digits) + setting.suffix
             color: "#d6d6da"
             font.pixelSize: 13
             font.family: "monospace"
@@ -109,12 +116,16 @@ DialogPanel {
                 onClicked: panel.changeRequested()
             }
             Chip {
+                label: qsTr("Add another logo")
+                onClicked: panel.addRequested()
+            }
+            Chip {
                 label: qsTr("Remove logo")
-                onClicked: panel.logo.clear()
+                onClicked: panel.logo.remove()
             }
             Label {
                 Layout.fillWidth: true
-                text: qsTr("Drag the logo in the preview to place it")
+                text: qsTr("Drag the logo in the preview to place it, and its strip to time it")
                 color: "#9a9aa0"
                 font.pixelSize: 12
                 elide: Text.ElideRight
@@ -135,6 +146,45 @@ DialogPanel {
             Chip { label: qsTr("Bottom left"); onClicked: panel.logo.anchor(-1, 1, panel.frameWidth, panel.frameHeight) }
             Chip { label: qsTr("Bottom right"); onClicked: panel.logo.anchor(1, 1, panel.frameWidth, panel.frameHeight) }
             Chip { label: qsTr("Center"); onClicked: panel.logo.anchor(0, 0, panel.frameWidth, panel.frameHeight) }
+        }
+
+        Flow {
+            Layout.fillWidth: true
+            spacing: 6
+            Caption { text: qsTr("Shown"); height: 28; verticalAlignment: Text.AlignVCenter; rightPadding: 4 }
+            Chip { label: qsTr("From the playhead"); onClicked: panel.logo.setStart(panel.playhead) }
+            Chip { label: qsTr("Until the playhead"); onClicked: panel.logo.setEnd(panel.playhead) }
+            Chip {
+                label: qsTr("The whole video")
+                onClicked: { panel.logo.setStart(0); panel.logo.setEnd(1e9); }
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 24
+            Setting {
+                Layout.fillWidth: true
+                label: qsTr("Fade in")
+                from: 0
+                to: 5
+                factor: 1
+                digits: 1
+                suffix: " s"
+                value: panel.logo.fadeIn
+                onMoved: (value) => panel.logo.setFadeIn(value)
+            }
+            Setting {
+                Layout.fillWidth: true
+                label: qsTr("Fade out")
+                from: 0
+                to: 5
+                factor: 1
+                digits: 1
+                suffix: " s"
+                value: panel.logo.fadeOut
+                onMoved: (value) => panel.logo.setFadeOut(value)
+            }
         }
 
         RowLayout {

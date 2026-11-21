@@ -75,11 +75,11 @@ QSize exportFrameSize(int width, int height, int scaleHeight);
 // different videos are fitted into width x height, letterboxed, with silence
 // for any without audio. A non-zero scaleHeight downscales so the shorter
 // side becomes scaleHeight (1080p of a portrait video is 1080 wide), always
-// preserving the aspect ratio. An active logo is laid over the finished,
+// preserving the aspect ratio. Active logos are laid over the finished,
 // scaled video, as sharp as the frame itself, for all of it.
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
                      int width, int height, int scaleHeight = 0,
-                     const logo::Settings &logoSettings = {});
+                     const QList<logo::Settings> &logos = {});
 
 // Locate a tool on PATH; returns empty string if missing.
 QString toolPath(const QString &tool);
