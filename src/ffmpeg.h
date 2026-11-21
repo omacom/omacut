@@ -63,14 +63,26 @@ struct Segment {
     bool audio = false;
 };
 
+// How hard the encoder works. Fast is the default and what exports always
+// used; Smaller trades about twice the export time for a file a third smaller
+// that looks nearly the same.
+enum class Preset {
+    Fast,     // libx264 veryfast, crf 18
+    Smaller,  // medium, crf 22
+};
+
+// The preset for a value out of range is Fast.
+Preset presetFromInt(int value);
+
 // Build the ffmpeg argument list that writes the segments, back to back, to
 // dst. Cuts are frame-accurate and re-encoded with libx264/aac. Segments from
 // different videos are fitted into width x height, letterboxed, with silence
 // for any without audio. A non-zero scaleHeight downscales so the shorter
 // side becomes scaleHeight (1080p of a portrait video is 1080 wide), always
-// preserving the aspect ratio.
+// preserving the aspect ratio. The preset sets the libx264 speed and crf.
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
-                     int width, int height, int scaleHeight = 0);
+                     int width, int height, int scaleHeight = 0,
+                     Preset preset = Preset::Fast);
 
 // Locate a tool on PATH; returns empty string if missing.
 QString toolPath(const QString &tool);

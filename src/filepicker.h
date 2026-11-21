@@ -19,6 +19,7 @@ public:
 signals:
     void openSelected(const QUrl &url);
     // scaleHeight is 0 for "Original", otherwise the chosen short-side size.
-    void exportSelected(const QUrl &url, int scaleHeight);
+    // preset is the chosen ffmpeg::Preset (0 when the dialog gave none).
+    void exportSelected(const QUrl &url, int scaleHeight, int preset = 0);
     void failed(const QString &message);
 };

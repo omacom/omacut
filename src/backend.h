@@ -72,7 +72,8 @@ public:
 
     // Write the clips to dst. A non-zero scaleHeight downscales the shorter
     // side to that size.
-    void exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight = 0);
+    void exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight = 0,
+                     ffmpeg::Preset preset = ffmpeg::Preset::Fast);
 
     // The downscale heights worth offering for a source: only ones strictly
     // below the source's shorter side, so exports never upscale.

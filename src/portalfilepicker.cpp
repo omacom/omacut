@@ -191,18 +191,22 @@ void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, const QList<int> &s
     options.insert(QStringLiteral("filters"), QVariant::fromValue(mp4Filters()));
     options.insert(QStringLiteral("current_filter"), QVariant::fromValue(mp4Filter()));
 
+    PortalChoices choices;
     // A "Quality" combo in the save dialog, only when there's a real downscale
     // to offer — sources at or below 720p just export as they are.
     if (!scaleHeights.isEmpty()) {
         PortalChoiceOptions qualities = {{QStringLiteral("original"), tr("Original")}};
         for (const int height : scaleHeights)
             qualities.append({QString::number(height), QStringLiteral("%1p").arg(height)});
-        options.insert(QStringLiteral("choices"),
-                       QVariant::fromValue(PortalChoices{{QStringLiteral("quality"),
-                                                          tr("Quality"),
-                                                          qualities,
-                                                          QStringLiteral("original")}}));
+        choices.append({QStringLiteral("quality"), tr("Quality"), qualities, QStringLiteral("original")});
     }
+    // An "Encoding" combo trades export time for file size: option ids are
+    // ffmpeg::Preset values.
+    choices.append({QStringLiteral("encoding"), tr("Encoding"),
+                    {{QStringLiteral("0"), tr("Fast")},
+                     {QStringLiteral("1"), tr("Smaller file")}},
+                    QStringLiteral("0")});
+    options.insert(QStringLiteral("choices"), QVariant::fromValue(choices));
 
     requestFile(QStringLiteral("SaveFile"), tr("Save Video File"),
                 options, Action::Export);
@@ -323,6 +327,7 @@ void PortalFilePicker::handleResponse(uint response, const QVariantMap &results)
     // The chosen quality rides along in the response: [("quality", "1080")],
     // with "original" (or no choices at all) meaning no downscale.
     int scaleHeight = 0;
+    int preset = 0;
     const QVariant choicesVar = results.value(QStringLiteral("choices"));
     if (choicesVar.canConvert<QDBusArgument>()) {
         const QDBusArgument arg = choicesVar.value<QDBusArgument>();
@@ -335,10 +340,12 @@ void PortalFilePicker::handleResponse(uint response, const QVariantMap &results)
             arg.endStructure();
             if (id == QStringLiteral("quality"))
                 scaleHeight = value.toInt();  // "original" parses to 0
+            else if (id == QStringLiteral("encoding"))
+                preset = value.toInt();
         }
         arg.endArray();
     }
-    emit exportSelected(url, scaleHeight);
+    emit exportSelected(url, scaleHeight, preset);
 }
 
 void PortalFilePicker::clearPending() {
