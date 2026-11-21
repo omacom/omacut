@@ -58,7 +58,7 @@ public:
     // Open native desktop file dialogs.
     Q_INVOKABLE void openVideoDialog();
     Q_INVOKABLE void addVideoDialog(double t);
-    // Exports the clips as they are when the dialog opens.
+    // Exports the clips and texts as they are when the dialog opens.
     Q_INVOKABLE void exportDialog();
 
     // Suggested "<name>_trimmed.mp4" target next to the source.
@@ -70,9 +70,10 @@ public:
     // Resolve the adjacent displayed frame without blocking the UI.
     Q_INVOKABLE void stepFrame(double t, int direction);
 
-    // Write the clips to dst. A non-zero scaleHeight downscales the shorter
-    // side to that size.
-    void exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight = 0);
+    // Write the clips to dst, with the texts drawn over them. A non-zero
+    // scaleHeight downscales the shorter side to that size.
+    void exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight = 0,
+                     const edit::Overlays &texts = {});
 
     // The downscale heights worth offering for a source: only ones strictly
     // below the source's shorter side, so exports never upscale.
@@ -144,6 +145,7 @@ private:
     bool m_adding = false;
     double m_addAt = 0.0;
     edit::Clips m_exportDialogClips;
+    edit::Overlays m_exportDialogTexts;
     bool m_busy = false;
     bool m_probing = false;
     QList<PendingVideo> m_probeQueue;

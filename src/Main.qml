@@ -23,6 +23,8 @@ ApplicationWindow {
     property bool helpVisible: false
     property bool quitConfirmVisible: false
     property bool openConfirmVisible: false
+    // The panel where the edit's texts are written and styled.
+    property bool textPanelOpen: false
     readonly property string statusText: noticeText !== "" ? noticeText : backend.status
     // Right-to-left languages mirror the window; the Translator sets the
     // application's layout direction.
@@ -38,7 +40,9 @@ ApplicationWindow {
     // Editing shortcuts go quiet while a dialog or the help overlay is up,
     // a probe is about to replace the timeline, or a handle is dragged.
     // A confirmation or the shortcuts overlay is up, and has the keyboard.
-    readonly property bool overlayOpen: quitConfirmVisible || openConfirmVisible || helpVisible
+    // A text being typed has the keyboard too: its letters aren't shortcuts.
+    readonly property bool typingText: textPanelOpen && textPanel.fieldFocused
+    readonly property bool overlayOpen: quitConfirmVisible || openConfirmVisible || helpVisible || typingText
     readonly property bool editing: hasVideo && timeline.duration > 0 && !overlayOpen && !backend.probing && !editBar.interacting
 
     Material.theme: Material.Dark
@@ -79,6 +83,23 @@ ApplicationWindow {
     // counts the skipped, since each error replaces the last.
     function dropVideos(urls) {
         return backend.addVideos(urls, editBar.playheadSec);
+    }
+    // Adds a text at the playhead and puts the cursor in it.
+    function addText(seconds) {
+        var i = timeline.addText(seconds === undefined ? editBar.playheadSec : seconds);
+        if (i < 0)
+            return;
+        textPanelOpen = true;
+        textPanel.select(i, true);
+    }
+    function toggleTextPanel() {
+        if (textPanelOpen) {
+            textPanelOpen = false;
+        } else if (timeline.texts.length === 0) {
+            addText();
+        } else {
+            textPanelOpen = true;
+        }
     }
     function exportVideo() {
         if (!win.hasVideo || timeline.duration <= 0 || backend.busy)
@@ -371,6 +392,14 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "T"
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: win.editing
+        onActivated: win.addText()
+    }
+
+    Shortcut {
         sequence: "Ctrl+Z"
         context: Qt.ApplicationShortcut
         enabled: win.editing && timeline.canUndo
@@ -420,6 +449,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "?"
         context: Qt.ApplicationShortcut
+        enabled: !win.typingText
         onActivated: {
             if (!win.quitConfirmVisible && !win.openConfirmVisible)
                 win.helpVisible = !win.helpVisible;
@@ -436,6 +466,10 @@ ApplicationWindow {
                 win.openConfirmVisible = false;
             else if (win.helpVisible)
                 win.helpVisible = false;
+            else if (win.typingText)
+                textPanel.blurFields();
+            else if (win.textPanelOpen)
+                win.textPanelOpen = false;
         }
     }
 
@@ -679,6 +713,13 @@ ApplicationWindow {
                     ctx.moveTo(5, 12);
                     ctx.lineTo(19, 12);
                     ctx.stroke();
+                } else if (iconButton.iconName === "text") {
+                    ctx.beginPath();
+                    ctx.moveTo(5, 6);
+                    ctx.lineTo(19, 6);
+                    ctx.moveTo(12, 6);
+                    ctx.lineTo(12, 19);
+                    ctx.stroke();
                 } else if (iconButton.iconName === "download") {
                     ctx.beginPath();
                     ctx.moveTo(12, 4);
@@ -739,6 +780,78 @@ ApplicationWindow {
                 }
             }
 
+            // The texts, over the picture itself rather than the black around
+            // it, sized and placed by the same fractions export uses.
+            Item {
+                id: textLayer
+                objectName: "textLayer"
+                readonly property rect frame: videoOut.contentRect.width > 0
+                    ? videoOut.contentRect : Qt.rect(0, 0, videoOut.width, videoOut.height)
+                x: frame.x
+                y: frame.y
+                width: frame.width
+                height: frame.height
+                visible: win.hasVideo
+                Repeater {
+                    model: win.hasVideo ? timeline.texts.length : 0
+                    delegate: Item {
+                        id: overlay
+                        required property int index
+                        readonly property var spec: timeline.texts[index]
+                        readonly property real alpha: timeline.textAlpha(index, editBar.playheadSec)
+                        readonly property real progress: timeline.textProgress(index, editBar.playheadSec)
+                        readonly property bool pops: spec.effect === "pop"
+                        readonly property bool slides: spec.effect === "slide"
+                        anchors.fill: parent
+                        visible: alpha > 0
+                        Rectangle {
+                            visible: overlay.spec.box
+                            x: label.x - label.pixelSize * 0.35
+                            y: label.y - label.pixelSize * 0.35
+                            width: label.width + label.pixelSize * 0.7
+                            height: label.height + label.pixelSize * 0.7
+                            color: "#8c000000"
+                            opacity: overlay.alpha
+                        }
+                        // The outline, grown by jump flooding (outline.h) around the
+                        // text at its full size and scaled with it as it pops.
+                        Image {
+                            id: ring
+                            objectName: "textOutline"
+                            readonly property real basePixels: Math.max(1, Math.round(textLayer.height * overlay.spec.size))
+                            readonly property real scaleBy: label.font.pixelSize / basePixels
+                            readonly property real radius: Math.round(textLayer.height * overlay.spec.outline * 10) / 10
+                            asynchronous: true
+                            visible: status === Image.Ready && overlay.spec.outline > 0
+                            source: radius > 0 && overlay.spec.text.trim() !== ""
+                                ? "image://outline/" + [radius, overlay.spec.outlineColor.substring(1), basePixels,
+                                                        encodeURIComponent(overlay.spec.font),
+                                                        encodeURIComponent(overlay.spec.text)].join("/")
+                                : ""
+                            width: implicitWidth * scaleBy
+                            height: implicitHeight * scaleBy
+                            x: label.x + (label.width - width) / 2
+                            y: label.y + (label.height - height) / 2
+                            opacity: overlay.alpha
+                        }
+                        Text {
+                            id: label
+                            readonly property real pixelSize: textLayer.height * overlay.spec.size * (overlay.pops ? 0.6 + 0.4 * overlay.progress : 1)
+                            text: overlay.spec.text
+                            textFormat: Text.PlainText
+                            color: overlay.spec.color
+                            opacity: overlay.alpha
+                            font.family: overlay.spec.font
+                            font.pixelSize: Math.max(1, pixelSize)
+                            horizontalAlignment: Text.AlignHCenter
+                            x: (textLayer.width - width) / 2
+                            y: (textLayer.height - height) * overlay.spec.y
+                               + (overlay.slides ? (1 - overlay.progress) * textLayer.height * 0.06 : 0)
+                        }
+                    }
+                }
+            }
+
             // Only the empty state opens on a preview click: with a video
             // loaded, a stray click must not reach the file picker at all.
             MouseArea {
@@ -790,6 +903,21 @@ ApplicationWindow {
             }
         }
 
+        // --- texts ---
+        TextPanel {
+            id: textPanel
+            visible: win.hasVideo && win.textPanelOpen
+            Layout.fillWidth: true
+            Layout.preferredHeight: implicitHeight
+            playheadSec: editBar.playheadSec
+            onSeek: (seconds) => {
+                player.pause();
+                win.seekTo(seconds);
+            }
+            onAddRequested: win.addText()
+            onCloseRequested: win.textPanelOpen = false
+        }
+
         // --- timeline ---
         RowLayout {
             visible: win.hasVideo
@@ -799,34 +927,61 @@ ApplicationWindow {
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever the text strips above them add.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: win.playing() ? "pause" : "play"
                 tipText: win.playing() ? qsTr("Pause") : qsTr("Play")
                 enabled: timeline.duration > 0
                 onClicked: togglePlay()
             }
 
-            EditBar {
-                id: editBar
-                objectName: "editBar"
+            ColumnLayout {
                 Layout.fillWidth: true
-                // Frozen while a probe is in flight: it is about to replace
-                // or extend the timeline the bar is showing.
-                enabled: !backend.probing
-                accent: win.accent
-                accentForeground: win.accentForeground
-                onScrub: (seconds) => {
-                    player.pause();
-                    seekTo(seconds);
+                spacing: 6
+
+                // The texts' strips, on the clips' time scale.
+                TextTrack {
+                    id: textTrack
+                    visible: win.hasVideo && timeline.texts.length > 0
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: implicitHeight
+                    bar: editBar
+                    enabled: !backend.probing
+                    current: textPanel.current
+                    // Pressing picks the text, so dragging doesn't move the layout
+                    // from under the pointer; a click also opens the panel on it.
+                    onPicked: (index) => textPanel.select(index, false)
+                    onClicked: win.textPanelOpen = true
+                    onAddRequested: (seconds) => win.addText(seconds)
                 }
-                onScrubClip: (index, sourceTime) => {
-                    player.pause();
-                    player.show(index, sourceTime, false);
+
+                EditBar {
+                    id: editBar
+                    objectName: "editBar"
+                    Layout.fillWidth: true
+                    // Frozen while a probe is in flight: it is about to replace
+                    // or extend the timeline the bar is showing.
+                    enabled: !backend.probing
+                    accent: win.accent
+                    accentForeground: win.accentForeground
+                    onScrub: (seconds) => {
+                        player.pause();
+                        seekTo(seconds);
+                    }
+                    onScrubClip: (index, sourceTime) => {
+                        player.pause();
+                        player.show(index, sourceTime, false);
+                    }
                 }
             }
 
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever the text strips above them add.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: "plus"
                 tipText: qsTr("Add a video")
                 enabled: timeline.duration > 0 && !backend.busy
@@ -836,6 +991,21 @@ ApplicationWindow {
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever the text strips above them add.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
+                iconName: "text"
+                tipText: qsTr("Text")
+                enabled: timeline.duration > 0
+                onClicked: win.toggleTextPanel()
+            }
+
+            IconButton {
+                Layout.preferredWidth: 44
+                Layout.preferredHeight: 44
+                // Level with the clips, whatever the text strips above them add.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: "download"
                 tipText: qsTr("Export")
                 enabled: timeline.duration > 0 && !backend.busy
@@ -987,6 +1157,7 @@ ApplicationWindow {
                         { keys: "Alt [ / ]", action: qsTr("Move the clip earlier / later") },
                         { keys: "Ctrl Space", action: qsTr("Clip start to playhead") },
                         { keys: "Ctrl Shift Space", action: qsTr("Clip end to playhead") },
+                        { keys: "T", action: qsTr("Add a text at the playhead") },
                         { keys: "Ctrl Z", action: qsTr("Undo (Ctrl Shift Z redo)") },
                         { keys: "Z", action: qsTr("Zoom to the clip") },
                         { keys: "F", action: qsTr("Save the playhead frame as a PNG") },
@@ -1073,6 +1244,7 @@ ApplicationWindow {
             player.source = "";
             editBar.zoomed = false;
             editBar.playheadSec = 0;
+            win.textPanelOpen = false;
             if (win.hasVideo)
                 player.show(0, 0, false);
         }

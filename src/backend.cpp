@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QPointer>
 #include <QProcess>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QThreadPool>
 #include <QTimer>
@@ -63,7 +64,7 @@ void Backend::wireFilePicker() {
             load(url);
     });
     connect(m_filePicker, &FilePicker::exportSelected, this, [this](const QUrl &url, int scaleHeight) {
-        exportClips(url, m_exportDialogClips, scaleHeight);
+        exportClips(url, m_exportDialogClips, scaleHeight, m_exportDialogTexts);
     });
     connect(m_filePicker, &FilePicker::failed, this, &Backend::loadError);
 }
@@ -274,6 +275,7 @@ void Backend::exportDialog() {
         return;
 
     m_exportDialogClips = m_timeline.clips();
+    m_exportDialogTexts = m_timeline.texts();
     const ffmpeg::VideoInfo &frame = m_videos.value(m_exportDialogClips.value(0).source).info;
     m_filePicker->exportVideo(suggestedExportUrl(), exportHeights(frame.width, frame.height));
 }
@@ -463,7 +465,8 @@ QUrl Backend::suggestedExportUrl() const {
     return QUrl::fromLocalFile(target);
 }
 
-void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight) {
+void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight,
+                          const edit::Overlays &texts) {
     if (m_videos.isEmpty() || busy())
         return;
 
@@ -516,9 +519,36 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
     QFile::remove(tmpPath);
     const ffmpeg::VideoInfo &frame = m_videos[frameSource].info;
-    const QStringList args = ffmpeg::trimArgs(segments, tmpPath, frame.width, frame.height, scaleHeight);
+
+    // Each text's words go in a file for drawtext to read, in a directory of
+    // their own that ffmpeg runs from, so the filter only ever names them
+    // plainly. A text that starts after the edit ends, or has no words, has
+    // nothing to draw; one that runs past the end stops there.
+    auto textDir = std::make_shared<QTemporaryDir>();
+    QList<ffmpeg::TextLayer> layers;
+    if (!texts.isEmpty()) {
+        if (!textDir->isValid()) {
+            failExport(tmpPath, tr("Could not write the exported file."));
+            return;
+        }
+        for (const edit::TextOverlay &text : texts) {
+            if (text.text.trimmed().isEmpty() || text.start >= clipLen)
+                continue;
+            ffmpeg::TextLayer layer{text, QStringLiteral("text-%1.txt").arg(layers.size())};
+            layer.text.end = qMin(text.end, clipLen);
+            QFile file(textDir->filePath(layer.file));
+            if (!file.open(QIODevice::WriteOnly) || file.write(text.text.toUtf8()) < 0) {
+                failExport(tmpPath, tr("Could not write the exported file."));
+                return;
+            }
+            layers.append(layer);
+        }
+    }
+    const QStringList args = ffmpeg::trimArgs(segments, tmpPath, frame.width, frame.height, scaleHeight, layers);
 
     auto *proc = new QProcess(this);
+    if (!layers.isEmpty())
+        proc->setWorkingDirectory(textDir->path());
     auto completed = std::make_shared<bool>(false);
 
     // ffmpeg -progress writes key=value blocks to stdout as it encodes;
@@ -543,7 +573,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
             });
 
     connect(proc, &QProcess::finished, this,
-            [this, proc, outPath, tmpPath, completed, clips](int code, QProcess::ExitStatus exitStatus) {
+            [this, proc, outPath, tmpPath, completed, clips, texts, textDir](int code, QProcess::ExitStatus exitStatus) {
                 if (*completed)
                     return;
                 *completed = true;
@@ -564,7 +594,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                 // The reopen probes in the background; if it fails, the probe
                 // result says the saved file couldn't be reopened.
                 if (!isVideoPath(outPath)) {
-                    m_timeline.markExported(clips);
+                    m_timeline.markExported(clips, texts);
                     emit exportDone(outPath);
                 } else {
                     // exportDone waits for the reopen probe to settle.
