@@ -349,6 +349,7 @@ private slots:
     void exportOddSizedWebmWritesEvenMp4();
     void exportKeepsOnlyTheClipsFromTheDialog();
     void exportJoinsDifferentVideos();
+    void exportScalesEachClipsSound();
     void exportSkipsClipsWhoseVideoIsGone();
     void exportBlocksOpeningVideos();
     void exportClipCanReplaceSourceFile();
@@ -365,6 +366,7 @@ private slots:
     void qmlNumberKeysJumpThroughTheEdit();
     void qmlSpaceChordsSetTheClipEdges();
     void qmlKeysSplitAndRemoveClips();
+    void qmlKeysSetTheClipsVolume();
     void qmlBracketsJumpBetweenClipEdges();
     void qmlKeysMoveAndAddClips();
     void qmlZoomFocusesTheClip();
@@ -394,9 +396,11 @@ private slots:
     void playbackSeeksAcrossARealCut();
     void timelineAnswersWhereTimesFall();
     void timelineEditsAtATime();
+    void timelineSetsEachClipsVolume();
     void trimArgsReencodeForPreciseCuts();
     void trimArgsConcatenateTheRanges();
     void trimArgsFitDifferentVideosTogether();
+    void trimArgsScaleEachSegmentsSound();
     void trimArgsScaleTheShorterSide();
     void exportHeightsNeverUpscale();
     void thumbnailPastTheLastFrameShowsTheLastOne();
@@ -1713,6 +1717,107 @@ void BackendTests::qmlSpaceChordsSetTheClipEdges() {
     QCOMPARE(player->property("pendingPlay").toBool(), true);
 }
 
+// The mean level in dB of len seconds of path's audio from start.
+static double meanVolume(const QString &path, double start, double len) {
+    QProcess proc;
+    proc.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")),
+               {QStringLiteral("-hide_banner"), QStringLiteral("-ss"), QString::number(start),
+                QStringLiteral("-t"), QString::number(len), QStringLiteral("-i"), path,
+                QStringLiteral("-vn"), QStringLiteral("-af"), QStringLiteral("volumedetect"),
+                QStringLiteral("-f"), QStringLiteral("null"), QStringLiteral("-")});
+    if (!proc.waitForFinished(10000))
+        return 1000.0;
+    const QString log = QString::fromUtf8(proc.readAllStandardError());
+    const QRegularExpression mean(QStringLiteral("mean_volume: (-?[0-9.]+) dB"));
+    const auto match = mean.match(log);
+    return match.hasMatch() ? match.captured(1).toDouble() : 1000.0;
+}
+
+void BackendTests::exportScalesEachClipsSound() {
+    const QString video = makeVideo(QStringLiteral("loud.mp4"), 3.0, true, QStringLiteral("64x36"));
+    QVERIFY(!video.isEmpty());
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(QUrl::fromLocalFile(video)));
+    waitForProbe(backend);
+
+    // Three seconds of one video, each second at its own volume. They carry
+    // on from one another, but sound different, so they stay three clips.
+    Timeline *timeline = backend.timeline();
+    timeline->split(1.0);
+    timeline->split(2.0);
+    timeline->setVolume(1, 0.5);
+    timeline->setVolume(2, 0.0);
+    QCOMPARE(timeline->clips(), (edit::Clips{{0, 0.0, 1.0, 1.0}, {0, 1.0, 2.0, 0.5}, {0, 2.0, 3.0, 0.0}}));
+    QCOMPARE(edit::merged(timeline->clips()).size(), 3);
+
+    const QString outPath = m_dir.filePath(QStringLiteral("volumes.mp4"));
+    backend.exportClips(QUrl::fromLocalFile(outPath), timeline->clips());
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 20000);
+    QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
+
+    // Away from the joins: full, half (6 dB down), and silent.
+    const double full = meanVolume(outPath, 0.2, 0.6);
+    const double half = meanVolume(outPath, 1.2, 0.6);
+    const double silent = meanVolume(outPath, 2.2, 0.6);
+    QVERIFY2(full > -40.0 && full < 0.0, qPrintable(QString::number(full)));
+    QVERIFY2(qAbs((full - half) - 6.02) < 1.0, qPrintable(QString("%1 %2").arg(full).arg(half)));
+    QVERIFY2(silent < -60.0, qPrintable(QString::number(silent)));
+}
+
+void BackendTests::qmlKeysSetTheClipsVolume() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+
+    // V shows the volume panel, and hides it again.
+    auto *panel = window->findChild<QQuickItem *>(QStringLiteral("volumePanel"));
+    QVERIFY(panel);
+    QCOMPARE(panel->isVisible(), false);
+    QTest::keyClick(window, Qt::Key_V);
+    QTRY_COMPARE_WITH_TIMEOUT(panel->isVisible(), true, 3000);
+    QTest::keyClick(window, Qt::Key_V);
+    QTRY_COMPARE_WITH_TIMEOUT(panel->isVisible(), false, 3000);
+
+    // M silences the clip under the playhead, and brings it back.
+    QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_S);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips().size(), 2, 3000);
+    QCOMPARE(window->property("unexported").toBool(), false);
+    QTest::keyClick(window, Qt::Key_M);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
+                              (edit::Clips{{0, 0.0, 5.0, 1.0}, {0, 5.0, 20.0, 0.0}}), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), true, 3000);
+    QTest::keyClick(window, Qt::Key_M);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips(),
+                              (edit::Clips{{0, 0.0, 5.0, 1.0}, {0, 5.0, 20.0, 1.0}}), 3000);
+
+    // Undo steps back through the mute.
+    QTest::keyClick(window, Qt::Key_M);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips().value(1).volume, 0.0, 3000);
+    QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips().value(1).volume, 1.0, 3000);
+
+    // The slider shows the clip's volume, and a drag of it is one undo step.
+    QTest::keyClick(window, Qt::Key_V);
+    QTRY_COMPARE_WITH_TIMEOUT(panel->isVisible(), true, 3000);
+    auto *slider = window->findChild<QQuickItem *>(QStringLiteral("volumeSlider"));
+    QVERIFY(slider);
+    QCOMPARE(slider->property("value").toDouble(), 1.0);
+    backend.timeline.beginGesture();
+    backend.timeline.setVolume(1, 0.8);
+    backend.timeline.setVolume(1, 0.4);
+    backend.timeline.endGesture();
+    QTRY_COMPARE_WITH_TIMEOUT(slider->property("value").toDouble(), 0.4, 3000);
+    backend.timeline.undo();
+    QTRY_COMPARE_WITH_TIMEOUT(slider->property("value").toDouble(), 1.0, 3000);
+}
+
 void BackendTests::qmlKeysSplitAndRemoveClips() {
     ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
     QmlHarness harness(backend);
@@ -2387,6 +2492,65 @@ void BackendTests::qmlQuitConfirmsUnexportedEdit() {
     QCOMPARE(quitSpy.count(), 1);
 }
 
+void BackendTests::timelineSetsEachClipsVolume() {
+    Timeline timeline;
+    timeline.reset(10.0);
+    QVERIFY(!timeline.unexported());
+
+    // A volume stays between silent and as recorded.
+    timeline.split(4.0);
+    timeline.setVolume(0, 2.0);
+    QCOMPARE(timeline.clips().value(0).volume, 1.0);
+    timeline.setVolume(0, -1.0);
+    QCOMPARE(timeline.clips().value(0).volume, 0.0);
+    timeline.setVolume(7, 0.5);
+    QCOMPARE(timeline.clips().size(), 2);
+
+    // Pieces that sound different stay apart: joining would lose one volume,
+    // and an export encodes them as two. Playback still carries on.
+    timeline.setVolume(0, 0.5);
+    QVERIFY(!timeline.canJoin(0));
+    QVERIFY(timeline.continues(0));
+    timeline.joinClips(0);
+    QCOMPARE(timeline.clips().size(), 2);
+    QCOMPARE(edit::merged(timeline.clips()).size(), 2);
+    QVERIFY(timeline.unexported());
+
+    // At the same volume they join, and a split keeps the volume.
+    timeline.setVolume(1, 0.5);
+    QVERIFY(timeline.canJoin(0));
+    QCOMPARE(edit::merged(timeline.clips()), (edit::Clips{{0, 0.0, 10.0, 0.5}}));
+    timeline.joinClips(0);
+    QCOMPARE(timeline.clips(), (edit::Clips{{0, 0.0, 10.0, 0.5}}));
+    timeline.split(6.0);
+    QCOMPARE(timeline.clips(), (edit::Clips{{0, 0.0, 6.0, 0.5}, {0, 6.0, 10.0, 0.5}}));
+
+    // The clip list carries the volume to QML.
+    QCOMPARE(timeline.clipList().value(1).toMap().value(QStringLiteral("volume")).toDouble(), 0.5);
+
+    // Mute toggles between silent and full volume.
+    timeline.toggleMute(1);
+    QCOMPARE(timeline.clips().value(1).volume, 0.0);
+    timeline.toggleMute(1);
+    QCOMPARE(timeline.clips().value(1).volume, 1.0);
+
+    // A drag of a slider is one undo step, in order with the cuts.
+    timeline.beginGesture();
+    timeline.setVolume(1, 0.8);
+    timeline.setVolume(1, 0.3);
+    timeline.endGesture();
+    QCOMPARE(timeline.clips().value(1).volume, 0.3);
+    timeline.undo();
+    QCOMPARE(timeline.clips().value(1).volume, 1.0);
+
+    // Silencing a lone, untouched clip is an edit to export.
+    Timeline lone;
+    lone.reset(5.0);
+    QVERIFY(!lone.unexported());
+    lone.toggleMute(0);
+    QVERIFY(lone.unexported());
+}
+
 void BackendTests::timelineSplitsTrimsAndJoins() {
     Timeline timeline;
     timeline.reset(10.0);
@@ -2670,6 +2834,46 @@ void BackendTests::trimArgsConcatenateTheRanges() {
                                                   "[joined]crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0[v]"));
     QVERIFY(!silent.contains(QStringLiteral("[a]")));
     QVERIFY(!silent.contains(QStringLiteral("aac")));
+}
+
+void BackendTests::trimArgsScaleEachSegmentsSound() {
+    const QString end = QStringLiteral("[joined]crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0[v]");
+
+    // Full volume everywhere leaves the graph as it was.
+    QCOMPARE(filterGraph(ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true, 1.0}},
+                                          QStringLiteral("out.mp4"), 1920, 1080)),
+             QStringLiteral("[0:V:0][0:a:0]concat=n=1:v=1:a=1[joined][a];") + end);
+
+    // One video: the scaled piece takes the volume, and every sound goes
+    // through the same sample format so concat can join them.
+    QCOMPARE(filterGraph(ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true, 0.5},
+                                           {QStringLiteral("in.mp4"), 2.0, 3.5, true, 1.0},
+                                           {QStringLiteral("in.mp4"), 4.0, 5.0, true, 0.0}},
+                                          QStringLiteral("out.mp4"), 1920, 1080)),
+             QStringLiteral("[0:a:0]volume=0.5,aformat=sample_fmts=fltp[a0];"
+                            "[1:a:0]aformat=sample_fmts=fltp[a1];"
+                            "[2:a:0]volume=0,aformat=sample_fmts=fltp[a2];"
+                            "[0:V:0][a0][1:V:0][a1][2:V:0][a2]concat=n=3:v=1:a=1[joined][a];") + end);
+
+    // Different videos: the volume goes after the format is settled, and
+    // the silence made for a video without sound has none to scale.
+    QCOMPARE(filterGraph(ffmpeg::trimArgs({{QStringLiteral("a.mp4"), 0.0, 1.0, true, 0.25},
+                                           {QStringLiteral("b.mp4"), 3.0, 5.0, false, 0.25}},
+                                          QStringLiteral("out.mp4"), 1920, 1080)),
+             QStringLiteral("[0:V:0]scale='trunc(iw*sar/2)*2':ih,setsar=1,"
+                            "scale=1920:1080:force_original_aspect_ratio=decrease,"
+                            "pad=1920:1080:-1:-1,setsar=1,format=yuv420p[v0];"
+                            "[0:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=0.25[a0];"
+                            "[1:V:0]scale='trunc(iw*sar/2)*2':ih,setsar=1,"
+                            "scale=1920:1080:force_original_aspect_ratio=decrease,"
+                            "pad=1920:1080:-1:-1,setsar=1,format=yuv420p[v1];"
+                            "anullsrc=r=48000:cl=stereo,atrim=duration=2.000,aformat=sample_fmts=fltp[a1];"
+                            "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"));
+
+    // A video without sound has nothing to scale, so it stays as it was.
+    QCOMPARE(filterGraph(ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, false, 0.5}},
+                                          QStringLiteral("out.mp4"), 1920, 1080)),
+             QStringLiteral("[0:V:0]concat=n=1:v=1:a=0[joined];") + end);
 }
 
 void BackendTests::trimArgsFitDifferentVideosTogether() {

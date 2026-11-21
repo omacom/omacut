@@ -61,14 +61,17 @@ struct Segment {
     double start = 0.0;
     double end = 0.0;
     bool audio = false;
+    // Scales the segment's sound: 0 is silence, 1 leaves it as recorded.
+    double volume = 1.0;
 };
 
 // Build the ffmpeg argument list that writes the segments, back to back, to
 // dst. Cuts are frame-accurate and re-encoded with libx264/aac. Segments from
 // different videos are fitted into width x height, letterboxed, with silence
-// for any without audio. A non-zero scaleHeight downscales so the shorter
-// side becomes scaleHeight (1080p of a portrait video is 1080 wide), always
-// preserving the aspect ratio.
+// for any without audio. Each segment's sound is scaled by its volume. A
+// non-zero scaleHeight downscales so the shorter side becomes scaleHeight
+// (1080p of a portrait video is 1080 wide), always preserving the aspect
+// ratio.
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
                      int width, int height, int scaleHeight = 0);
 

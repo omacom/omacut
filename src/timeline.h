@@ -11,7 +11,7 @@
 // stand-in, so both edit the same way.
 class Timeline : public QObject {
     Q_OBJECT
-    // Each clip as {source, in, out, start, end}, start and end along the sequence.
+    // Each clip as {source, in, out, volume, start, end}, start and end along the sequence.
     Q_PROPERTY(QVariantList clips READ clipList NOTIFY changed)
     Q_PROPERTY(double duration READ duration NOTIFY changed)
     // Each video's length, by source index.
@@ -68,6 +68,11 @@ public:
     Q_INVOKABLE void removeAt(double t);
     // Moves clip from to position to, shifting the clips in between.
     Q_INVOKABLE void moveClip(int from, int to);
+    // Sets how loud a clip plays, from 0 to 1. A slider drag between
+    // beginGesture and endGesture is one undo step.
+    Q_INVOKABLE void setVolume(int index, double volume);
+    // Silences a clip, or, if it is silent, brings it back to full volume.
+    Q_INVOKABLE void toggleMute(int index);
     Q_INVOKABLE void joinClips(int index);
     Q_INVOKABLE void beginGesture();
     Q_INVOKABLE void endGesture();

@@ -20,6 +20,15 @@ ApplicationWindow {
     readonly property bool audioOutputReady: audioOutput !== null
     property var audioOutput: null
     property string noticeText: ""
+    // The panel that sets the volume of the clip under the playhead.
+    property bool volumeVisible: false
+    // The clip under the playhead and how loud it plays. Reading the clip
+    // list ties them to edits, not just to the playhead.
+    readonly property int volumeClip: {
+        timeline.clips;
+        return timeline.clipAt(editBar.playheadSec);
+    }
+    readonly property real clipVolume: timeline.clips[volumeClip] ? timeline.clips[volumeClip].volume : 1
     property bool helpVisible: false
     property bool quitConfirmVisible: false
     property bool openConfirmVisible: false
@@ -363,6 +372,22 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "V"
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: win.editing
+        onActivated: win.volumeVisible = !win.volumeVisible
+    }
+
+    Shortcut {
+        sequence: "M"
+        context: Qt.ApplicationShortcut
+        autoRepeat: false
+        enabled: win.editing
+        onActivated: timeline.toggleMute(win.volumeClip)
+    }
+
+    Shortcut {
         sequence: "F"
         context: Qt.ApplicationShortcut
         autoRepeat: false
@@ -436,6 +461,8 @@ ApplicationWindow {
                 win.openConfirmVisible = false;
             else if (win.helpVisible)
                 win.helpVisible = false;
+            else if (win.volumeVisible)
+                win.volumeVisible = false;
         }
     }
 
@@ -459,6 +486,8 @@ ApplicationWindow {
         // Keep the exact paused seek target: rounding a frame up to the
         // clip's end must not turn the next backward step into a repeat.
         property real pausedSourceTime: -1
+        // How loud the clip on screen plays; the output takes it as it comes.
+        readonly property real clipVolume: clip >= 0 && clip < timeline.clips.length ? timeline.clips[clip].volume : 1
 
         // Shows sourceTime in clip index, and plays on from there if asked.
         function show(index, sourceTime, andPlay) {
@@ -611,6 +640,7 @@ ApplicationWindow {
             property MediaDevices devices: MediaDevices {}
             device: devices.defaultAudioOutput
             muted: player.priming
+            volume: player.clipVolume
         }
     }
 
@@ -679,6 +709,31 @@ ApplicationWindow {
                     ctx.moveTo(5, 12);
                     ctx.lineTo(19, 12);
                     ctx.stroke();
+                } else if (iconButton.iconName === "volume" || iconButton.iconName === "muted") {
+                    ctx.beginPath();
+                    ctx.moveTo(4, 10);
+                    ctx.lineTo(8, 10);
+                    ctx.lineTo(13, 5.5);
+                    ctx.lineTo(13, 18.5);
+                    ctx.lineTo(8, 14);
+                    ctx.lineTo(4, 14);
+                    ctx.closePath();
+                    ctx.fill();
+                    if (iconButton.iconName === "volume") {
+                        ctx.beginPath();
+                        ctx.arc(13, 12, 5, -0.95, 0.95);
+                        ctx.stroke();
+                        ctx.beginPath();
+                        ctx.arc(13, 12, 9, -0.8, 0.8);
+                        ctx.stroke();
+                    } else {
+                        ctx.beginPath();
+                        ctx.moveTo(16.5, 9);
+                        ctx.lineTo(21.5, 15);
+                        ctx.moveTo(21.5, 9);
+                        ctx.lineTo(16.5, 15);
+                        ctx.stroke();
+                    }
                 } else if (iconButton.iconName === "download") {
                     ctx.beginPath();
                     ctx.moveTo(12, 4);
@@ -790,6 +845,54 @@ ApplicationWindow {
             }
         }
 
+        // --- volume of the clip under the playhead ---
+        RowLayout {
+            objectName: "volumePanel"
+            visible: win.hasVideo && win.volumeVisible
+            Layout.alignment: Qt.AlignHCenter
+            spacing: 12
+
+            Label {
+                text: qsTr("Volume of this clip")
+                color: "#d6d6da"
+                font.pixelSize: 13
+            }
+
+            Slider {
+                objectName: "volumeSlider"
+                Layout.preferredWidth: 220
+                from: 0
+                to: 1
+                value: win.clipVolume
+                focusPolicy: Qt.NoFocus
+                onMoved: timeline.setVolume(win.volumeClip, value)
+                // A drag is one undo step.
+                onPressedChanged: {
+                    if (pressed)
+                        timeline.beginGesture();
+                    else
+                        timeline.endGesture();
+                }
+            }
+
+            Label {
+                Layout.preferredWidth: 40
+                text: Math.round(win.clipVolume * 100) + "%"
+                color: "#d6d6da"
+                font.pixelSize: 13
+                font.family: "monospace"
+                horizontalAlignment: Text.AlignRight
+            }
+
+            Button {
+                objectName: "muteButton"
+                text: win.clipVolume > 0 ? qsTr("Mute") : qsTr("Unmute")
+                focusPolicy: Qt.NoFocus
+                Material.roundedScale: theme.radius
+                onClicked: timeline.toggleMute(win.volumeClip)
+            }
+        }
+
         // --- timeline ---
         RowLayout {
             visible: win.hasVideo
@@ -831,6 +934,16 @@ ApplicationWindow {
                 tipText: qsTr("Add a video")
                 enabled: timeline.duration > 0 && !backend.busy
                 onClicked: addVideo()
+            }
+
+            IconButton {
+                objectName: "volumeButton"
+                Layout.preferredWidth: 44
+                Layout.preferredHeight: 44
+                iconName: win.clipVolume > 0 ? "volume" : "muted"
+                tipText: qsTr("Volume")
+                enabled: timeline.duration > 0
+                onClicked: win.volumeVisible = !win.volumeVisible
             }
 
             IconButton {
@@ -989,6 +1102,8 @@ ApplicationWindow {
                         { keys: "Ctrl Shift Space", action: qsTr("Clip end to playhead") },
                         { keys: "Ctrl Z", action: qsTr("Undo (Ctrl Shift Z redo)") },
                         { keys: "Z", action: qsTr("Zoom to the clip") },
+                        { keys: "V", action: qsTr("Volume of the clip") },
+                        { keys: "M", action: qsTr("Mute the clip") },
                         { keys: "F", action: qsTr("Save the playhead frame as a PNG") },
                         { keys: "Ctrl O", action: qsTr("Open a video") },
                         { keys: "Ctrl Shift O", action: qsTr("Add a video after this clip") },

@@ -309,6 +309,22 @@ Item {
                 }
                 Handle { leading: true }
                 Handle { leading: false }
+                // A clip that plays quieter than recorded says so in its corner.
+                Rectangle {
+                    objectName: "volumeBadge"
+                    readonly property real volume: root.clips[clipItem.index] ? root.clips[clipItem.index].volume : 1
+                    visible: volume < 1 && clipItem.width > root.removeMinWidth
+                    anchors.bottom: parent.bottom; anchors.left: parent.left
+                    anchors.bottomMargin: root.removeInset; anchors.leftMargin: root.handleW + root.removeGap
+                    width: badge.implicitWidth + 12; height: root.removeSize; radius: root.removeSize / 2
+                    color: "#e0202023"
+                    Text {
+                        id: badge
+                        anchors.centerIn: parent
+                        text: parent.volume === 0 ? qsTr("Muted") : Math.round(parent.volume * 100) + "%"
+                        font.pixelSize: 11; font.weight: Font.DemiBold; color: "white"
+                    }
+                }
                 // Remove this clip. Only offered when another clip would remain.
                 Rectangle {
                     id: remove

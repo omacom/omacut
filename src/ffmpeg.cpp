@@ -310,10 +310,18 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
                      int width, int height, int scaleHeight) {
     bool audio = false;
     bool mixed = false;
+    bool scaled = false;
     for (const Segment &segment : segments) {
         audio = audio || segment.audio;
         mixed = mixed || segment.path != segments.first().path;
+        scaled = scaled || (segment.audio && segment.volume != 1.0);
     }
+    // ffmpeg's volume filter takes a linear factor.
+    const auto gain = [](const Segment &segment) {
+        return segment.volume == 1.0
+            ? QString()
+            : QString("volume=%1").arg(QString::number(qBound(0.0, segment.volume, 1.0), 'g', 4));
+    };
 
     // Machine-readable progress on stdout (errors stay on stderr), so the UI
     // can show how far along the encode is.
@@ -329,7 +337,17 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
         args << "-ss" << QString::number(segment.start, 'f', 3) << "-t" << length
              << "-i" << segment.path;
         if (!mixed) {
-            inputs += QString("[%1:V:0]").arg(i) + (audio ? QString("[%1:a:0]").arg(i) : QString());
+            // Untouched sound goes straight to concat. If any segment's is
+            // scaled, every one is brought to float samples first, which the
+            // volume filter works in, so concat sees the same format on all.
+            if (scaled && segment.audio) {
+                const QString volume = gain(segment);
+                graph += QString("[%1:a:0]%2aformat=sample_fmts=fltp[a%1];")
+                             .arg(i).arg(volume.isEmpty() ? QString() : volume + ",");
+                inputs += QString("[%1:V:0][a%1]").arg(i);
+            } else {
+                inputs += QString("[%1:V:0]").arg(i) + (audio ? QString("[%1:a:0]").arg(i) : QString());
+            }
             continue;
         }
         // Concat needs one frame size and one audio format throughout. Pixels
@@ -340,7 +358,8 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
                          "pad=%2:%3:-1:-1,setsar=1,format=yuv420p[v%1];")
                      .arg(i).arg(width / 2 * 2).arg(height / 2 * 2);
         if (segment.audio)
-            graph += QString("[%1:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a%1];").arg(i);
+            graph += QString("[%1:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo%2[a%1];")
+                         .arg(i).arg(gain(segment).isEmpty() ? QString() : "," + gain(segment));
         else if (audio)
             graph += QString("anullsrc=r=48000:cl=stereo,atrim=duration=%2,aformat=sample_fmts=fltp[a%1];")
                          .arg(i).arg(length);
