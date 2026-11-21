@@ -15,3 +15,18 @@ function fmt(sec) {
         return (h < 10 ? "0" : "") + h + ":" + mmss;
     return mmss;
 }
+
+// Seconds from what a person types for a time: "12", "12.5", "1:02.5" or
+// "1:01:02". NaN for anything else.
+function parseTime(text) {
+    var parts = String(text).trim().split(":");
+    if (parts.length > 3)
+        return NaN;
+    var seconds = 0;
+    for (var i = 0; i < parts.length; ++i) {
+        if (!/^\d+(\.\d*)?$|^\.\d+$/.test(parts[i].trim()))
+            return NaN;
+        seconds = seconds * 60 + parseFloat(parts[i]);
+    }
+    return seconds;
+}

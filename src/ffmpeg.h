@@ -1,10 +1,13 @@
 #pragma once
 
 #include <QImage>
+#include <QSize>
 #include <QString>
 #include <QStringList>
 
 #include <functional>
+
+#include "edit.h"
 
 
 // Thin wrappers around the ffmpeg/ffprobe command-line tools.
@@ -63,14 +66,30 @@ struct Segment {
     bool audio = false;
 };
 
+// A text drawn over the finished video. ffmpeg reads its words from file, a
+// name in ffmpeg's working directory: nothing the user typed ever needs
+// escaping inside a filter graph that way.
+struct TextLayer {
+    edit::TextOverlay text;
+    QString file;
+};
+
+// The drawtext filter for one text, over a frame outputHeight pixels tall.
+QString drawtextFilter(const TextLayer &layer, int outputHeight);
+// The size the exported frame will have: even sides, and with a non-zero
+// scaleHeight the shorter side scaled to it.
+QSize outputSize(int width, int height, int scaleHeight);
+
 // Build the ffmpeg argument list that writes the segments, back to back, to
 // dst. Cuts are frame-accurate and re-encoded with libx264/aac. Segments from
 // different videos are fitted into width x height, letterboxed, with silence
 // for any without audio. A non-zero scaleHeight downscales so the shorter
 // side becomes scaleHeight (1080p of a portrait video is 1080 wide), always
-// preserving the aspect ratio.
+// preserving the aspect ratio. Texts are drawn last, over the joined and
+// scaled video, so they are as sharp as the frame itself.
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
-                     int width, int height, int scaleHeight = 0);
+                     int width, int height, int scaleHeight = 0,
+                     const QList<TextLayer> &texts = {});
 
 // Locate a tool on PATH; returns empty string if missing.
 QString toolPath(const QString &tool);

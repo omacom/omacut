@@ -9,6 +9,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QSize>
 #include <QStandardPaths>
 
 namespace ffmpeg {
@@ -306,8 +307,72 @@ QStringList frameArgs(const QString &path, double frameTime, double keyframeTime
     };
 }
 
+QSize outputSize(int width, int height, int scaleHeight) {
+    // libx264 needs even sides: the frame is fitted into, or cropped to, them.
+    int w = width / 2 * 2;
+    int h = height / 2 * 2;
+    if (scaleHeight > 0 && w > 0 && h > 0) {
+        if (w > h) {
+            w = qRound(double(w) * scaleHeight / h) / 2 * 2;
+            h = scaleHeight;
+        } else {
+            h = qRound(double(h) * scaleHeight / w) / 2 * 2;
+            w = scaleHeight;
+        }
+    }
+    return {w, h};
+}
+
+namespace {
+// A number as ffmpeg's expressions read it.
+QString num(double value) {
+    return QString::number(value, 'f', 3);
+}
+}
+
+QString drawtextFilter(const TextLayer &layer, int outputHeight) {
+    const edit::TextOverlay &text = layer.text;
+    const bool animated = text.effect != QLatin1String("none");
+    // The same ramp the preview draws (edit::effectAlpha): in and out over
+    // up to effectSeconds, never more than half the text each.
+    const QString ramp = QString("%1").arg(num(std::max(std::min(edit::effectSeconds, text.length() / 2), 0.001)));
+    const QString start = num(text.start);
+    const QString end = num(text.end);
+    // Progress in, eased out, as edit::effectProgress.
+    const QString eased = QString("(1-pow(1-min(1,max(0,(t-%1)/%2)),2))").arg(start, ramp);
+
+    QString size = QString("h*%1").arg(num(text.size));
+    QString y = QString("(h-th)*%1").arg(num(text.y));
+    if (text.effect == QLatin1String("pop"))
+        size = QString("h*%1*(0.6+0.4*%2)").arg(num(text.size), eased);
+    else if (text.effect == QLatin1String("slide"))
+        y += QString("+(1-%1)*h*0.06").arg(eased);
+
+    QStringList options = {
+        QString("font='%1'").arg(text.font),
+        QString("textfile=%1").arg(layer.file),
+        QStringLiteral("expansion=none"),
+        QStringLiteral("text_align=center"),
+        QString("fontcolor=%1").arg(text.color),
+        // Every expression is quoted: its commas would end the filter.
+        QString("fontsize='%1'").arg(size),
+        QStringLiteral("x='(w-tw)/2'"),
+        QString("y='%1'").arg(y),
+        QString("enable='between(t,%1,%2)'").arg(start, end),
+    };
+    if (animated)
+        options << QString("alpha='min(1,max(0,min((t-%1)/%3,(%2-t)/%3)))'").arg(start, end, ramp);
+    if (text.box) {
+        const int border = qMax(4, qRound(outputHeight * text.size * 0.35));
+        options << QStringLiteral("box=1") << QStringLiteral("boxcolor=black@0.55")
+                << QString("boxborderw=%1").arg(border);
+    }
+    return QStringLiteral("drawtext=") + options.join(':');
+}
+
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
-                     int width, int height, int scaleHeight) {
+                     int width, int height, int scaleHeight,
+                     const QList<TextLayer> &texts) {
     bool audio = false;
     bool mixed = false;
     for (const Segment &segment : segments) {
@@ -360,7 +425,16 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
                      .arg(audio ? "[a]" : "");
     else
         graph += QString("[v]") + (audio ? "[a]" : "");
-    args << "-filter_complex" << graph << "-map" << "[v]";
+    QString video = QStringLiteral("[v]");
+    if (!texts.isEmpty()) {
+        const int outputHeight = outputSize(width, height, scaleHeight).height();
+        QStringList draws;
+        for (const TextLayer &layer : texts)
+            draws << drawtextFilter(layer, outputHeight);
+        graph += QString(";[v]%1[vt]").arg(draws.join(','));
+        video = QStringLiteral("[vt]");
+    }
+    args << "-filter_complex" << graph << "-map" << video;
     if (audio)
         args << "-map" << "[a]" << "-c:a" << "aac";
     // +faststart puts the moov atom up front so shared clips start playing

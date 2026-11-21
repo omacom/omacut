@@ -1,3 +1,4 @@
+#include <cmath>
 #include <QtTest>
 
 #include <QDBusConnection>
@@ -398,6 +399,12 @@ private slots:
     void trimArgsConcatenateTheRanges();
     void trimArgsFitDifferentVideosTogether();
     void trimArgsScaleTheShorterSide();
+    void timelineTextsAreEditedAndUndone();
+    void timelineTypingIsOneUndoStep();
+    void textEffectsRampInAndOut();
+    void trimArgsDrawTheTexts();
+    void exportDrawsTheTexts();
+    void qmlTextKeyAddsATextAndTypingIsNotShortcuts();
     void exportHeightsNeverUpscale();
     void thumbnailPastTheLastFrameShowsTheLastOne();
     void themeAccentReadsOmarchyColors();
@@ -1507,6 +1514,10 @@ static QQuickWindow *showEditor(QmlHarness &harness, ShortcutBackend &backend) {
     window->requestActivate();
     QTest::qWait(100);
     return window;
+}
+
+static bool editBarZoomed(QmlHarness &harness) {
+    return harness.editBar()->property("zoomed").toBool();
 }
 
 static double playhead(QmlHarness &harness) {
@@ -2650,6 +2661,399 @@ void BackendTests::trimArgsReencodeForPreciseCuts() {
 
 static QString filterGraph(const QStringList &args) {
     return args.value(args.indexOf(QStringLiteral("-filter_complex")) + 1);
+}
+
+void BackendTests::timelineTextsAreEditedAndUndone() {
+    Timeline timeline;
+    QVERIFY(timeline.texts().isEmpty());
+    // Nothing to put a text on yet.
+    QCOMPARE(timeline.addText(1.0), -1);
+
+    timeline.reset(10.0);
+    QVERIFY(!timeline.unexported());
+    QCOMPARE(timeline.addText(2.0), 0);
+    QCOMPARE(timeline.texts().size(), 1);
+    QCOMPARE(timeline.texts().first().start, 2.0);
+    QCOMPARE(timeline.texts().first().end, 5.0);
+    // Texts are an edit like a cut: they need exporting.
+    QVERIFY(timeline.unexported());
+    QVERIFY(timeline.canUndo());
+
+    // Near the end it is pulled back to have room, never past the edit.
+    QCOMPARE(timeline.addText(9.5), 1);
+    QCOMPARE(timeline.texts().at(1).end, 10.0);
+    QVERIFY(timeline.texts().at(1).start >= 0.0);
+    QVERIFY(timeline.texts().at(1).length() >= 0.5);
+
+    timeline.setTextProperty(0, QStringLiteral("text"), QStringLiteral("Hola"));
+    timeline.setTextProperty(0, QStringLiteral("effect"), QStringLiteral("fade"));
+    timeline.setTextProperty(0, QStringLiteral("size"), 0.12);
+    timeline.setTextProperty(0, QStringLiteral("y"), 0.5);
+    timeline.setTextProperty(0, QStringLiteral("color"), QStringLiteral("#FFD60A"));
+    timeline.setTextProperty(0, QStringLiteral("box"), true);
+    edit::TextOverlay text = timeline.texts().first();
+    QCOMPARE(text.text, QStringLiteral("Hola"));
+    QCOMPARE(text.effect, QStringLiteral("fade"));
+    QCOMPARE(text.size, 0.12);
+    QCOMPARE(text.y, 0.5);
+    QCOMPARE(text.color, QStringLiteral("#ffd60a"));
+    QVERIFY(text.box);
+
+    // Any installed family, but nothing a filter or fontconfig would read as syntax.
+    QCOMPARE(timeline.texts().first().font, QStringLiteral("Sans"));
+    timeline.setTextProperty(0, QStringLiteral("font"), QStringLiteral(" DejaVu Sans Mono "));
+    QCOMPARE(timeline.texts().first().font, QStringLiteral("DejaVu Sans Mono"));
+    for (const QString &bad : {QString(), QStringLiteral("a:b"), QStringLiteral("a'b"), QStringLiteral("a,b"),
+                               QStringLiteral("a;b[v]"), QStringLiteral("a\\b"), QStringLiteral("a=b"), QStringLiteral("-x")}) {
+        timeline.setTextProperty(0, QStringLiteral("font"), bad);
+        QCOMPARE(timeline.texts().first().font, QStringLiteral("DejaVu Sans Mono"));
+    }
+    timeline.setTextProperty(0, QStringLiteral("font"), QStringLiteral("Sans"));
+
+    // What the preview and export don't understand is refused.
+    timeline.setTextProperty(0, QStringLiteral("effect"), QStringLiteral("explode"));
+    timeline.setTextProperty(0, QStringLiteral("color"), QStringLiteral("red; drawbox"));
+    timeline.setTextProperty(0, QStringLiteral("nonsense"), 1);
+    timeline.setTextProperty(7, QStringLiteral("text"), QStringLiteral("nobody"));
+    QCOMPARE(timeline.texts().first().effect, QStringLiteral("fade"));
+    QCOMPARE(timeline.texts().first().color, QStringLiteral("#ffd60a"));
+    timeline.setTextProperty(0, QStringLiteral("size"), 50.0);
+    QVERIFY(timeline.texts().first().size <= 0.3);
+    timeline.setTextProperty(0, QStringLiteral("y"), -4.0);
+    QCOMPARE(timeline.texts().first().y, 0.0);
+
+    // Times stay inside the edit and a minimum text long.
+    timeline.setTextProperty(0, QStringLiteral("end"), 99.0);
+    QCOMPARE(timeline.texts().first().end, 10.0);
+    timeline.setTextProperty(0, QStringLiteral("start"), 99.0);
+    QCOMPARE(timeline.texts().first().start, 10.0 - edit::minimumText);
+    timeline.setTextProperty(0, QStringLiteral("end"), 0.0);
+    QCOMPARE(timeline.texts().first().end, timeline.texts().first().start + edit::minimumText);
+    timeline.moveText(0, 4.0);
+    QCOMPARE(timeline.texts().first().start, 4.0);
+    QCOMPARE(timeline.texts().first().length(), edit::minimumText);
+
+    // A text rides along on its own track, whatever happens to the clips.
+    timeline.setTextProperty(0, QStringLiteral("start"), 1.0);
+    timeline.setTextProperty(0, QStringLiteral("end"), 3.0);
+    const edit::Overlays before = timeline.texts();
+    timeline.split(5.0);
+    timeline.removeClip(0);
+    QCOMPARE(timeline.texts(), before);
+
+    // Undo and redo bring texts back along with clips.
+    timeline.undo();
+    timeline.undo();
+    QCOMPARE(timeline.texts().first().start, 1.0);
+    timeline.removeText(0);
+    QCOMPARE(timeline.texts().size(), 1);
+    timeline.undo();
+    QCOMPARE(timeline.texts().size(), 2);
+    timeline.redo();
+    QCOMPARE(timeline.texts().size(), 1);
+    while (timeline.canUndo())
+        timeline.undo();
+    QVERIFY(timeline.texts().isEmpty());
+    QVERIFY(!timeline.unexported());
+    while (timeline.canRedo())
+        timeline.redo();
+    QVERIFY(timeline.unexported());
+
+    // Exporting marks them done, until the next change.
+    timeline.markExported(timeline.clips(), timeline.texts());
+    QVERIFY(!timeline.unexported());
+    timeline.setTextProperty(0, QStringLiteral("text"), QStringLiteral("changed"));
+    QVERIFY(timeline.unexported());
+
+    // The QML-facing list says the same.
+    timeline.setTextProperty(0, QStringLiteral("effect"), QStringLiteral("fade"));
+    const QVariantMap listed = timeline.textList().first().toMap();
+    QCOMPARE(listed.value(QStringLiteral("text")).toString(), QStringLiteral("changed"));
+    QCOMPARE(listed.value(QStringLiteral("effect")).toString(), QStringLiteral("fade"));
+
+    // A new video starts clean.
+    timeline.reset(5.0);
+    QVERIFY(timeline.texts().isEmpty());
+    QVERIFY(!timeline.canUndo());
+}
+
+void BackendTests::timelineTypingIsOneUndoStep() {
+    Timeline timeline;
+    timeline.reset(10.0);
+    timeline.addText(0.0);
+    // Each keystroke sets the whole text again.
+    for (const QString &typed : {QStringLiteral("H"), QStringLiteral("Ho"), QStringLiteral("Hol"), QStringLiteral("Hola")})
+        timeline.setTextProperty(0, QStringLiteral("text"), typed);
+    QCOMPARE(timeline.texts().first().text, QStringLiteral("Hola"));
+    // One undo takes back the typing, the next the text itself.
+    timeline.undo();
+    QCOMPARE(timeline.texts().first().text, tr("Text"));
+    timeline.undo();
+    QVERIFY(timeline.texts().isEmpty());
+    timeline.redo();
+    timeline.redo();
+    QCOMPARE(timeline.texts().first().text, QStringLiteral("Hola"));
+
+    // Another edit in between, or leaving the field, starts a new step.
+    timeline.setTextProperty(0, QStringLiteral("text"), QStringLiteral("Hola!"));
+    timeline.setTextProperty(0, QStringLiteral("size"), 0.05);
+    timeline.setTextProperty(0, QStringLiteral("text"), QStringLiteral("Hola!!"));
+    timeline.undo();
+    QCOMPARE(timeline.texts().first().text, QStringLiteral("Hola!"));
+    timeline.endGesture();
+    timeline.setTextProperty(0, QStringLiteral("text"), QStringLiteral("Hola?"));
+    timeline.endGesture();
+    timeline.setTextProperty(0, QStringLiteral("text"), QStringLiteral("Hola??"));
+    timeline.undo();
+    QCOMPARE(timeline.texts().first().text, QStringLiteral("Hola?"));
+}
+
+void BackendTests::textEffectsRampInAndOut() {
+    edit::TextOverlay text;
+    text.start = 2.0;
+    text.end = 6.0;
+    // No effect: all or nothing.
+    QCOMPARE(edit::effectAlpha(text, 1.9), 0.0);
+    QCOMPARE(edit::effectAlpha(text, 2.0), 1.0);
+    QCOMPARE(edit::effectAlpha(text, 6.0), 1.0);
+    QCOMPARE(edit::effectAlpha(text, 6.1), 0.0);
+    for (const QString &effect : {QStringLiteral("fade"), QStringLiteral("slide"), QStringLiteral("pop")}) {
+        text.effect = effect;
+        QCOMPARE(edit::effectAlpha(text, 1.9), 0.0);
+        QCOMPARE(edit::effectAlpha(text, 2.0), 0.0);
+        QVERIFY(edit::effectAlpha(text, 2.2) > 0.4 && edit::effectAlpha(text, 2.2) < 0.6);
+        QCOMPARE(edit::effectAlpha(text, 4.0), 1.0);
+        QVERIFY(edit::effectAlpha(text, 5.8) > 0.4 && edit::effectAlpha(text, 5.8) < 0.6);
+        QCOMPARE(edit::effectAlpha(text, 6.0), 0.0);
+        QCOMPARE(edit::effectProgress(text, 2.0), 0.0);
+        QCOMPARE(edit::effectProgress(text, 2.0 + edit::effectSeconds), 1.0);
+        QCOMPARE(edit::effectProgress(text, 5.0), 1.0);
+    }
+    // A short text spends half on each ramp, and never divides by zero.
+    text.end = 2.2;
+    QVERIFY(qAbs(edit::effectAlpha(text, 2.1) - 1.0) < 1e-9);
+    text.end = text.start;
+    QVERIFY(std::isfinite(edit::effectAlpha(text, 2.0)));
+}
+
+void BackendTests::trimArgsDrawTheTexts() {
+    const QList<ffmpeg::Segment> segments = {{QStringLiteral("in.mp4"), 0.0, 5.0, true}};
+    // No texts, no drawing: the graph is what it always was.
+    const QStringList plain = ffmpeg::trimArgs(segments, QStringLiteral("out.mp4"), 1920, 1080);
+    QVERIFY(!filterGraph(plain).contains(QStringLiteral("drawtext")));
+    QVERIFY(plain.contains(QStringLiteral("[v]")));
+
+    edit::TextOverlay text;
+    text.text = QStringLiteral("50%, [done]: it's; \\ \"quoted\"");
+    text.start = 1.0;
+    text.end = 4.0;
+    text.box = true;
+    ffmpeg::TextLayer layer{text, QStringLiteral("text-0.txt")};
+    const QStringList args = ffmpeg::trimArgs(segments, QStringLiteral("out.mp4"), 1920, 1080, 0, {layer});
+    const QString graph = filterGraph(args);
+    // Drawn over the finished video, which is what gets encoded.
+    QVERIFY(graph.contains(QStringLiteral(";[v]drawtext=")));
+    QVERIFY(graph.endsWith(QStringLiteral("[vt]")));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-map")) + 1), QStringLiteral("[vt]"));
+    // Only the file's name reaches the graph, never what the user typed.
+    QVERIFY(graph.contains(QStringLiteral("textfile=text-0.txt")));
+    QVERIFY(!graph.contains(QStringLiteral("done")));
+    QVERIFY(!graph.contains(QStringLiteral("quoted")));
+    QVERIFY(graph.contains(QStringLiteral("expansion=none")));
+    QVERIFY(graph.contains(QStringLiteral("enable='between(t,1.000,4.000)'")));
+    QVERIFY(graph.contains(QStringLiteral("box=1")));
+    // A box is as wide as the size asks, for the frame it is drawn on.
+    QVERIFY(graph.contains(QStringLiteral("boxborderw=%1").arg(qRound(1080 * 0.08 * 0.35))));
+    // No effect, no alpha ramp.
+    QVERIFY(!graph.contains(QStringLiteral("alpha=")));
+
+    // Each effect animates what it should, with every expression quoted
+    // (its commas would otherwise end the filter).
+    text.box = false;
+    text.effect = QStringLiteral("fade");
+    QVERIFY(ffmpeg::drawtextFilter({text, QStringLiteral("a.txt")}, 1080).contains(QStringLiteral("alpha='")));
+    text.effect = QStringLiteral("slide");
+    const QString slide = ffmpeg::drawtextFilter({text, QStringLiteral("a.txt")}, 1080);
+    QVERIFY(slide.contains(QStringLiteral("alpha='")));
+    QVERIFY(slide.contains(QStringLiteral("y='(h-th)*0.940+(1-")));
+    text.effect = QStringLiteral("pop");
+    const QString pop = ffmpeg::drawtextFilter({text, QStringLiteral("a.txt")}, 1080);
+    QVERIFY(pop.contains(QStringLiteral("fontsize='h*0.080*(0.6+0.4*")));
+    QVERIFY(!pop.contains(QStringLiteral("box=1")));
+
+    // The chosen font reaches the filter, quoted.
+    text.font = QStringLiteral("DejaVu Sans Mono");
+    QVERIFY(ffmpeg::drawtextFilter({text, QStringLiteral("a.txt")}, 1080).contains(QStringLiteral("font='DejaVu Sans Mono':")));
+    text.font = QStringLiteral("Sans");
+
+    // Several texts chain, and scaling the video scales what the box is sized from.
+    const QStringList scaled = ffmpeg::trimArgs(segments, QStringLiteral("out.mp4"), 1920, 1080, 720,
+                                                {layer, {text, QStringLiteral("b.txt")}});
+    QCOMPARE(filterGraph(scaled).count(QStringLiteral("drawtext=")), 2);
+    QVERIFY(filterGraph(scaled).contains(QStringLiteral("boxborderw=%1").arg(qRound(720 * 0.08 * 0.35))));
+    QCOMPARE(ffmpeg::outputSize(1920, 1080, 720), QSize(1280, 720));
+    QCOMPARE(ffmpeg::outputSize(1080, 1920, 720), QSize(720, 1280));
+    QCOMPARE(ffmpeg::outputSize(33, 35, 0), QSize(32, 34));
+}
+
+// How many pixels of frame differ visibly from the other, in the rows from top to bottom.
+static int differingPixels(const QImage &a, const QImage &b, int top, int bottom) {
+    int count = 0;
+    for (int y = top; y < bottom; ++y)
+        for (int x = 0; x < a.width(); ++x) {
+            const QColor p = a.pixelColor(x, y), q = b.pixelColor(x, y);
+            if (qAbs(p.red() - q.red()) + qAbs(p.green() - q.green()) + qAbs(p.blue() - q.blue()) > 90)
+                ++count;
+        }
+    return count;
+}
+
+void BackendTests::exportDrawsTheTexts() {
+    const QString sourcePath = makeVideo(QStringLiteral("texts-source.mp4"), 3.0, true, QStringLiteral("320x180"), QStringLiteral("25"));
+    QVERIFY(!sourcePath.isEmpty());
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForProbe(backend);
+    waitForBackgroundWork(backend);
+
+    const auto exportWith = [&](const QString &name, const edit::Overlays &texts) {
+        const int done = doneSpy.count() + failedSpy.count();
+        backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(name)), backend.timeline()->clips(), 0, texts);
+        [&] { QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > done, 30000); }();
+        return m_dir.filePath(name);
+    };
+
+    // Words that would break a filter graph if they ever reached one.
+    edit::TextOverlay text;
+    text.text = QStringLiteral("Hola, mundo: 50% [ñ] it's\nsecond; line");
+    text.start = 1.0;
+    text.end = 2.5;
+    text.size = 0.2;
+    text.y = 1.0;
+    text.color = QStringLiteral("#ffffff");
+    text.box = true;
+    // One nobody sees: it starts after the edit ends. One with no words.
+    edit::TextOverlay late = text;
+    late.start = 50.0;
+    late.end = 60.0;
+    edit::TextOverlay empty = text;
+    empty.text = QStringLiteral("   ");
+
+    const QString plain = exportWith(QStringLiteral("texts-plain.mp4"), {});
+    QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
+    const QString texted = exportWith(QStringLiteral("texts-drawn.mp4"), {text, late, empty});
+    QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
+
+    // The video is as long and framed as it was.
+    const ffmpeg::VideoInfo info = ffmpeg::probe(texted);
+    QVERIFY(info.ok);
+    QVERIFY(info.audio);
+    QCOMPARE(info.width, 320);
+    QCOMPARE(info.height, 180);
+    QVERIFY2(qAbs(info.duration - 3.0) < 0.2, qPrintable(QString::number(info.duration)));
+
+    // While it shows, the bottom of the frame changes, and the top doesn't;
+    // before it starts and after it ends, nothing differs at all.
+    const QImage shownDrawn = ffmpeg::thumbnail(texted, 1.7, 180);
+    const QImage shownPlain = ffmpeg::thumbnail(plain, 1.7, 180);
+    QVERIFY(!shownDrawn.isNull() && !shownPlain.isNull());
+    QVERIFY2(differingPixels(shownDrawn, shownPlain, 90, 180) > 500, "no text at the bottom of the frame");
+    // (A pixel or two is encoder noise: each file is encoded on its own.)
+    QVERIFY(differingPixels(shownDrawn, shownPlain, 0, 40) < 30);
+    for (const double at : {0.5, 2.8}) {
+        const QImage a = ffmpeg::thumbnail(texted, at, 180), b = ffmpeg::thumbnail(plain, at, 180);
+        QVERIFY(!a.isNull() && !b.isNull());
+        const int differing = differingPixels(a, b, 0, 180);
+        QVERIFY2(differing < 30, qPrintable(QStringLiteral("%1 pixels differ at %2s").arg(differing).arg(at)));
+    }
+
+    // Texts are exported as they were when asked, and mark them done.
+    backend.timeline()->addText(0.0);
+    QVERIFY(backend.timeline()->unexported());
+    const int done = doneSpy.count();
+    const edit::Overlays asked = backend.timeline()->texts();
+    backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("texts-marked.mp4"))),
+                        backend.timeline()->clips(), 0, asked);
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() > done, 30000);
+    QVERIFY(!backend.timeline()->unexported());
+    backend.timeline()->setTextProperty(0, QStringLiteral("text"), QStringLiteral("changed after"));
+    QVERIFY(backend.timeline()->unexported());
+}
+
+void BackendTests::qmlTextKeyAddsATextAndTypingIsNotShortcuts() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QVERIFY(harness.editBar());
+    QVERIFY(backend.timeline.texts().isEmpty());
+
+    // T adds a text at the playhead, opens the panel and puts the cursor in it.
+    QTest::keyClick(window, Qt::Key_5);
+    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 10.0, 3000);
+    QTest::keyClick(window, Qt::Key_T);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.texts().size(), 1, 3000);
+    QCOMPARE(backend.timeline.texts().first().start, 10.0);
+    auto *panel = window->findChild<QQuickItem *>(QStringLiteral("textPanel"));
+    auto *words = window->findChild<QQuickItem *>(QStringLiteral("textWords"));
+    QVERIFY(panel && words);
+    QTRY_VERIFY_WITH_TIMEOUT(panel->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(words->hasActiveFocus(), 3000);
+
+    // What is typed is the text, and none of its letters, digits or space
+    // does what it does outside the field: no split, zoom, jump or playback.
+    for (const QChar letter : QStringLiteral("sxzftq 50")) {
+        if (letter == QLatin1Char(' '))
+            QTest::keyClick(window, Qt::Key_Space);
+        else
+            QTest::keyClick(window, letter.toLatin1());
+    }
+    QTest::keyClick(window, Qt::Key_Question, Qt::ShiftModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.texts().first().text, QStringLiteral("sxzftq 50?"), 3000);
+    QCOMPARE(backend.timeline.texts().size(), 1);
+    QCOMPARE(backend.timeline.clips().size(), 1);
+    QCOMPARE(playhead(harness), 10.0);
+    QVERIFY(!window->property("helpVisible").toBool());
+    QVERIFY(!editBarZoomed(harness));
+
+    // Escape leaves the field (and the app is still here); the keys work again.
+    QTest::keyClick(window, Qt::Key_Escape);
+    QTRY_VERIFY_WITH_TIMEOUT(!words->hasActiveFocus(), 3000);
+    QVERIFY(panel->isVisible());
+    QTest::keyClick(window, Qt::Key_S);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips().size(), 2, 3000);
+
+    // The typing was one undo step, and the text then the one before it.
+    QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.clips().size(), 1, 3000);
+    QTest::keyClick(window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.texts().first().text, tr("Text"), 3000);
+
+    // Escape with no field focused closes the panel; the text stays.
+    QTest::keyClick(window, Qt::Key_Escape);
+    QTRY_VERIFY_WITH_TIMEOUT(!panel->isVisible(), 3000);
+    QCOMPARE(backend.timeline.texts().size(), 1);
+
+    // The preview draws the text while the playhead is in it, and only then.
+    auto *layer = window->findChild<QQuickItem *>(QStringLiteral("textLayer"));
+    QVERIFY(layer);
+    QVERIFY(layer->width() > 0 && layer->height() > 0);
+    QCOMPARE(playhead(harness), 10.0);
+    const auto shown = [&] {
+        for (QQuickItem *overlay : layer->childItems())
+            if (overlay->isVisible() && overlay->property("alpha").toDouble() > 0)
+                return true;
+        return false;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(shown(), 3000);
+    QTest::keyClick(window, Qt::Key_0);
+    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 0.0, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!shown(), 3000);
 }
 
 void BackendTests::trimArgsConcatenateTheRanges() {
