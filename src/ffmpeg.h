@@ -63,12 +63,12 @@ struct Segment {
     bool audio = false;
 };
 
-// How hard the encoder works for the size and look of the file. Fast is the
-// default and what exports always used.
+// How hard the encoder works. Fast is the default and what exports always
+// used; Smaller trades about twice the export time for a file a third smaller
+// that looks nearly the same.
 enum class Preset {
-    Fast,      // libx264 veryfast, crf 18
-    Balanced,  // medium: the same look in a smaller file, slower
-    Best,      // slower, crf 16: the smallest and cleanest file, the slowest
+    Fast,     // libx264 veryfast, crf 18
+    Smaller,  // medium, crf 22
 };
 
 // The preset for a value out of range is Fast.

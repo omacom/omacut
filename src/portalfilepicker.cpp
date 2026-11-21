@@ -204,8 +204,7 @@ void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, const QList<int> &s
     // ffmpeg::Preset values.
     choices.append({QStringLiteral("encoding"), tr("Encoding"),
                     {{QStringLiteral("0"), tr("Fast")},
-                     {QStringLiteral("1"), tr("Balanced")},
-                     {QStringLiteral("2"), tr("Smallest file")}},
+                     {QStringLiteral("1"), tr("Smaller file")}},
                     QStringLiteral("0")});
     options.insert(QStringLiteral("choices"), QVariant::fromValue(choices));
 

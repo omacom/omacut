@@ -307,7 +307,7 @@ QStringList frameArgs(const QString &path, double frameTime, double keyframeTime
 }
 
 Preset presetFromInt(int value) {
-    return value == int(Preset::Balanced) || value == int(Preset::Best) ? Preset(value) : Preset::Fast;
+    return value == int(Preset::Smaller) ? Preset::Smaller : Preset::Fast;
 }
 
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
@@ -372,11 +372,9 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
     // playable everywhere.
     const char *speed = "veryfast";
     const char *crf = "18";
-    if (preset == Preset::Balanced)
+    if (preset == Preset::Smaller) {
         speed = "medium";
-    else if (preset == Preset::Best) {
-        speed = "slower";
-        crf = "16";
+        crf = "22";
     }
     args << "-c:v" << "libx264" << "-pix_fmt" << "yuv420p"
          << "-preset" << speed << "-crf" << crf

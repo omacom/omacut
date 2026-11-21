@@ -5,7 +5,6 @@
   "Add a video": "Agregar un video",
   "Add a video after this clip": "Agregar un video después de este clip",
   "All files": "Todos los archivos",
-  "Balanced": "Equilibrado",
   "Cancel": "Cancelar",
   "Cannot open video: %1": "No se puede abrir el video: %1",
   "Clip end to playhead": "Final del clip al cabezal de reproducción",
@@ -66,7 +65,7 @@
     "many": "Se omitieron %n de archivos que no se pueden abrir.",
     "other": "Se omitieron %n archivos que no se pueden abrir."
   },
-  "Smallest file": "Archivo más pequeño",
+  "Smaller file": "Archivo más pequeño",
   "Split the clip at the playhead": "Dividir el clip en el cabezal de reproducción",
   "The portal file picker failed: %1": "Falló el selector de archivos del portal: %1",
   "The selected clip has no length.": "El clip seleccionado no tiene duración.",

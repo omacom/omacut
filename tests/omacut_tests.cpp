@@ -2657,18 +2657,16 @@ void BackendTests::trimArgsPresetsTradeSpeedForSize() {
                            args.value(args.indexOf(QStringLiteral("-crf")) + 1)};
     };
     QCOMPARE(encoding(ffmpeg::Preset::Fast), (QStringList{"veryfast", "18"}));
-    QCOMPARE(encoding(ffmpeg::Preset::Balanced), (QStringList{"medium", "18"}));
-    QCOMPARE(encoding(ffmpeg::Preset::Best), (QStringList{"slower", "16"}));
+    QCOMPARE(encoding(ffmpeg::Preset::Smaller), (QStringList{"medium", "22"}));
 
     // Without a preset the arguments are what exports always used.
     QCOMPARE(ffmpeg::trimArgs(segments, QStringLiteral("out.mp4"), 1920, 1080),
              ffmpeg::trimArgs(segments, QStringLiteral("out.mp4"), 1920, 1080, 0, ffmpeg::Preset::Fast));
 
-    QCOMPARE(ffmpeg::presetFromInt(1), ffmpeg::Preset::Balanced);
-    QCOMPARE(ffmpeg::presetFromInt(2), ffmpeg::Preset::Best);
+    QCOMPARE(ffmpeg::presetFromInt(1), ffmpeg::Preset::Smaller);
     QCOMPARE(ffmpeg::presetFromInt(0), ffmpeg::Preset::Fast);
     QCOMPARE(ffmpeg::presetFromInt(-1), ffmpeg::Preset::Fast);
-    QCOMPARE(ffmpeg::presetFromInt(7), ffmpeg::Preset::Fast);
+    QCOMPARE(ffmpeg::presetFromInt(2), ffmpeg::Preset::Fast);
 }
 
 static QString filterGraph(const QStringList &args) {

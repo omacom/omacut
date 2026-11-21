@@ -5,7 +5,6 @@
   "Add a video": "Add a video",
   "Add a video after this clip": "Add a video after this clip",
   "All files": "All files",
-  "Balanced": "Balanced",
   "Cancel": "Cancel",
   "Cannot open video: %1": "Cannot open video: %1",
   "Clip end to playhead": "Clip end to playhead",
@@ -66,7 +65,7 @@
     "one": "Skipped a file that won't open.",
     "other": "Skipped %n files that won't open."
   },
-  "Smallest file": "Smallest file",
+  "Smaller file": "Smaller file",
   "Split the clip at the playhead": "Split the clip at the playhead",
   "The export is still running, and quitting stops it. Quit anyway?": "The export is still running, and quitting stops it. Quit anyway?",
   "The portal file picker failed: %1": "The portal file picker failed: %1",
