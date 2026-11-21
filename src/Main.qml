@@ -85,8 +85,8 @@ ApplicationWindow {
         return backend.addVideos(urls, editBar.playheadSec);
     }
     // Adds a text at the playhead and puts the cursor in it.
-    function addText() {
-        var i = timeline.addText(editBar.playheadSec);
+    function addText(seconds) {
+        var i = timeline.addText(seconds === undefined ? editBar.playheadSec : seconds);
         if (i < 0)
             return;
         textPanelOpen = true;
@@ -927,34 +927,61 @@ ApplicationWindow {
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever the text strips above them add.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: win.playing() ? "pause" : "play"
                 tipText: win.playing() ? qsTr("Pause") : qsTr("Play")
                 enabled: timeline.duration > 0
                 onClicked: togglePlay()
             }
 
-            EditBar {
-                id: editBar
-                objectName: "editBar"
+            ColumnLayout {
                 Layout.fillWidth: true
-                // Frozen while a probe is in flight: it is about to replace
-                // or extend the timeline the bar is showing.
-                enabled: !backend.probing
-                accent: win.accent
-                accentForeground: win.accentForeground
-                onScrub: (seconds) => {
-                    player.pause();
-                    seekTo(seconds);
+                spacing: 6
+
+                // The texts' strips, on the clips' time scale.
+                TextTrack {
+                    id: textTrack
+                    visible: win.hasVideo && timeline.texts.length > 0
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: implicitHeight
+                    bar: editBar
+                    enabled: !backend.probing
+                    current: textPanel.current
+                    // Pressing picks the text, so dragging doesn't move the layout
+                    // from under the pointer; a click also opens the panel on it.
+                    onPicked: (index) => textPanel.select(index, false)
+                    onClicked: win.textPanelOpen = true
+                    onAddRequested: (seconds) => win.addText(seconds)
                 }
-                onScrubClip: (index, sourceTime) => {
-                    player.pause();
-                    player.show(index, sourceTime, false);
+
+                EditBar {
+                    id: editBar
+                    objectName: "editBar"
+                    Layout.fillWidth: true
+                    // Frozen while a probe is in flight: it is about to replace
+                    // or extend the timeline the bar is showing.
+                    enabled: !backend.probing
+                    accent: win.accent
+                    accentForeground: win.accentForeground
+                    onScrub: (seconds) => {
+                        player.pause();
+                        seekTo(seconds);
+                    }
+                    onScrubClip: (index, sourceTime) => {
+                        player.pause();
+                        player.show(index, sourceTime, false);
+                    }
                 }
             }
 
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever the text strips above them add.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: "plus"
                 tipText: qsTr("Add a video")
                 enabled: timeline.duration > 0 && !backend.busy
@@ -964,6 +991,9 @@ ApplicationWindow {
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever the text strips above them add.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: "text"
                 tipText: qsTr("Text")
                 enabled: timeline.duration > 0
@@ -973,6 +1003,9 @@ ApplicationWindow {
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
+                // Level with the clips, whatever the text strips above them add.
+                Layout.alignment: Qt.AlignBottom
+                Layout.bottomMargin: 16
                 iconName: "download"
                 tipText: qsTr("Export")
                 enabled: timeline.duration > 0 && !backend.busy

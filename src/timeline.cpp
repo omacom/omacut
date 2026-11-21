@@ -130,6 +130,17 @@ int Timeline::addText(double t) {
     text.end = std::min(std::max(t, 0.0) + 3.0, total);
     text.start = std::max(0.0, std::min(std::max(t, 0.0), text.end - 1.0));
     text.end = std::max(text.end, std::min(text.start + edit::minimumText, total));
+    // Not on top of a text it overlaps in time: the first of the usual
+    // places that none of them has taken.
+    for (const double y : {0.94, 0.5, 0.06}) {
+        bool taken = false;
+        for (const edit::TextOverlay &other : m_texts)
+            taken = taken || (other.start < text.end && other.end > text.start && std::abs(other.y - y) < 0.001);
+        if (!taken) {
+            text.y = y;
+            break;
+        }
+    }
     edit::Overlays next = m_texts;
     next.append(text);
     apply(m_clips, next);

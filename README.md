@@ -28,6 +28,8 @@ Press **T** (or click the **T** button) to add a text at the playhead, and start
 - **Box**: a dark box behind the text, for busy footage.
 - **Outline**: none, thin, medium or thick, in any of the colors. It is round and as wide as it is asked, grown in the preview with the Jump Flooding Algorithm and in export by `drawtext`'s border.
 
+Every text has its own **strip** on a track above the clips, on the same time scale: drag a strip to move the text, drag either end to set when it starts and stops showing, click it to edit it, and double-click an empty spot on the track to add another text there. Texts that overlap in time get lanes of their own, and a new one lands in a free spot (bottom, middle, top) rather than on top of the others.
+
 Texts live on their own track along the edit, so cutting or moving clips doesn't move them. The preview draws them live, and export burns them into the video (the same fractions of the frame, so what you see is what you get). Adding, changing and removing texts is undoable (Ctrl+Z), and typing in a text is a single undo step. Text is drawn with ffmpeg's `drawtext`, so ffmpeg needs `libfreetype` (standard builds have it).
 
 Confirmations are answered from the keyboard: the arrows and Tab move between the buttons, Enter presses one, a button's underlined letter presses that one (with or without Alt), and Escape backs out.

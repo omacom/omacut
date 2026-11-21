@@ -3,6 +3,7 @@
         <file alias="Main.qml">Main.qml</file>
         <file alias="EditBar.qml">EditBar.qml</file>
         <file alias="TextPanel.qml">TextPanel.qml</file>
+        <file alias="TextTrack.qml">TextTrack.qml</file>
         <file alias="Format.js">Format.js</file>
         <file alias="i18n/en.json">i18n/en.json</file>
         <file alias="i18n/ar.json">i18n/ar.json</file>

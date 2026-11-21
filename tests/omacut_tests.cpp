@@ -413,6 +413,8 @@ private slots:
     void outlineProviderServesImages();
     void exportDrawsTheOutline();
     void qmlPreviewDrawsTheOutline();
+    void newTextsDoNotLandOnOverlappingOnes();
+    void qmlTextStripsMoveResizeAndAddTexts();
     void qmlTextKeyAddsATextAndTypingIsNotShortcuts();
     void exportHeightsNeverUpscale();
     void thumbnailPastTheLastFrameShowsTheLastOne();
@@ -3262,6 +3264,102 @@ void BackendTests::qmlPreviewDrawsTheOutline() {
     // Taking it away hides it again.
     backend.timeline.setTextProperty(0, QStringLiteral("outline"), 0.0);
     QTRY_VERIFY_WITH_TIMEOUT(!ring->isVisible(), 3000);
+}
+
+void BackendTests::newTextsDoNotLandOnOverlappingOnes() {
+    Timeline timeline;
+    timeline.reset(20.0);
+    QCOMPARE(timeline.addText(1.0), 0);
+    QCOMPARE(timeline.texts().at(0).y, 0.94);
+    // Overlapping in time: the next usual place, then the next.
+    QCOMPARE(timeline.addText(2.0), 1);
+    QCOMPARE(timeline.texts().at(1).y, 0.5);
+    QCOMPARE(timeline.addText(3.0), 2);
+    QCOMPARE(timeline.texts().at(2).y, 0.06);
+    // After they have all ended, the first place is free again.
+    QCOMPARE(timeline.addText(10.0), 3);
+    QCOMPARE(timeline.texts().at(3).y, 0.94);
+}
+
+void BackendTests::qmlTextStripsMoveResizeAndAddTexts() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    auto *track = window->findChild<QQuickItem *>(QStringLiteral("textTrack"));
+    QVERIFY(track);
+    // No texts, no track.
+    QVERIFY(!track->isVisible());
+
+    backend.timeline.addText(2.0);
+    backend.timeline.addText(4.0);
+    const auto strips = [&] {
+        QList<QQuickItem *> found;
+        for (QQuickItem *item : track->childItems())
+            if (item->objectName() == QLatin1String("textStrip"))
+                found.append(item);
+        return found;
+    };
+    QTRY_COMPARE_WITH_TIMEOUT(strips().size(), 2, 3000);
+    QVERIFY(track->isVisible());
+    // It is as wide as the clips' bar it follows.
+    auto *bar = window->findChild<QQuickItem *>(QStringLiteral("editBar"));
+    QVERIFY(bar);
+    QTRY_VERIFY_WITH_TIMEOUT(track->width() > 100, 3000);
+    QCOMPARE(track->width(), bar->width());
+    QCOMPARE(track->mapToScene(QPointF(0, 0)).x(), bar->mapToScene(QPointF(0, 0)).x());
+    // Texts that overlap in time have a strip each, in lanes of their own.
+    QVERIFY(strips().at(0)->y() != strips().at(1)->y());
+    QVERIFY(strips().at(0)->width() > 20);
+    const auto center = [&](QQuickItem *item, double fromLeft = -1) {
+        return item->mapToScene(QPointF(fromLeft < 0 ? item->width() / 2 : fromLeft, item->height() / 2)).toPoint();
+    };
+
+    // Dragging a strip moves the text, keeping its length, as one undo step.
+    const edit::TextOverlay first = backend.timeline.texts().at(0);
+    QQuickItem *strip = strips().at(0);
+    QPoint from = center(strip);
+    QTest::mousePress(window, Qt::LeftButton, {}, from);
+    for (int step = 1; step <= 6; ++step)
+        QTest::mouseMove(window, from + QPoint(step * 15, 0));
+    QTest::mouseRelease(window, Qt::LeftButton, {}, from + QPoint(90, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(backend.timeline.texts().at(0).start > first.start + 0.5, 3000);
+    QVERIFY(qAbs(backend.timeline.texts().at(0).length() - first.length()) < 0.001);
+    backend.timeline.undo();
+    QCOMPARE(backend.timeline.texts().at(0).start, first.start);
+
+    // Its right end sets when it stops showing; the left end, when it starts.
+    strip = strips().at(0);
+    from = center(strip, strip->width() - 3);
+    QTest::mousePress(window, Qt::LeftButton, {}, from);
+    for (int step = 1; step <= 5; ++step)
+        QTest::mouseMove(window, from + QPoint(step * 12, 0));
+    QTest::mouseRelease(window, Qt::LeftButton, {}, from + QPoint(60, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(backend.timeline.texts().at(0).end > first.end + 0.5, 3000);
+    QCOMPARE(backend.timeline.texts().at(0).start, first.start);
+    strip = strips().at(0);
+    from = center(strip, 3);
+    const double endNow = backend.timeline.texts().at(0).end;
+    QTest::mousePress(window, Qt::LeftButton, {}, from);
+    for (int step = 1; step <= 5; ++step)
+        QTest::mouseMove(window, from + QPoint(step * 8, 0));
+    QTest::mouseRelease(window, Qt::LeftButton, {}, from + QPoint(40, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(backend.timeline.texts().at(0).start > first.start + 0.3, 3000);
+    QCOMPARE(backend.timeline.texts().at(0).end, endNow);
+
+    // A click picks the text in the panel, which opens.
+    auto *panel = window->findChild<QQuickItem *>(QStringLiteral("textPanel"));
+    QVERIFY(panel);
+    QVERIFY(!panel->isVisible());
+    QTest::mouseClick(window, Qt::LeftButton, {}, center(strips().at(1)));
+    QTRY_VERIFY_WITH_TIMEOUT(panel->isVisible(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(panel->property("current").toInt(), 1, 3000);
+
+    // Double-clicking an empty stretch of the track adds a text there.
+    const QPoint empty = track->mapToScene(QPointF(track->width() - 10, track->height() - 4)).toPoint();
+    QTest::mouseDClick(window, Qt::LeftButton, {}, empty);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.texts().size(), 3, 3000);
+    QVERIFY(backend.timeline.texts().at(2).start > 10.0);
 }
 
 void BackendTests::qmlTextKeyAddsATextAndTypingIsNotShortcuts() {
