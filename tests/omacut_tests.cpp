@@ -3171,6 +3171,26 @@ void BackendTests::qmlLogoIsChosenShownAndDragged() {
     QTest::mouseRelease(window, Qt::LeftButton, {}, grab + QPoint(60, 25));
     QTRY_VERIFY_WITH_TIMEOUT(qAbs(backend.logo.x() - (0.3 + 60.0 / layer->width())) < 0.02, 3000);
     QVERIFY(qAbs(backend.logo.y() - (0.3 + 25.0 / layer->height())) < 0.02);
+    // Dragging the bottom right corner handle resizes it, keeping its shape and its top left corner.
+    backend.logo.setCenter(0.4, 0.4);
+    backend.logo.setSize(0.2);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(shownBox().center().x() - layer->width() * 0.4) < 1.0, 3000);
+    QQuickItem *handle = nullptr;
+    for (QQuickItem *child : image->childItems())
+        if (child->objectName() == QLatin1String("logoHandle3"))
+            handle = child;
+    QVERIFY(handle);
+    const QRectF before = shownBox();
+    const QPoint corner = handle->mapToScene(QPointF(handle->width() / 2, handle->height() / 2)).toPoint();
+    QTest::mousePress(window, Qt::LeftButton, {}, corner);
+    QTest::mouseMove(window, corner + QPoint(10, 5));
+    const int growth = 40;
+    QTest::mouseMove(window, corner + QPoint(growth, growth));
+    QTest::mouseRelease(window, Qt::LeftButton, {}, corner + QPoint(growth, growth));
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(shownBox().width() - (before.width() + growth)) < 2.0, 3000);
+    QVERIFY(qAbs(shownBox().x() - before.x()) < 1.5 && qAbs(shownBox().y() - before.y()) < 1.5);
+    QVERIFY(qAbs(shownBox().height() * 2 - shownBox().width()) < 1.5);
+
     // And it cannot be dragged out of the frame.
     const QPoint inside = image->mapToScene(QPointF(image->width() / 2, image->height() / 2)).toPoint();
     QTest::mousePress(window, Qt::LeftButton, {}, inside);

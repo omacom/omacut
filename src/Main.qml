@@ -825,6 +825,54 @@ ApplicationWindow {
                                                (at.y - grabY + logoImage.height / 2) / logoLayer.height);
                         }
                     }
+                    // The wheel over the logo resizes it too.
+                    WheelHandler {
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                        onWheel: (event) => win.logo.setSize(win.logo.size * Math.pow(1.0015, event.angleDelta.y))
+                    }
+
+                    // A handle on each corner: dragging one resizes the logo, keeping its shape and
+                    // the opposite corner where it is.
+                    Repeater {
+                        model: [{ hx: -1, hy: -1 }, { hx: 1, hy: -1 }, { hx: -1, hy: 1 }, { hx: 1, hy: 1 }]
+                        delegate: Rectangle {
+                            id: handle
+                            required property int index
+                            required property var modelData
+                            objectName: "logoHandle" + index
+                            width: 12
+                            height: 12
+                            radius: 2
+                            color: "white"
+                            border.color: theme.accent
+                            border.width: 2
+                            x: (modelData.hx < 0 ? 0 : logoImage.width) - width / 2
+                            y: (modelData.hy < 0 ? 0 : logoImage.height) - height / 2
+
+                            property real oppX: 0
+                            property real oppY: 0
+                            MouseArea {
+                                anchors.fill: parent
+                                anchors.margins: -4
+                                cursorShape: (handle.modelData.hx * handle.modelData.hy > 0)
+                                    ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor
+                                onPressed: {
+                                    handle.oppX = logoImage.x + (handle.modelData.hx < 0 ? logoImage.width : 0);
+                                    handle.oppY = logoImage.y + (handle.modelData.hy < 0 ? logoImage.height : 0);
+                                }
+                                onPositionChanged: (mouse) => {
+                                    if (!pressed || logoLayer.width <= 0)
+                                        return;
+                                    var at = mapToItem(logoLayer, mouse.x, mouse.y);
+                                    var w = handle.modelData.hx < 0 ? handle.oppX - at.x : at.x - handle.oppX;
+                                    win.logo.setSize(Math.max(w, 1) / logoLayer.width);
+                                    var box = win.logo.box(logoLayer.width, logoLayer.height);
+                                    win.logo.setCenter((handle.oppX + handle.modelData.hx * box.width / 2) / logoLayer.width,
+                                                       (handle.oppY + handle.modelData.hy * box.height / 2) / logoLayer.height);
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
