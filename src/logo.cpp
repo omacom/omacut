@@ -4,6 +4,10 @@
 #include <QFileInfo>
 #include <QImageReader>
 
+#include <QMetaProperty>
+
+#include "timeline.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -42,9 +46,39 @@ bool stillImageName(const QString &suffix) {
 }
 }
 
+QVariantList Logo::timelineState() const {
+    QVariantList state;
+    if (!m_timeline)
+        return state;
+    static const QStringList apart = {QStringLiteral("objectName"), QStringLiteral("canUndo"),
+                                      QStringLiteral("canRedo"), QStringLiteral("unexported")};
+    const QMetaObject *meta = m_timeline->metaObject();
+    for (int i = 0; i < meta->propertyCount(); ++i) {
+        const QMetaProperty property = meta->property(i);
+        if (!apart.contains(QString::fromLatin1(property.name())))
+            state.append(property.read(m_timeline));
+    }
+    return state;
+}
+
 void Logo::update(const logo::Settings &next) {
     if (next == m_settings)
         return;
+    if (!m_gesture || !m_gestureRecorded) {
+        m_undo.append({m_settings, timelineState()});
+        if (m_undo.size() > 200)
+            m_undo.removeFirst();
+        m_redo.clear();
+        m_gestureRecorded = m_gesture;
+    }
+    apply(next);
+}
+
+void Logo::apply(const logo::Settings &next) {
+    if (next == m_settings) {
+        emit changed();
+        return;
+    }
     const bool wasActive = active();
     m_settings = next;
     emit changed();
@@ -80,6 +114,48 @@ bool Logo::setSource(const QUrl &url) {
     next.aspect = double(size.width()) / size.height();
     update(next);
     return true;
+}
+
+bool Logo::ownsUndo() const {
+    return !m_undo.isEmpty() && m_undo.last().timeline == timelineState();
+}
+
+bool Logo::ownsRedo() const {
+    return !m_redo.isEmpty() && m_redo.last().timeline == timelineState();
+}
+
+void Logo::undo() {
+    if (m_undo.isEmpty())
+        return;
+    const Step step = m_undo.takeLast();
+    m_redo.append({m_settings, timelineState()});
+    apply(step.settings);
+}
+
+void Logo::redo() {
+    if (m_redo.isEmpty())
+        return;
+    const Step step = m_redo.takeLast();
+    m_undo.append({m_settings, timelineState()});
+    apply(step.settings);
+}
+
+void Logo::beginGesture() {
+    m_gesture = true;
+    m_gestureRecorded = false;
+}
+
+void Logo::endGesture() {
+    m_gesture = false;
+    m_gestureRecorded = false;
+}
+
+void Logo::clearHistory() {
+    if (m_undo.isEmpty() && m_redo.isEmpty())
+        return;
+    m_undo.clear();
+    m_redo.clear();
+    emit changed();
 }
 
 void Logo::clear() {

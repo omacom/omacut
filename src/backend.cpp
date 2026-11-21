@@ -67,6 +67,7 @@ void Backend::wireFilePicker() {
     });
     connect(m_filePicker, &FilePicker::imageSelected, this, [this](const QUrl &url) { m_logo.setSource(url); });
     connect(&m_logo, &Logo::failed, this, &Backend::logoError);
+    m_logo.setTimeline(&m_timeline);
     connect(m_filePicker, &FilePicker::failed, this, &Backend::loadError);
 }
 

@@ -65,6 +65,7 @@ DialogPanel {
             focusPolicy: Qt.NoFocus
             Material.accent: theme.accent
             onMoved: setting.moved(value)
+            onPressedChanged: pressed ? panel.logo.beginGesture() : panel.logo.endGesture()
         }
         Label {
             text: Math.round(slider.value * 100) + "%"

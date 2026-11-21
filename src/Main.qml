@@ -395,15 +395,15 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+Z"
         context: Qt.ApplicationShortcut
-        enabled: win.editing && timeline.canUndo
-        onActivated: timeline.undo()
+        enabled: win.editing && (timeline.canUndo || logo.canUndo)
+        onActivated: logo.ownsUndo() ? logo.undo() : timeline.undo()
     }
 
     Shortcut {
         sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]
         context: Qt.ApplicationShortcut
-        enabled: win.editing && timeline.canRedo
-        onActivated: timeline.redo()
+        enabled: win.editing && (timeline.canRedo || logo.canRedo)
+        onActivated: logo.ownsRedo() || !timeline.canRedo ? logo.redo() : timeline.redo()
     }
 
     Shortcut {
@@ -816,7 +816,9 @@ ApplicationWindow {
                         // Where in the logo it was taken, so it doesn't jump to the pointer.
                         property real grabX: 0
                         property real grabY: 0
-                        onPressed: (mouse) => { grabX = mouse.x; grabY = mouse.y; }
+                        onPressed: (mouse) => { grabX = mouse.x; grabY = mouse.y; win.logo.beginGesture(); }
+                        onReleased: win.logo.endGesture()
+                        onCanceled: win.logo.endGesture()
                         onPositionChanged: (mouse) => {
                             if (!pressed || logoLayer.width <= 0 || logoLayer.height <= 0)
                                 return;
@@ -856,7 +858,10 @@ ApplicationWindow {
                                 anchors.margins: -4
                                 cursorShape: (handle.modelData.hx * handle.modelData.hy > 0)
                                     ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor
+                                onReleased: win.logo.endGesture()
+                                onCanceled: win.logo.endGesture()
                                 onPressed: {
+                                    win.logo.beginGesture();
                                     handle.oppX = logoImage.x + (handle.modelData.hx < 0 ? logoImage.width : 0);
                                     handle.oppY = logoImage.y + (handle.modelData.hy < 0 ? logoImage.height : 0);
                                 }

@@ -153,6 +153,7 @@ public:
     explicit ShortcutBackend(QUrl source, double duration, QObject *parent = nullptr)
         : QObject(parent), m_source(std::move(source)), m_duration(duration) {
         timeline.reset(duration);
+        logo.setTimeline(&timeline);
         if (!m_source.isEmpty())
             m_videos = {QVariantMap{{QStringLiteral("url"), m_source}, {QStringLiteral("thumbKey"), nextThumbKey()}}};
     }
@@ -415,6 +416,7 @@ private slots:
     void logoTakesOnlyStillImages();
     void logoKeepsItsPlacementAndClampsIt();
     void logoCountsAsUnexportedUntilExported();
+    void logoEditsUndoInOrderWithTheClips();
     void trimArgsOverlayTheLogo();
     void exportPutsTheLogoOverTheVideo();
     void exportRefusesALogoThatIsGone();
@@ -2935,6 +2937,59 @@ void BackendTests::logoCountsAsUnexportedUntilExported() {
     QVERIFY(!logo->unexported());
     logo->setSize(0.3);
     QVERIFY(logo->unexported());
+}
+
+void BackendTests::logoEditsUndoInOrderWithTheClips() {
+    const QString png = makeLogoImage(m_dir.filePath(QStringLiteral("undo-logo.png")), QSize(20, 10), Qt::red);
+    Timeline timeline;
+    timeline.reset(10.0);
+    Logo logo;
+    logo.setTimeline(&timeline);
+    // The same rule the shortcuts use: the logo's step if it came last, else the clips'.
+    const auto undo = [&] { logo.ownsUndo() ? logo.undo() : timeline.undo(); };
+    const auto redo = [&] { logo.ownsRedo() || !timeline.canRedo() ? logo.redo() : timeline.redo(); };
+
+    QVERIFY(logo.setSource(QUrl::fromLocalFile(png)));          // L1: add
+    timeline.split(5.0);                                        // T
+    logo.setSize(0.3);                                          // L2
+    // A drag is one step however many moves it makes.
+    logo.beginGesture();
+    logo.setCenter(0.2, 0.2);
+    logo.setCenter(0.3, 0.3);
+    logo.setCenter(0.4, 0.4);
+    logo.endGesture();                                          // L3
+    QCOMPARE(logo.x(), 0.4);
+
+    undo();
+    QCOMPARE(logo.x(), 0.95);                                   // L3 undone, whole drag
+    QCOMPARE(logo.size(), 0.3);
+    undo();
+    QCOMPARE(logo.size(), 0.15);                                // L2
+    QCOMPARE(timeline.clips().size(), 2);
+    undo();
+    QCOMPARE(timeline.clips().size(), 1);                       // T, after both logo edits
+    QVERIFY(logo.active());
+    undo();
+    QVERIFY(!logo.active());                                    // L1
+    QVERIFY(!logo.canUndo());
+
+    redo();
+    QVERIFY(logo.active());
+    QCOMPARE(timeline.clips().size(), 1);
+    redo();
+    QCOMPARE(timeline.clips().size(), 2);
+    redo();
+    QCOMPARE(logo.size(), 0.3);
+    redo();
+    QCOMPARE(logo.x(), 0.4);
+    QVERIFY(!logo.canRedo());
+
+    // A new edit drops what could have been redone; a new video drops it all.
+    undo();
+    logo.setOpacity(0.5);
+    QVERIFY(!logo.canRedo());
+    logo.markCurrentExported();
+    QVERIFY(!logo.canUndo());
 }
 
 void BackendTests::trimArgsOverlayTheLogo() {

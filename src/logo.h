@@ -6,6 +6,10 @@
 #include <QString>
 #include <QUrl>
 
+#include <QVariantList>
+
+class Timeline;
+
 // A logo drawn over the whole exported video: an image, placed by where its
 // centre falls in the frame (as fractions of it, so it lands in the same
 // place at any size), as wide as a fraction of the frame's width, and as
@@ -62,6 +66,8 @@ class Logo : public QObject {
     Q_PROPERTY(double opacity READ opacity NOTIFY changed)
     // Set up and not exported as it stands.
     Q_PROPERTY(bool unexported READ unexported NOTIFY changed)
+    Q_PROPERTY(bool canUndo READ canUndo NOTIFY changed)
+    Q_PROPERTY(bool canRedo READ canRedo NOTIFY changed)
 
 public:
     explicit Logo(QObject *parent = nullptr) : QObject(parent) {}
@@ -75,6 +81,24 @@ public:
     double opacity() const { return m_settings.opacity; }
     bool unexported() const { return active() && m_settings != m_exported; }
     logo::Settings settings() const { return m_settings; }
+
+    // The timeline being edited beside the logo, so Ctrl+Z can tell which edit
+    // came last: the logo's own history is ordered against it by how it
+    // stood (everything it shows, which is whatever it edits) when each logo
+    // edit was made. Optional.
+    void setTimeline(Timeline *timeline) { m_timeline = timeline; }
+    bool canUndo() const { return !m_undo.isEmpty(); }
+    bool canRedo() const { return !m_redo.isEmpty(); }
+    // Whether the next undo (or redo) is the logo's rather than the timeline's:
+    // true when the timeline is as it was when that logo edit was made.
+    Q_INVOKABLE bool ownsUndo() const;
+    Q_INVOKABLE bool ownsRedo() const;
+    Q_INVOKABLE void undo();
+    Q_INVOKABLE void redo();
+    // A drag or slider is one undo step, however many changes it makes.
+    Q_INVOKABLE void beginGesture();
+    Q_INVOKABLE void endGesture();
+    void clearHistory();
 
     // Takes an image as the logo, keeping where, how big and how opaque it
     // was if there already was one. False, with failed(), when it isn't an
@@ -94,7 +118,8 @@ public:
     // The export wrote these settings: nothing is unexported until they change.
     void markExported(const logo::Settings &exported);
     // Whatever is set now is how things start, as for a newly opened video.
-    void markCurrentExported() { markExported(m_settings); }
+    // The history goes with it: a new video starts a new edit.
+    void markCurrentExported() { markExported(m_settings); clearHistory(); }
 
 signals:
     void changed();
@@ -102,7 +127,22 @@ signals:
     void failed(const QString &message);
 
 private:
+    struct Step {
+        logo::Settings settings;
+        QVariantList timeline;
+    };
+    // Sets the logo, recording how it was as an undo step.
     void update(const logo::Settings &next);
+    // Sets it without recording anything.
+    void apply(const logo::Settings &next);
+    // What the timeline holds, apart from its history and export state.
+    QVariantList timelineState() const;
+
+    Timeline *m_timeline = nullptr;
+    QList<Step> m_undo;
+    QList<Step> m_redo;
+    bool m_gesture = false;
+    bool m_gestureRecorded = false;
 
     logo::Settings m_settings;
     logo::Settings m_exported;
