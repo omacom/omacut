@@ -9,6 +9,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QStandardPaths>
 
 namespace ffmpeg {
@@ -72,6 +73,90 @@ QString toolPath(const QString &tool) {
     return QStandardPaths::findExecutable(tool);
 }
 
+namespace {
+
+// "13250/50000" as 0.265.
+double rational(const QJsonValue &value) {
+    const QStringList parts = value.toString().split('/');
+    const double numerator = parts.value(0).toDouble();
+    const double denominator = parts.size() > 1 ? parts[1].toDouble() : 1.0;
+    return denominator != 0.0 ? numerator / denominator : 0.0;
+}
+
+// The bits per channel of ffprobe's pixel format name: yuv420p10le, gbrp12be,
+// p010le (8 when it says nothing).
+int bitDepthOf(const QJsonObject &stream) {
+    const int raw = stream.value("bits_per_raw_sample").toString().toInt();
+    if (raw > 0)
+        return raw;
+    const QString format = stream.value("pix_fmt").toString();
+    static const QRegularExpression suffix("(\\d+)(le|be)$");
+    const QRegularExpressionMatch match = suffix.match(format);
+    if (match.hasMatch())
+        return match.captured(1).toInt();
+    static const QRegularExpression semiPlanar("^p0(\\d\\d)");
+    const QRegularExpressionMatch semi = semiPlanar.match(format);
+    if (semi.hasMatch())
+        return semi.captured(1).toInt();
+    return 8;
+}
+
+// Reads HDR10's static metadata out of a list of side data, whether it came
+// from the stream or from a frame.
+void readStaticMetadata(const QJsonArray &sideData, Color &color) {
+    for (const QJsonValue &value : sideData) {
+        const QJsonObject data = value.toObject();
+        const QString type = data.value("side_data_type").toString();
+        if (type == "Mastering display metadata") {
+            // x265 counts chromaticity in 0.00002 and luminance in 0.0001 cd/m².
+            const auto chroma = [&](const char *key) { return qRound(rational(data.value(key)) * 50000); };
+            const auto luma = [&](const char *key) { return qRound(rational(data.value(key)) * 10000); };
+            color.masterDisplay = QString("G(%1,%2)B(%3,%4)R(%5,%6)WP(%7,%8)L(%9,%10)")
+                .arg(chroma("green_x")).arg(chroma("green_y"))
+                .arg(chroma("blue_x")).arg(chroma("blue_y"))
+                .arg(chroma("red_x")).arg(chroma("red_y"))
+                .arg(chroma("white_point_x")).arg(chroma("white_point_y"))
+                .arg(luma("max_luminance")).arg(luma("min_luminance"));
+        } else if (type == "Content light level metadata") {
+            color.maxCll = QString("%1,%2").arg(data.value("max_content").toInt())
+                                           .arg(data.value("max_average").toInt());
+        }
+    }
+}
+
+Color colorOf(const QJsonObject &stream) {
+    Color color;
+    color.bitDepth = bitDepthOf(stream);
+    const auto tag = [&](const char *key) {
+        const QString value = stream.value(key).toString();
+        return value == "unknown" ? QString() : value;
+    };
+    color.primaries = tag("color_primaries");
+    color.transfer = tag("color_transfer");
+    color.space = tag("color_space");
+    color.range = tag("color_range");
+    readStaticMetadata(stream.value("side_data_list").toArray(), color);
+    return color;
+}
+
+// HEVC carries the static metadata in SEI messages, which ffprobe lists on
+// frames rather than on the stream: read the first one.
+void readFrameMetadata(const QString &ffprobe, const QString &path, int streamIndex, Color &color) {
+    QProcess proc;
+    proc.start(ffprobe, {"-v", "error", "-print_format", "json", "-select_streams", QString::number(streamIndex),
+                         "-read_intervals", "%+#1", "-show_frames", path});
+    if (!proc.waitForFinished(kProbeTimeoutMs) || proc.exitCode() != 0) {
+        proc.kill();
+        proc.waitForFinished(-1);
+        return;
+    }
+    const QJsonArray frames = QJsonDocument::fromJson(proc.readAllStandardOutput()).object().value("frames").toArray();
+    if (!frames.isEmpty())
+        readStaticMetadata(frames.first().toObject().value("side_data_list").toArray(), color);
+}
+
+}  // namespace
+
 VideoInfo probe(const QString &path) {
     VideoInfo info;
     info.path = path;
@@ -122,6 +207,9 @@ VideoInfo probe(const QString &path) {
         return info;
     }
 
+    info.color = colorOf(stream);
+    if (info.color.transfer == "smpte2084" && info.color.masterDisplay.isEmpty())
+        readFrameMetadata(ffprobe, path, stream.value("index").toInt(), info.color);
     info.width = stream.value("width").toInt();
     info.height = stream.value("height").toInt();
     // Phones record sideways and say how to turn it upright, in a display
@@ -310,10 +398,20 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
                      int width, int height, int scaleHeight) {
     bool audio = false;
     bool mixed = false;
+    // The output is as deep as the deepest segment, and takes the color tags
+    // of the first HDR one (or else the first segment).
+    Color color = segments.first().color;
+    int depth = 8;
     for (const Segment &segment : segments) {
         audio = audio || segment.audio;
         mixed = mixed || segment.path != segments.first().path;
+        depth = qMax(depth, segment.color.bitDepth);
+        if (!color.hdr() && segment.color.hdr())
+            color = segment.color;
     }
+    // Encoders take 8, 10 or 12 bits: 9 becomes 10, and 14 or 16 become 12.
+    const bool deep = depth > 8;
+    const QString pixFmt = deep ? QString("yuv420p%1le").arg(depth > 10 ? 12 : 10) : QString("yuv420p");
 
     // Machine-readable progress on stdout (errors stay on stderr), so the UI
     // can show how far along the encode is.
@@ -337,8 +435,8 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
         // the padding; libx264 needs even sides.
         graph += QString("[%1:V:0]scale='trunc(iw*sar/2)*2':ih,setsar=1,"
                          "scale=%2:%3:force_original_aspect_ratio=decrease,"
-                         "pad=%2:%3:-1:-1,setsar=1,format=yuv420p[v%1];")
-                     .arg(i).arg(width / 2 * 2).arg(height / 2 * 2);
+                         "pad=%2:%3:-1:-1,setsar=1,format=%4[v%1];")
+                     .arg(i).arg(width / 2 * 2).arg(height / 2 * 2).arg(pixFmt);
         if (segment.audio)
             graph += QString("[%1:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a%1];").arg(i);
         else if (audio)
@@ -364,12 +462,43 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
     if (audio)
         args << "-map" << "[a]" << "-c:a" << "aac";
     // +faststart puts the moov atom up front so shared clips start playing
-    // before they finish downloading; yuv420p keeps RGB/4:4:4/10-bit sources
-    // playable everywhere.
-    args << "-c:v" << "libx264" << "-pix_fmt" << "yuv420p"
-         << "-preset" << "veryfast" << "-crf" << "18"
-         << "-movflags" << "+faststart"
-         << dst;
+    // before they finish downloading. The pixel format keeps RGB and 4:4:4
+    // sources playable everywhere; 10 and 12 bit sources stay that deep, which
+    // libx264 can't do everywhere, so they go to HEVC.
+    if (deep)
+        args << "-c:v" << "libx265" << "-tag:v" << "hvc1";
+    else
+        args << "-c:v" << "libx264";
+    args << "-pix_fmt" << pixFmt;
+    // Say how to read the pixels, or players guess BT.709 and an HDR video
+    // comes out washed out.
+    if (deep || color.hdr()) {
+        const QList<QPair<QString, QString>> tags = {
+            {"-color_primaries", color.primaries}, {"-color_trc", color.transfer},
+            {"-colorspace", color.space}, {"-color_range", color.range}};
+        for (const auto &[option, value] : tags) {
+            if (!value.isEmpty())
+                args << option << value;
+        }
+    }
+    if (deep) {
+        // HDR10's static metadata only reaches x265 through its own options.
+        QStringList x265;
+        if (color.transfer == "smpte2084") {
+            if (!color.masterDisplay.isEmpty())
+                x265 << "master-display=" + color.masterDisplay;
+            if (!color.maxCll.isEmpty())
+                x265 << "max-cll=" + color.maxCll;
+        }
+        if (color.hdr())
+            x265 << "repeat-headers=1";
+        if (!x265.isEmpty())
+            args << "-x265-params" << x265.join(':');
+        args << "-preset" << "veryfast" << "-crf" << "20";
+    } else {
+        args << "-preset" << "veryfast" << "-crf" << "18";
+    }
+    args << "-movflags" << "+faststart" << dst;
     return args;
 }
 
