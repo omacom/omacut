@@ -398,6 +398,12 @@ private slots:
     void trimArgsConcatenateTheRanges();
     void trimArgsFitDifferentVideosTogether();
     void trimArgsScaleTheShorterSide();
+    void trimArgsKeepTenBitDepth();
+    void trimArgsKeepHdrTags();
+    void probeReadsDepthAndHdr();
+    void exportKeepsHdr10();
+    void toneMapFilterOnlyForHdr();
+    void thumbnailsAndFramesToneMapHdr();
     void exportHeightsNeverUpscale();
     void thumbnailPastTheLastFrameShowsTheLastOne();
     void themeAccentReadsOmarchyColors();
@@ -2688,6 +2694,203 @@ void BackendTests::trimArgsFitDifferentVideosTogether() {
                             "pad=1920:1080:-1:-1,setsar=1,format=yuv420p[v1];"
                             "anullsrc=r=48000:cl=stereo,atrim=duration=2.000,aformat=sample_fmts=fltp[a1];"
                             "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]"));
+}
+
+static ffmpeg::Color hdr10() {
+    ffmpeg::Color color;
+    color.bitDepth = 10;
+    color.primaries = QStringLiteral("bt2020");
+    color.transfer = QStringLiteral("smpte2084");
+    color.space = QStringLiteral("bt2020nc");
+    color.range = QStringLiteral("tv");
+    color.masterDisplay = QStringLiteral("G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)");
+    color.maxCll = QStringLiteral("1000,400");
+    return color;
+}
+
+void BackendTests::trimArgsKeepTenBitDepth() {
+    ffmpeg::Color deep;
+    deep.bitDepth = 10;
+    const QStringList args = ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true, deep}},
+                                              QStringLiteral("out.mp4"), 1920, 1080);
+    QVERIFY(args.contains(QStringLiteral("libx265")));
+    QVERIFY(!args.contains(QStringLiteral("libx264")));
+    QCOMPARE(args.value(args.indexOf(QStringLiteral("-pix_fmt")) + 1), QStringLiteral("yuv420p10le"));
+    QVERIFY(args.contains(QStringLiteral("hvc1")));
+
+    // 12 bit stays 12; deeper than that is brought down to it.
+    deep.bitDepth = 12;
+    QCOMPARE(ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true, deep}}, QStringLiteral("o.mp4"), 16, 16)
+                 .value(ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true, deep}},
+                                         QStringLiteral("o.mp4"), 16, 16).indexOf(QStringLiteral("-pix_fmt")) + 1),
+             QStringLiteral("yuv420p12le"));
+
+    // One deep video makes the whole export deep, and each segment is converted to match.
+    deep.bitDepth = 10;
+    const QStringList mixed = ffmpeg::trimArgs({{QStringLiteral("a.mp4"), 0.0, 1.0, false},
+                                                {QStringLiteral("b.mp4"), 0.0, 1.0, false, deep}},
+                                               QStringLiteral("out.mp4"), 64, 64);
+    QVERIFY(filterGraph(mixed).contains(QStringLiteral("format=yuv420p10le[v0]")));
+    QVERIFY(filterGraph(mixed).contains(QStringLiteral("format=yuv420p10le[v1]")));
+
+    // 8 bit SDR is untouched: no HEVC, no color tags.
+    const QStringList plain = ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true}},
+                                               QStringLiteral("out.mp4"), 1920, 1080);
+    QVERIFY(!plain.contains(QStringLiteral("-color_trc")));
+    QVERIFY(!plain.contains(QStringLiteral("-x265-params")));
+}
+
+void BackendTests::trimArgsKeepHdrTags() {
+    const QStringList args = ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true, hdr10()}},
+                                              QStringLiteral("out.mp4"), 1920, 1080);
+    const auto after = [&](const char *option) { return args.value(args.indexOf(QString::fromLatin1(option)) + 1); };
+    QCOMPARE(after("-color_primaries"), QStringLiteral("bt2020"));
+    QCOMPARE(after("-color_trc"), QStringLiteral("smpte2084"));
+    QCOMPARE(after("-colorspace"), QStringLiteral("bt2020nc"));
+    QCOMPARE(after("-color_range"), QStringLiteral("tv"));
+    QCOMPARE(after("-x265-params"),
+             QStringLiteral("master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)"
+                            "L(10000000,1):max-cll=1000,400:repeat-headers=1"));
+
+    // HLG has no static metadata to carry.
+    ffmpeg::Color hlg = hdr10();
+    hlg.transfer = QStringLiteral("arib-std-b67");
+    const QStringList hlgArgs = ffmpeg::trimArgs({{QStringLiteral("in.mp4"), 0.0, 1.0, true, hlg}},
+                                                 QStringLiteral("out.mp4"), 1920, 1080);
+    QCOMPARE(hlgArgs.value(hlgArgs.indexOf(QStringLiteral("-x265-params")) + 1),
+             QStringLiteral("repeat-headers=1"));
+
+    // An HDR segment sets the tags even when an SDR one comes first.
+    const QStringList mixed = ffmpeg::trimArgs({{QStringLiteral("a.mp4"), 0.0, 1.0, false},
+                                                {QStringLiteral("b.mp4"), 0.0, 1.0, false, hdr10()}},
+                                               QStringLiteral("out.mp4"), 64, 64);
+    QCOMPARE(mixed.value(mixed.indexOf(QStringLiteral("-color_trc")) + 1), QStringLiteral("smpte2084"));
+}
+
+static QString makeHdr10(const QString &path) {
+    QProcess proc;
+    proc.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")), {
+        QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"), QStringLiteral("error"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("testsrc=size=64x64:rate=10:duration=1"),
+        QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p10le"),
+        QStringLiteral("-c:v"), QStringLiteral("libx265"),
+        QStringLiteral("-x265-params"),
+        QStringLiteral("log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
+                       ":master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)"
+                       ":max-cll=1000,400"),
+        QStringLiteral("-y"), path,
+    });
+    if (!proc.waitForFinished(20000) || proc.exitCode() != 0)
+        return {};
+    return path;
+}
+
+void BackendTests::probeReadsDepthAndHdr() {
+    const ffmpeg::VideoInfo sdr = ffmpeg::probe(m_videoPath);
+    QCOMPARE(sdr.color.bitDepth, 8);
+    QVERIFY(!sdr.color.hdr());
+
+    const QString path = makeHdr10(m_dir.filePath(QStringLiteral("probe-hdr10.mp4")));
+    if (path.isEmpty())
+        QSKIP("ffmpeg here cannot encode 10 bit HEVC");
+    const ffmpeg::VideoInfo info = ffmpeg::probe(path);
+    QVERIFY(info.ok);
+    QCOMPARE(info.color.bitDepth, 10);
+    QVERIFY(info.color.hdr());
+    QCOMPARE(info.color.transfer, QStringLiteral("smpte2084"));
+    QCOMPARE(info.color.primaries, QStringLiteral("bt2020"));
+    QCOMPARE(info.color.masterDisplay,
+             QStringLiteral("G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)"));
+    QCOMPARE(info.color.maxCll, QStringLiteral("1000,400"));
+}
+
+void BackendTests::exportKeepsHdr10() {
+    const QString source = makeHdr10(m_dir.filePath(QStringLiteral("export-hdr10.mp4")));
+    if (source.isEmpty())
+        QSKIP("ffmpeg here cannot encode 10 bit HEVC");
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(QUrl::fromLocalFile(source)));
+    waitForProbe(backend);
+    waitForBackgroundWork(backend);
+
+    const QString outPath = m_dir.filePath(QStringLiteral("hdr10-exported.mp4"));
+    backend.exportClips(QUrl::fromLocalFile(outPath), backend.timeline()->clips());
+    QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > 0, 30000);
+    QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
+
+    const ffmpeg::VideoInfo info = ffmpeg::probe(outPath);
+    QVERIFY(info.ok);
+    QCOMPARE(info.color.bitDepth, 10);
+    QCOMPARE(info.color.transfer, QStringLiteral("smpte2084"));
+    QCOMPARE(info.color.primaries, QStringLiteral("bt2020"));
+    QCOMPARE(info.color.space, QStringLiteral("bt2020nc"));
+    QCOMPARE(info.color.maxCll, QStringLiteral("1000,400"));
+    QVERIFY(!info.color.masterDisplay.isEmpty());
+}
+
+void BackendTests::toneMapFilterOnlyForHdr() {
+    QVERIFY(ffmpeg::toneMapFilter({}).isEmpty());
+    ffmpeg::Color deep;
+    deep.bitDepth = 10;
+    QVERIFY(ffmpeg::toneMapFilter(deep).isEmpty());
+    const QStringList plain = ffmpeg::frameArgs(QStringLiteral("in.mp4"), 1.0, 0.0, QStringLiteral("f.png"));
+    QCOMPARE(plain.value(plain.indexOf(QStringLiteral("-vf")) + 1), QStringLiteral("scale=round(iw*sar):ih,setsar=1"));
+
+    if (ffmpeg::toneMapFilter(hdr10()).isEmpty())
+        QSKIP("this ffmpeg has no zscale");
+    QVERIFY(ffmpeg::toneMapFilter(hdr10()).contains(QStringLiteral("tin=smpte2084")));
+    const QStringList args = ffmpeg::frameArgs(QStringLiteral("in.mp4"), 1.0, 0.0, QStringLiteral("f.png"), hdr10());
+    QVERIFY(args.value(args.indexOf(QStringLiteral("-vf")) + 1)
+                .startsWith(QStringLiteral("scale=round(iw*sar):ih,setsar=1,zscale=")));
+}
+
+void BackendTests::thumbnailsAndFramesToneMapHdr() {
+    // A mid-gray PQ pixel is tens of nits: read as plain SDR it comes out dark,
+    // and tone mapped it is brighter.
+    const QString path = m_dir.filePath(QStringLiteral("pq-gray.mp4"));
+    QProcess make;
+    make.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")), {
+        QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"), QStringLiteral("error"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("color=size=64x64:rate=10:duration=1,format=yuv420p10le,"
+                                             "geq=lum='502':cb='512':cr='512'"),
+        QStringLiteral("-c:v"), QStringLiteral("libx265"),
+        QStringLiteral("-x265-params"),
+        QStringLiteral("log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"),
+        QStringLiteral("-y"), path});
+    if (!make.waitForFinished(20000) || make.exitCode() != 0)
+        QSKIP("ffmpeg here cannot encode 10 bit HEVC");
+    const ffmpeg::VideoInfo info = ffmpeg::probe(path);
+    QVERIFY(info.color.hdr());
+    if (ffmpeg::toneMapFilter(info.color).isEmpty())
+        QSKIP("this ffmpeg has no zscale");
+
+    const auto gray = [](const QImage &image) { return qGray(image.pixel(image.width() / 2, image.height() / 2)); };
+    const QImage raw = ffmpeg::thumbnail(path, 0.2, 32);
+    const QImage mapped = ffmpeg::thumbnail(path, 0.2, 32, nullptr, info.color);
+    QVERIFY(!raw.isNull());
+    QVERIFY(!mapped.isNull());
+    QVERIFY2(gray(mapped) > gray(raw) + 15, qPrintable(QStringLiteral("%1 vs %2").arg(gray(mapped)).arg(gray(raw))));
+
+    const auto frame = [&](const ffmpeg::Color &color) {
+        const QString png = m_dir.filePath(QStringLiteral("pq-frame.png"));
+        QProcess proc;
+        proc.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")),
+                   ffmpeg::frameArgs(path, 0.2, 0.0, png, color));
+        if (!proc.waitForFinished(20000) || proc.exitCode() != 0)
+            return QImage();
+        return QImage(png);
+    };
+    const QImage rawFrame = frame({});
+    const QImage mappedFrame = frame(info.color);
+    QVERIFY(!rawFrame.isNull() && !mappedFrame.isNull());
+    QVERIFY(gray(mappedFrame) > gray(rawFrame) + 15);
 }
 
 void BackendTests::trimArgsScaleTheShorterSide() {

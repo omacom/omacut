@@ -153,7 +153,7 @@ void Backend::applyProbe(const PendingVideo &pending, const ffmpeg::VideoInfo &i
         video.info = info;
         video.url = pending.url;
         video.thumbKey = ++m_nextThumbKey;
-        m_provider->setVideo(video.thumbKey, video.info.path);
+        m_provider->setVideo(video.thumbKey, video.info.path, video.info.color);
         if (pending.batch)
             ++m_batchAdded;
 
@@ -357,6 +357,7 @@ void Backend::saveFrame(double t) {
     const double sourceTime = clip.in + (t - m_timeline.clipStart(index));
     const QString path = QFileInfo(m_videos.at(clip.source).info.path).absoluteFilePath();
     const double start = m_videos.at(clip.source).info.start;
+    const ffmpeg::Color color = m_videos.at(clip.source).info.color;
     const QString ffprobeBin = ffmpeg::toolPath("ffprobe");
     const QString ffmpegBin = ffmpeg::toolPath("ffmpeg");
     if (ffprobeBin.isEmpty() || ffmpegBin.isEmpty()) {
@@ -368,7 +369,7 @@ void Backend::saveFrame(double t) {
     // window: first find the frame on screen, then write it.
     m_savingFrame = true;
     runSaveFrameStep(ffprobeBin, ffmpeg::shownFrameArgs(path, start + sourceTime),
-                 [this, path, start, sourceTime, ffmpegBin](const QByteArray &packetTimes) {
+                 [this, path, start, sourceTime, ffmpegBin, color](const QByteArray &packetTimes) {
         const ffmpeg::ShownFrame shown = ffmpeg::shownFrame(packetTimes, start + sourceTime);
         const double frameTime = shown.time - start;
         const double keyframeTime = shown.keyframe >= 0.0 ? shown.keyframe - start : -1.0;
@@ -385,7 +386,7 @@ void Backend::saveFrame(double t) {
         const QString partPath = part.fileName();
         part.close();
         m_framePart = partPath;
-        runSaveFrameStep(ffmpegBin, ffmpeg::frameArgs(path, frameTime, keyframeTime, partPath),
+        runSaveFrameStep(ffmpegBin, ffmpeg::frameArgs(path, frameTime, keyframeTime, partPath, color),
                      [this, source, partPath](const QByteArray &) {
             m_savingFrame = false;
             m_framePart.clear();
@@ -476,7 +477,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
         if (frameSource < 0)
             frameSource = clip.source;
         const ffmpeg::VideoInfo &info = m_videos[clip.source].info;
-        segments.append({info.path, clip.in, clip.out, info.audio});
+        segments.append({info.path, clip.in, clip.out, info.audio, info.color});
     }
     const double clipLen = edit::duration(clips);
     if (segments.isEmpty() || clipLen <= 0.0) {

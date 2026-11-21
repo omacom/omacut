@@ -52,7 +52,7 @@ Install via the Omarchy Package Repository via the `omacut` package. It's instal
 - `xdg-desktop-portal` and a portal backend for the file picker
 - `ffmpeg` and `ffprobe` on your PATH (used at runtime)
 
-Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio. When clips come from different videos, the export takes the frame size of the first clip's video; clips of another shape are letterboxed into it, and videos without sound get silence.
+Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio. When clips come from different videos, the export takes the frame size of the first clip's video; clips of another shape are letterboxed into it, and videos without sound get silence. 10 and 12 bit videos stay that deep (written as HEVC), and HDR10 and HLG videos keep their color tags and HDR10 metadata, so they still play as HDR; 8 bit videos are exported as H.264 as before. The filmstrip and saved frames of HDR videos are tone mapped to SDR so they do not look washed out (this needs an ffmpeg built with zimg, as Arch's is).
 
 ## Build
 
