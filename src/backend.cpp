@@ -540,7 +540,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     // A logo whose file has gone since it was chosen would only fail inside ffmpeg.
     for (const logo::Settings &logoSettings : logos) {
         if (logoSettings.active() && !QFileInfo(logoSettings.path).isReadable()) {
-            failExport(tmpPath, tr("The logo %1 can't be read.").arg(QFileInfo(logoSettings.path).fileName()));
+            failExport(tmpPath, tr("The image %1 can't be read.").arg(QFileInfo(logoSettings.path).fileName()));
             return;
         }
     }

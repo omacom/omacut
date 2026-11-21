@@ -120,12 +120,12 @@ DialogPanel {
                 onClicked: panel.addRequested()
             }
             Chip {
-                label: qsTr("Remove logo")
+                label: qsTr("Remove image")
                 onClicked: panel.logo.remove()
             }
             Label {
                 Layout.fillWidth: true
-                text: qsTr("Drag the logo in the preview to place it, and its strip to time it")
+                text: qsTr("Drag the image in the preview to place it, and its strip to time it")
                 color: "#9a9aa0"
                 font.pixelSize: 12
                 elide: Text.ElideRight

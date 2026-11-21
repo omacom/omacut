@@ -211,7 +211,7 @@ void PortalFilePicker::openImage() {
     options.insert(QStringLiteral("filters"), QVariant::fromValue(imageFilters()));
     options.insert(QStringLiteral("current_filter"), QVariant::fromValue(imageFilter()));
 
-    requestFile(QStringLiteral("OpenFile"), tr("Choose a Logo"), options, Action::OpenImage);
+    requestFile(QStringLiteral("OpenFile"), tr("Choose an Image"), options, Action::OpenImage);
 }
 
 void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, const QList<int> &scaleHeights) {

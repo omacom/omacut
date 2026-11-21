@@ -1051,7 +1051,7 @@ ApplicationWindow {
                 Layout.alignment: Qt.AlignBottom
                 Layout.bottomMargin: 16
                 iconName: "image"
-                tipText: qsTr("Logo")
+                tipText: qsTr("Logo and images")
                 enabled: timeline.duration > 0 && !backend.busy
                 onClicked: win.showLogo()
             }
