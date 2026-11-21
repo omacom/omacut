@@ -306,8 +306,12 @@ QStringList frameArgs(const QString &path, double frameTime, double keyframeTime
     };
 }
 
+Preset presetFromInt(int value) {
+    return value == int(Preset::Balanced) || value == int(Preset::Best) ? Preset(value) : Preset::Fast;
+}
+
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
-                     int width, int height, int scaleHeight) {
+                     int width, int height, int scaleHeight, Preset preset) {
     bool audio = false;
     bool mixed = false;
     for (const Segment &segment : segments) {
@@ -366,8 +370,16 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
     // +faststart puts the moov atom up front so shared clips start playing
     // before they finish downloading; yuv420p keeps RGB/4:4:4/10-bit sources
     // playable everywhere.
+    const char *speed = "veryfast";
+    const char *crf = "18";
+    if (preset == Preset::Balanced)
+        speed = "medium";
+    else if (preset == Preset::Best) {
+        speed = "slower";
+        crf = "16";
+    }
     args << "-c:v" << "libx264" << "-pix_fmt" << "yuv420p"
-         << "-preset" << "veryfast" << "-crf" << "18"
+         << "-preset" << speed << "-crf" << crf
          << "-movflags" << "+faststart"
          << dst;
     return args;

@@ -395,6 +395,7 @@ private slots:
     void timelineAnswersWhereTimesFall();
     void timelineEditsAtATime();
     void trimArgsReencodeForPreciseCuts();
+    void trimArgsPresetsTradeSpeedForSize();
     void trimArgsConcatenateTheRanges();
     void trimArgsFitDifferentVideosTogether();
     void trimArgsScaleTheShorterSide();
@@ -2646,6 +2647,28 @@ void BackendTests::trimArgsReencodeForPreciseCuts() {
     const int progressAt = args.indexOf(QStringLiteral("-progress"));
     QVERIFY(progressAt >= 0);
     QCOMPARE(args.value(progressAt + 1), QStringLiteral("pipe:1"));
+}
+
+void BackendTests::trimArgsPresetsTradeSpeedForSize() {
+    const QList<ffmpeg::Segment> segments = {{QStringLiteral("in.mp4"), 0.0, 1.0, true}};
+    const auto encoding = [&](ffmpeg::Preset preset) {
+        const QStringList args = ffmpeg::trimArgs(segments, QStringLiteral("out.mp4"), 1920, 1080, 0, preset);
+        return QStringList{args.value(args.indexOf(QStringLiteral("-preset")) + 1),
+                           args.value(args.indexOf(QStringLiteral("-crf")) + 1)};
+    };
+    QCOMPARE(encoding(ffmpeg::Preset::Fast), (QStringList{"veryfast", "18"}));
+    QCOMPARE(encoding(ffmpeg::Preset::Balanced), (QStringList{"medium", "18"}));
+    QCOMPARE(encoding(ffmpeg::Preset::Best), (QStringList{"slower", "16"}));
+
+    // Without a preset the arguments are what exports always used.
+    QCOMPARE(ffmpeg::trimArgs(segments, QStringLiteral("out.mp4"), 1920, 1080),
+             ffmpeg::trimArgs(segments, QStringLiteral("out.mp4"), 1920, 1080, 0, ffmpeg::Preset::Fast));
+
+    QCOMPARE(ffmpeg::presetFromInt(1), ffmpeg::Preset::Balanced);
+    QCOMPARE(ffmpeg::presetFromInt(2), ffmpeg::Preset::Best);
+    QCOMPARE(ffmpeg::presetFromInt(0), ffmpeg::Preset::Fast);
+    QCOMPARE(ffmpeg::presetFromInt(-1), ffmpeg::Preset::Fast);
+    QCOMPARE(ffmpeg::presetFromInt(7), ffmpeg::Preset::Fast);
 }
 
 static QString filterGraph(const QStringList &args) {

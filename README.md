@@ -52,7 +52,7 @@ Install via the Omarchy Package Repository via the `omacut` package. It's instal
 - `xdg-desktop-portal` and a portal backend for the file picker
 - `ffmpeg` and `ffprobe` on your PATH (used at runtime)
 
-Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio. When clips come from different videos, the export takes the frame size of the first clip's video; clips of another shape are letterboxed into it, and videos without sound get silence.
+Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio. An Encoding choice trades export time for file size: Fast (the default), Balanced, or Smallest file. When clips come from different videos, the export takes the frame size of the first clip's video; clips of another shape are letterboxed into it, and videos without sound get silence.
 
 ## Build
 

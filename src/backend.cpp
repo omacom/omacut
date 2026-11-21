@@ -62,8 +62,8 @@ void Backend::wireFilePicker() {
         else
             load(url);
     });
-    connect(m_filePicker, &FilePicker::exportSelected, this, [this](const QUrl &url, int scaleHeight) {
-        exportClips(url, m_exportDialogClips, scaleHeight);
+    connect(m_filePicker, &FilePicker::exportSelected, this, [this](const QUrl &url, int scaleHeight, int preset) {
+        exportClips(url, m_exportDialogClips, scaleHeight, ffmpeg::presetFromInt(preset));
     });
     connect(m_filePicker, &FilePicker::failed, this, &Backend::loadError);
 }
@@ -463,7 +463,8 @@ QUrl Backend::suggestedExportUrl() const {
     return QUrl::fromLocalFile(target);
 }
 
-void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight) {
+void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight,
+                         ffmpeg::Preset preset) {
     if (m_videos.isEmpty() || busy())
         return;
 
@@ -516,7 +517,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
     QFile::remove(tmpPath);
     const ffmpeg::VideoInfo &frame = m_videos[frameSource].info;
-    const QStringList args = ffmpeg::trimArgs(segments, tmpPath, frame.width, frame.height, scaleHeight);
+    const QStringList args = ffmpeg::trimArgs(segments, tmpPath, frame.width, frame.height, scaleHeight, preset);
 
     auto *proc = new QProcess(this);
     auto completed = std::make_shared<bool>(false);
