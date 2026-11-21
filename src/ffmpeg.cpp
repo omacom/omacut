@@ -306,8 +306,25 @@ QStringList frameArgs(const QString &path, double frameTime, double keyframeTime
     };
 }
 
+QSize exportFrameSize(int width, int height, int scaleHeight) {
+    // libx264 needs even sides: the frame is fitted into, or cropped to, them.
+    int w = width / 2 * 2;
+    int h = height / 2 * 2;
+    if (scaleHeight > 0 && w > 0 && h > 0) {
+        if (w > h) {
+            w = qRound(double(w) * scaleHeight / h) / 2 * 2;
+            h = scaleHeight;
+        } else {
+            h = qRound(double(h) * scaleHeight / w) / 2 * 2;
+            w = scaleHeight;
+        }
+    }
+    return {w, h};
+}
+
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
-                     int width, int height, int scaleHeight) {
+                     int width, int height, int scaleHeight,
+                     const QList<logo::Settings> &logos) {
     bool audio = false;
     bool mixed = false;
     for (const Segment &segment : segments) {
@@ -360,7 +377,49 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
                      .arg(audio ? "[a]" : "");
     else
         graph += QString("[v]") + (audio ? "[a]" : "");
-    args << "-filter_complex" << graph << "-map" << "[v]";
+    // Each logo is one more input, after the segments, laid over the finished
+    // video in turn. The image is scaled to its pixel size first, so the
+    // overlay lands exactly where the position says, with its alpha kept and
+    // faded by the opacity. A logo shown for part of the edit is switched on
+    // for it; one that fades is a picture repeated for the whole edit, so
+    // its alpha can change as time goes on.
+    QString video = QStringLiteral("[v]");
+    double total = 0.0;
+    for (const Segment &segment : segments)
+        total += segment.end - segment.start;
+    const QSize frame = exportFrameSize(width, height, scaleHeight);
+    int input = segments.size();
+    int placed = 0;
+    for (const logo::Settings &logoSettings : logos) {
+        if (!logoSettings.active())
+            continue;
+        const QRect box = logo::pixelBox(logoSettings, frame.width(), frame.height());
+        const double start = logoSettings.start;
+        const double end = logo::endOf(logoSettings, total);
+        const double fadeIn = logo::fadeInOf(logoSettings, total);
+        const double fadeOut = logo::fadeOutOf(logoSettings, total);
+        const bool fades = fadeIn > 0.0 || fadeOut > 0.0;
+        if (fades)
+            args << "-loop" << "1" << "-framerate" << "60" << "-t" << QString::number(total, 'f', 3);
+        args << "-i" << logoSettings.path;
+        QString prepared = QString("[%1:v:0]format=rgba,scale=%2:%3")
+                               .arg(input).arg(box.width()).arg(box.height());
+        if (logoSettings.opacity < 0.999)
+            prepared += QString(",colorchannelmixer=aa=%1").arg(logoSettings.opacity, 0, 'f', 3);
+        if (fadeIn > 0.0)
+            prepared += QString(",fade=t=in:st=%1:d=%2:alpha=1").arg(start, 0, 'f', 3).arg(fadeIn, 0, 'f', 3);
+        if (fadeOut > 0.0)
+            prepared += QString(",fade=t=out:st=%1:d=%2:alpha=1").arg(end - fadeOut, 0, 'f', 3).arg(fadeOut, 0, 'f', 3);
+        QString overlay = QString("overlay=x=%1:y=%2:format=auto").arg(box.left()).arg(box.top());
+        if (start > 0.0005 || end < total - 0.001)
+            overlay += QString(":enable='between(t,%1,%2)'").arg(start, 0, 'f', 3).arg(end, 0, 'f', 3);
+        const QString out = QString("[v%1]").arg(placed);
+        graph += QString(";%1[logo%2];%3[logo%2]%4%5").arg(prepared).arg(placed).arg(video, overlay, out);
+        video = out;
+        ++input;
+        ++placed;
+    }
+    args << "-filter_complex" << graph << "-map" << video;
     if (audio)
         args << "-map" << "[a]" << "-c:a" << "aac";
     // +faststart puts the moov atom up front so shared clips start playing

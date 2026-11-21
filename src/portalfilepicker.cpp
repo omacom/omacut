@@ -133,6 +133,26 @@ PortalFileFilter videoFilter() {
     };
 }
 
+PortalFileFilter imageFilter() {
+    return {
+        QCoreApplication::translate("PortalFilePicker", "Images"),
+        {
+            {0, QStringLiteral("*.png")},
+            {0, QStringLiteral("*.jpg")},
+            {0, QStringLiteral("*.jpeg")},
+            {0, QStringLiteral("*.webp")},
+            {0, QStringLiteral("*.bmp")},
+        },
+    };
+}
+
+PortalFileFilters imageFilters() {
+    return {
+        imageFilter(),
+        {QCoreApplication::translate("PortalFilePicker", "All files"), {{0, QStringLiteral("*")}}},
+    };
+}
+
 PortalFileFilters videoFilters() {
     return {
         videoFilter(),
@@ -178,6 +198,20 @@ void PortalFilePicker::openVideo() {
     options.insert(QStringLiteral("current_filter"), QVariant::fromValue(videoFilter()));
 
     requestFile(QStringLiteral("OpenFile"), tr("Open Video File"), options, Action::Open);
+}
+
+void PortalFilePicker::openImage() {
+    QVariantMap options;
+    options.insert(QStringLiteral("accept_label"), tr("Open"));
+    options.insert(QStringLiteral("modal"), true);
+    options.insert(QStringLiteral("multiple"), false);
+    const QString pictures = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    options.insert(QStringLiteral("current_folder"),
+                   portalPathBytes(QDir(pictures).exists() ? pictures : QDir::homePath()));
+    options.insert(QStringLiteral("filters"), QVariant::fromValue(imageFilters()));
+    options.insert(QStringLiteral("current_filter"), QVariant::fromValue(imageFilter()));
+
+    requestFile(QStringLiteral("OpenFile"), tr("Choose an Image"), options, Action::OpenImage);
 }
 
 void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, const QList<int> &scaleHeights) {
@@ -315,6 +349,10 @@ void PortalFilePicker::handleResponse(uint response, const QVariantMap &results)
     const QUrl url(uris.first());
     if (action == Action::Open) {
         emit openSelected(url);
+        return;
+    }
+    if (action == Action::OpenImage) {
+        emit imageSelected(url);
         return;
     }
     if (action != Action::Export)

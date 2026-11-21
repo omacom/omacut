@@ -1,10 +1,13 @@
 #pragma once
 
 #include <QImage>
+#include <QSize>
 #include <QString>
 #include <QStringList>
 
 #include <functional>
+
+#include "logo.h"
 
 
 // Thin wrappers around the ffmpeg/ffprobe command-line tools.
@@ -63,14 +66,20 @@ struct Segment {
     bool audio = false;
 };
 
+// The size the exported frame will have: even sides, and with a non-zero
+// scaleHeight the shorter side scaled to it.
+QSize exportFrameSize(int width, int height, int scaleHeight);
+
 // Build the ffmpeg argument list that writes the segments, back to back, to
 // dst. Cuts are frame-accurate and re-encoded with libx264/aac. Segments from
 // different videos are fitted into width x height, letterboxed, with silence
 // for any without audio. A non-zero scaleHeight downscales so the shorter
 // side becomes scaleHeight (1080p of a portrait video is 1080 wide), always
-// preserving the aspect ratio.
+// preserving the aspect ratio. Active logos are laid over the finished,
+// scaled video, as sharp as the frame itself, for all of it.
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
-                     int width, int height, int scaleHeight = 0);
+                     int width, int height, int scaleHeight = 0,
+                     const QList<logo::Settings> &logos = {});
 
 // Locate a tool on PATH; returns empty string if missing.
 QString toolPath(const QString &tool);
