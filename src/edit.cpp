@@ -15,10 +15,14 @@ bool continues(const Clip &clip, const Clip &next) {
     return clip.source == next.source && std::abs(clip.out - next.in) <= 0.001;
 }
 
+bool joins(const Clip &clip, const Clip &next) {
+    return continues(clip, next) && clip.volume == next.volume;
+}
+
 Clips merged(const Clips &clips) {
     Clips result;
     for (const Clip &clip : clips) {
-        if (!result.isEmpty() && continues(result.last(), clip))
+        if (!result.isEmpty() && joins(result.last(), clip))
             result.last().out = clip.out;
         else
             result.append(clip);

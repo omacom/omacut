@@ -11,6 +11,7 @@ QVariantList Timeline::clipList() const {
         result.append(QVariantMap{{QStringLiteral("source"), clip.source},
                                   {QStringLiteral("in"), clip.in},
                                   {QStringLiteral("out"), clip.out},
+                                  {QStringLiteral("volume"), clip.volume},
                                   {QStringLiteral("start"), start},
                                   {QStringLiteral("end"), start + clip.length()}});
         start += clip.length();
@@ -102,9 +103,10 @@ double Timeline::edgeFrom(double t, int direction) const {
 }
 
 bool Timeline::canJoin(int index) const {
-    // The same test playback and export use, so a handle dragged onto its
-    // neighbour's edge, a hair off from float arithmetic, can still join.
-    return index >= 0 && index + 1 < m_clips.size() && edit::continues(m_clips[index], m_clips[index + 1]);
+    // The same test export uses, so a handle dragged onto its neighbour's
+    // edge, a hair off from float arithmetic, can still join. Pieces at
+    // different volumes stay apart: joining would lose one of them.
+    return index >= 0 && index + 1 < m_clips.size() && edit::joins(m_clips[index], m_clips[index + 1]);
 }
 
 bool Timeline::continues(int index) const {
@@ -122,7 +124,7 @@ void Timeline::split(double t) {
         return;
     edit::Clips next = m_clips;
     next[i].out = at;
-    next.insert(i + 1, {clip.source, at, clip.out});
+    next.insert(i + 1, {clip.source, at, clip.out, clip.volume});
     apply(next);
 }
 
@@ -189,6 +191,20 @@ void Timeline::moveClip(int from, int to) {
     edit::Clips next = m_clips;
     next.move(from, to);
     apply(next);
+}
+
+void Timeline::setVolume(int index, double volume) {
+    if (index < 0 || index >= m_clips.size())
+        return;
+    edit::Clips next = m_clips;
+    next[index].volume = std::clamp(volume, 0.0, 1.0);
+    apply(next);
+}
+
+void Timeline::toggleMute(int index) {
+    if (index < 0 || index >= m_clips.size())
+        return;
+    setVolume(index, m_clips[index].volume > 0.0 ? 0.0 : 1.0);
 }
 
 void Timeline::joinClips(int index) {

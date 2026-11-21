@@ -11,21 +11,27 @@ struct Clip {
     int source = 0;
     double in = 0.0;
     double out = 0.0;
+    // How loud the clip plays, from 0 (silent) to 1 (as recorded).
+    double volume = 1.0;
     double length() const { return out - in; }
     bool operator==(const Clip &other) const {
-        return source == other.source && in == other.in && out == other.out;
+        return source == other.source && in == other.in && out == other.out
+            && volume == other.volume;
     }
 };
 using Clips = QList<Clip>;
 
 constexpr double minimumClip = 0.1;
 
+
 double duration(const Clips &clips);
 // True when next picks up where clip left off in the same source. A millisecond
 // covers the float noise of a split. A larger gap is a cut and must stay one.
 bool continues(const Clip &clip, const Clip &next);
-// Neighbours that carry on where the one before left off in the same source,
-// merged: what an export encodes.
+// True when next carries on from clip and sounds the same, so the two are one
+// stretch: what can be joined again, and what an export encodes as one.
+bool joins(const Clip &clip, const Clip &next);
+// Neighbours that join, merged: what an export encodes.
 Clips merged(const Clips &clips);
 // Nothing cut, added or reordered: all of the first source, as it is.
 bool untouched(const Clips &clips, double firstSourceDuration);

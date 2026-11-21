@@ -16,6 +16,7 @@ The timeline shows your clips in the order they play, each framed with a handle 
 - **Hold a clip, then drag it** to move it before or after the others.
 - **Hover a clip** and click its **×** to remove it.
 - **Click +** to add another video after the clip under the playhead.
+- **Click the speaker button** (or press *V*) to set how loud the clip under the playhead plays, from silent to as recorded, with a slider. *M* silences the clip, and brings its sound back. The preview plays it at that volume, a clip that isn't at full volume shows its level in its corner, and the export applies it. Pieces of the same stretch of video at different volumes can't be joined back together.
 
 Handles catch on neighbouring clip edges and the playhead.
 
@@ -36,6 +37,8 @@ Confirmations are answered from the keyboard: the arrows and Tab move between th
 - *Ctrl+Shift+Space*: Move the end of the clip under the playhead to the playhead.
 - *Ctrl+Z / Ctrl+Shift+Z*: Undo / redo.
 - *Z*: Zoom to the clip under the playhead for fine tuning (Z again zooms back out).
+- *V*: Show or hide the volume of the clip under the playhead.
+- *M*: Silence the clip under the playhead, or bring its sound back.
 - *F*: Save the frame under the playhead as a PNG next to its video.
 - *Ctrl+O*: Open a new file to edit.
 - *Ctrl+Shift+O*: Add a video after the clip under the playhead.
