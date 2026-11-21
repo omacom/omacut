@@ -402,6 +402,8 @@ private slots:
     void trimArgsKeepHdrTags();
     void probeReadsDepthAndHdr();
     void exportKeepsHdr10();
+    void toneMapFilterOnlyForHdr();
+    void thumbnailsAndFramesToneMapHdr();
     void exportHeightsNeverUpscale();
     void thumbnailPastTheLastFrameShowsTheLastOne();
     void themeAccentReadsOmarchyColors();
@@ -2830,6 +2832,65 @@ void BackendTests::exportKeepsHdr10() {
     QCOMPARE(info.color.space, QStringLiteral("bt2020nc"));
     QCOMPARE(info.color.maxCll, QStringLiteral("1000,400"));
     QVERIFY(!info.color.masterDisplay.isEmpty());
+}
+
+void BackendTests::toneMapFilterOnlyForHdr() {
+    QVERIFY(ffmpeg::toneMapFilter({}).isEmpty());
+    ffmpeg::Color deep;
+    deep.bitDepth = 10;
+    QVERIFY(ffmpeg::toneMapFilter(deep).isEmpty());
+    const QStringList plain = ffmpeg::frameArgs(QStringLiteral("in.mp4"), 1.0, 0.0, QStringLiteral("f.png"));
+    QCOMPARE(plain.value(plain.indexOf(QStringLiteral("-vf")) + 1), QStringLiteral("scale=round(iw*sar):ih,setsar=1"));
+
+    if (ffmpeg::toneMapFilter(hdr10()).isEmpty())
+        QSKIP("this ffmpeg has no zscale");
+    QVERIFY(ffmpeg::toneMapFilter(hdr10()).contains(QStringLiteral("tin=smpte2084")));
+    const QStringList args = ffmpeg::frameArgs(QStringLiteral("in.mp4"), 1.0, 0.0, QStringLiteral("f.png"), hdr10());
+    QVERIFY(args.value(args.indexOf(QStringLiteral("-vf")) + 1)
+                .startsWith(QStringLiteral("scale=round(iw*sar):ih,setsar=1,zscale=")));
+}
+
+void BackendTests::thumbnailsAndFramesToneMapHdr() {
+    // A mid-gray PQ pixel is tens of nits: read as plain SDR it comes out dark,
+    // and tone mapped it is brighter.
+    const QString path = m_dir.filePath(QStringLiteral("pq-gray.mp4"));
+    QProcess make;
+    make.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")), {
+        QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"), QStringLiteral("error"),
+        QStringLiteral("-f"), QStringLiteral("lavfi"),
+        QStringLiteral("-i"), QStringLiteral("color=size=64x64:rate=10:duration=1,format=yuv420p10le,"
+                                             "geq=lum='502':cb='512':cr='512'"),
+        QStringLiteral("-c:v"), QStringLiteral("libx265"),
+        QStringLiteral("-x265-params"),
+        QStringLiteral("log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"),
+        QStringLiteral("-y"), path});
+    if (!make.waitForFinished(20000) || make.exitCode() != 0)
+        QSKIP("ffmpeg here cannot encode 10 bit HEVC");
+    const ffmpeg::VideoInfo info = ffmpeg::probe(path);
+    QVERIFY(info.color.hdr());
+    if (ffmpeg::toneMapFilter(info.color).isEmpty())
+        QSKIP("this ffmpeg has no zscale");
+
+    const auto gray = [](const QImage &image) { return qGray(image.pixel(image.width() / 2, image.height() / 2)); };
+    const QImage raw = ffmpeg::thumbnail(path, 0.2, 32);
+    const QImage mapped = ffmpeg::thumbnail(path, 0.2, 32, nullptr, info.color);
+    QVERIFY(!raw.isNull());
+    QVERIFY(!mapped.isNull());
+    QVERIFY2(gray(mapped) > gray(raw) + 15, qPrintable(QStringLiteral("%1 vs %2").arg(gray(mapped)).arg(gray(raw))));
+
+    const auto frame = [&](const ffmpeg::Color &color) {
+        const QString png = m_dir.filePath(QStringLiteral("pq-frame.png"));
+        QProcess proc;
+        proc.start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")),
+                   ffmpeg::frameArgs(path, 0.2, 0.0, png, color));
+        if (!proc.waitForFinished(20000) || proc.exitCode() != 0)
+            return QImage();
+        return QImage(png);
+    };
+    const QImage rawFrame = frame({});
+    const QImage mappedFrame = frame(info.color);
+    QVERIFY(!rawFrame.isNull() && !mappedFrame.isNull());
+    QVERIFY(gray(mappedFrame) > gray(rawFrame) + 15);
 }
 
 void BackendTests::trimArgsScaleTheShorterSide() {

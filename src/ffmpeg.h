@@ -55,8 +55,14 @@ QList<double> frameTimes(const QString &path, double start);
 // returning true while the ffmpeg child is running, the child is killed and
 // a null QImage returned; a child that never finishes is killed regardless
 // after a generous timeout.
+// HDR video is tone mapped to SDR, or it would look washed out.
 QImage thumbnail(const QString &path, double time, int height = 90,
-                 const std::function<bool()> &stopRequested = nullptr);
+                 const std::function<bool()> &stopRequested = nullptr, const Color &color = {});
+
+// The filter chain that tone maps HDR frames of the given color to SDR
+// BT.709, ready to append to a filter graph; empty for SDR video, and when
+// this ffmpeg has no zscale to do it with.
+QString toneMapFilter(const Color &color);
 
 // ffprobe arguments listing the video packet times around `pts` (a packet
 // time, not a seek time), from far enough back to find the frame on screen.
@@ -71,9 +77,10 @@ struct ShownFrame {
 ShownFrame shownFrame(const QByteArray &packets, double pts);
 // ffmpeg arguments that write the frame starting at `frameTime` seconds to
 // `pngPath`, full size, upright and with square pixels, decoding from the
-// keyframe at `keyframeTime` (or from the start, when negative).
+// keyframe at `keyframeTime` (or from the start, when negative). HDR video is
+// tone mapped to SDR.
 QStringList frameArgs(const QString &path, double frameTime, double keyframeTime,
-                      const QString &pngPath);
+                      const QString &pngPath, const Color &color = {});
 
 // A stretch [start, end] seconds of one video, as exported.
 struct Segment {

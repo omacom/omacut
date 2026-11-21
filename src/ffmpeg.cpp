@@ -251,10 +251,29 @@ VideoInfo probe(const QString &path) {
 
 namespace {
 
+// Tone mapping goes through zscale, which an ffmpeg built without zimg lacks.
+bool hasZscale() {
+    static const bool found = [] {
+        const QString ffmpeg = toolPath("ffmpeg");
+        if (ffmpeg.isEmpty())
+            return false;
+        QProcess proc;
+        proc.start(ffmpeg, {"-hide_banner", "-filters"});
+        if (!proc.waitForFinished(kProbeTimeoutMs) || proc.exitCode() != 0) {
+            proc.kill();
+            proc.waitForFinished(-1);
+            return false;
+        }
+        return QString::fromUtf8(proc.readAllStandardOutput()).contains(QRegularExpression("\\bzscale\\b"));
+    }();
+    return found;
+}
+
 // The frame at `time`, or with `before`, the last frame in the `before`
 // seconds up to it: decoded in order, then reversed to take the last.
 QImage frameAt(const QString &path, double time, int height, double before,
-               const QElapsedTimer &deadline, const std::function<bool()> &stopRequested) {
+               const QElapsedTimer &deadline, const std::function<bool()> &stopRequested,
+               const Color &color) {
     const QString ffmpeg = toolPath("ffmpeg");
     if (ffmpeg.isEmpty())
         return {};
@@ -262,8 +281,12 @@ QImage frameAt(const QString &path, double time, int height, double before,
     QStringList args = {"-loglevel", "error", "-ss", QString::number(qMax(time - before, 0.0), 'f', 3)};
     if (before > 0.0)
         args << "-t" << QString::number(qMin(before, time), 'f', 3);
+    // Scaled down before it is reversed and tone mapped, which work on every
+    // pixel (and on several frames, for reverse).
+    const QString toneMap = toneMapFilter(color);
     args << "-i" << path << "-frames:v" << "1"
-         << "-vf" << QString("scale=-1:%1%2").arg(height).arg(before > 0.0 ? ",reverse" : "")
+         << "-vf" << QString("scale=-1:%1%2%3").arg(height).arg(before > 0.0 ? ",reverse" : "")
+                         .arg(toneMap.isEmpty() ? QString() : "," + toneMap)
          << "-f" << "image2pipe" << "-vcodec" << "mjpeg" << "pipe:1";
     QProcess proc;
     proc.start(ffmpeg, args);
@@ -293,11 +316,22 @@ QImage frameAt(const QString &path, double time, int height, double before,
 
 }  // namespace
 
+QString toneMapFilter(const Color &color) {
+    if (!color.hdr() || !hasZscale())
+        return {};
+    // To linear light at 100 nits, squeezed into BT.709's gamut and range with
+    // a curve that rolls highlights off, then back to a BT.709 picture.
+    return QString("zscale=tin=%1:pin=%2:min=%3:t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+                   "tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
+        .arg(color.transfer, color.primaries.isEmpty() ? "bt2020" : color.primaries,
+             color.space.isEmpty() ? "bt2020nc" : color.space);
+}
+
 QImage thumbnail(const QString &path, double time, int height,
-                 const std::function<bool()> &stopRequested) {
+                 const std::function<bool()> &stopRequested, const Color &color) {
     QElapsedTimer deadline;  // one for every attempt, so a stalled file costs one timeout
     deadline.start();
-    QImage image = frameAt(path, time, height, 0.0, deadline, stopRequested);
+    QImage image = frameAt(path, time, height, 0.0, deadline, stopRequested, color);
     // Past the last frame, which a video stream can end before the file does
     // (or a slow frame rate leaves a while before the end), ffmpeg gives
     // nothing: show the last frame before then rather than a blank. A second
@@ -307,7 +341,7 @@ QImage thumbnail(const QString &path, double time, int height,
         if (!image.isNull() || time <= 0.0 || deadline.elapsed() > kThumbTimeoutMs
             || (stopRequested && stopRequested()))
             break;
-        image = frameAt(path, time, height, before, deadline, stopRequested);
+        image = frameAt(path, time, height, before, deadline, stopRequested, color);
     }
     return image;
 }
@@ -375,13 +409,14 @@ ShownFrame shownFrame(const QByteArray &packets, double pts) {
 }
 
 QStringList frameArgs(const QString &path, double frameTime, double keyframeTime,
-                      const QString &pngPath) {
+                      const QString &pngPath, const Color &color) {
     // Jump to the keyframe, then decode up to a hair before the frame's start
     // (which ffprobe printed rounded). Jumping anywhere else can come up
     // empty: MPEG-TS has no index, so it lands mid-stream with nothing to
     // decode from.
     const double target = qMax(frameTime - 0.0005, 0.0);
     const double jump = qBound(0.0, keyframeTime, target);
+    const QString toneMap = toneMapFilter(color);
     return {
         "-loglevel", "error",
         "-y",
@@ -389,7 +424,7 @@ QStringList frameArgs(const QString &path, double frameTime, double keyframeTime
         "-i", path,
         "-ss", QString::number(target - jump, 'f', 6),
         "-frames:v", "1",
-        "-vf", "scale=round(iw*sar):ih,setsar=1",
+        "-vf", "scale=round(iw*sar):ih,setsar=1" + (toneMap.isEmpty() ? QString() : "," + toneMap),
         pngPath,
     };
 }

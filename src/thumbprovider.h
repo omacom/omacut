@@ -9,6 +9,8 @@
 
 #include <atomic>
 
+#include "ffmpeg.h"
+
 // Serves filmstrip frames to QML on demand, decoded off the UI thread and
 // cached, so a frame is extracted once however the clips are later cut or
 // moved. QML asks by video key and time in milliseconds, e.g.
@@ -19,7 +21,8 @@ public:
     ~ThumbProvider() override;
 
     // Keys are never reused, so a stale request can't show another video.
-    void setVideo(int key, const QString &path);
+    // An HDR video's frames are tone mapped to SDR.
+    void setVideo(int key, const QString &path, const ffmpeg::Color &color = {});
 
     QQuickImageResponse *requestImageResponse(const QString &id, const QSize &requestedSize) override;
 
@@ -32,6 +35,7 @@ public:
 private:
     mutable QMutex m_mutex;
     QHash<int, QString> m_paths;
+    QHash<int, ffmpeg::Color> m_colors;
     QCache<QString, QImage> m_cache;
     QThreadPool m_pool;
     std::atomic<bool> m_stopping = false;

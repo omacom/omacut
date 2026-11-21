@@ -16,9 +16,10 @@ constexpr int kCacheKB = 48 * 1024;
 
 class ThumbResponse : public QQuickImageResponse, public QRunnable {
 public:
-    ThumbResponse(ThumbProvider *provider, QString cacheId, QString path, double time, int height)
+    ThumbResponse(ThumbProvider *provider, QString cacheId, QString path, double time, int height,
+                  ffmpeg::Color color)
         : m_provider(provider), m_cacheId(std::move(cacheId)), m_path(std::move(path)),
-          m_time(time), m_height(height) {
+          m_time(time), m_height(height), m_color(std::move(color)) {
         setAutoDelete(false);
     }
 
@@ -37,7 +38,7 @@ public:
             m_image = ffmpeg::thumbnail(m_path, m_time, m_height, [this] {
                 return m_cancelled.load(std::memory_order_relaxed)
                     || m_provider->stopping()->load(std::memory_order_relaxed);
-            });
+            }, m_color);
             // A frame cancelled just as it finished is not cached either:
             // nobody is waiting for it, and the cache slot is worth more.
             if (!m_image.isNull() && !m_cancelled)
@@ -52,6 +53,7 @@ private:
     QString m_path;
     double m_time;
     int m_height;
+    ffmpeg::Color m_color;
     QImage m_image;
     std::atomic<bool> m_cancelled = false;
 };
@@ -82,9 +84,10 @@ ThumbProvider::~ThumbProvider() {
     m_pool.waitForDone();
 }
 
-void ThumbProvider::setVideo(int key, const QString &path) {
+void ThumbProvider::setVideo(int key, const QString &path, const ffmpeg::Color &color) {
     QMutexLocker lock(&m_mutex);
     m_paths.insert(key, path);
+    m_colors.insert(key, color);
 }
 
 QImage ThumbProvider::cached(const QString &id) const {
@@ -110,11 +113,13 @@ QQuickImageResponse *ThumbProvider::requestImageResponse(const QString &id, cons
         return new ReadyResponse(hit);
 
     QString path;
+    ffmpeg::Color color;
     {
         QMutexLocker lock(&m_mutex);
         path = m_paths.value(key);
+        color = m_colors.value(key);
     }
-    auto *response = new ThumbResponse(this, cacheId, path, time, height);
+    auto *response = new ThumbResponse(this, cacheId, path, time, height, color);
     m_pool.start(response);
     return response;
 }
