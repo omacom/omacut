@@ -9,6 +9,7 @@
 #include <QUrl>
 
 #include "backend.h"
+#include "outline.h"
 #include "theme.h"
 #include "thumbprovider.h"
 #include "translator.h"
@@ -56,6 +57,7 @@ int main(int argc, char *argv[]) {
 
     // The engine takes ownership of the image provider.
     engine.addImageProvider("thumbs", provider);
+    engine.addImageProvider("outline", new OutlineProvider());
 
     engine.rootContext()->setContextProperty("theme", &theme);
     engine.rootContext()->setContextProperty("backend", &backend);

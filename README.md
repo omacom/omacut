@@ -26,6 +26,7 @@ Press **T** (or click the **T** button) to add a text at the playhead, and start
 - **Effect**: none, fade, slide up or pop. The animated ones also fade out.
 - **Font** (any installed family), **size** (small, medium, large, or any percentage of the frame's height), **position** (top, middle, bottom) and **color**.
 - **Box**: a dark box behind the text, for busy footage.
+- **Outline**: none, thin, medium or thick, in any of the colors. It is round and as wide as it is asked, grown in the preview with the Jump Flooding Algorithm and in export by `drawtext`'s border.
 
 Texts live on their own track along the edit, so cutting or moving clips doesn't move them. The preview draws them live, and export burns them into the video (the same fractions of the frame, so what you see is what you get). Adding, changing and removing texts is undoable (Ctrl+Z), and typing in a text is a single undo step. Text is drawn with ffmpeg's `drawtext`, so ffmpeg needs `libfreetype` (standard builds have it).
 

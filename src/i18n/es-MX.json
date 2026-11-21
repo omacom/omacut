@@ -94,5 +94,8 @@
   "Video has a zero or invalid duration.": "El video tiene una duración nula o no válida.",
   "Your edit hasn't been exported. Quit anyway?": "Tu edición no se ha exportado. ¿Salir de todos modos?",
   "Zoom to the clip": "Hacer zoom en el clip",
-  "zoomed": "con zoom"
+  "zoomed": "con zoom",
+  "Outline": "Contorno",
+  "Thin": "Fino",
+  "Thick": "Grueso"
 }

@@ -13,8 +13,8 @@ class Timeline : public QObject {
     Q_OBJECT
     // Each clip as {source, in, out, start, end}, start and end along the sequence.
     Q_PROPERTY(QVariantList clips READ clipList NOTIFY changed)
-    // Each text as {text, start, end, effect, y, size, font, color, box}, start and
-    // end along the sequence.
+    // Each text as {text, start, end, effect, y, size, font, color, box, outline,
+    // outlineColor}, start and end along the sequence.
     Q_PROPERTY(QVariantList texts READ textList NOTIFY changed)
     Q_PROPERTY(double duration READ duration NOTIFY changed)
     // Each video's length, by source index.
@@ -79,7 +79,8 @@ public:
     // index, or -1 when there is nothing to put it on.
     Q_INVOKABLE int addText(double t);
     // Sets one property of a text: text, start, end, effect, y, size, font,
-    // color or box. Times are kept inside the edit and a minimum text long; the
+    // color, box, outline or outlineColor. Times are kept inside the edit and
+    // a minimum text long; the
     // rest is kept to what the preview and export understand.
     Q_INVOKABLE void setTextProperty(int index, const QString &name, const QVariant &value);
     // Moves a text's start and end together, keeping its length.

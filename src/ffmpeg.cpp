@@ -362,6 +362,12 @@ QString drawtextFilter(const TextLayer &layer, int outputHeight) {
     };
     if (animated)
         options << QString("alpha='min(1,max(0,min((t-%1)/%3,(%2-t)/%3)))'").arg(start, end, ramp);
+    if (text.outline > 0.0) {
+        // FreeType strokes it round, as far out from the letters as the
+        // preview's outline reaches. Whole pixels, at least one.
+        options << QString("borderw=%1").arg(qMax(1, qRound(outputHeight * text.outline)))
+                << QString("bordercolor=%1").arg(text.outlineColor);
+    }
     if (text.box) {
         const int border = qMax(4, qRound(outputHeight * text.size * 0.35));
         options << QStringLiteral("box=1") << QStringLiteral("boxcolor=black@0.55")

@@ -35,6 +35,7 @@
 
 #include "backend.h"
 #include "filepicker.h"
+#include "outline.h"
 #include "portalfilepicker.h"
 #include "theme.h"
 #include "thumbprovider.h"
@@ -279,6 +280,7 @@ public:
         if (backend.metaObject()->indexOfSignal("videosChanged()") >= 0)
             QObject::connect(&backend, SIGNAL(videosChanged()), &m_relay, SLOT(trigger()));
         m_engine.addImageProvider(QStringLiteral("thumbs"), m_thumbs);
+        m_engine.addImageProvider(QStringLiteral("outline"), new OutlineProvider);
         m_engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
         m_engine.rootContext()->setContextProperty(QStringLiteral("theme"), &m_theme);
         // English, from the catalog in src/, so counted strings get their forms.
@@ -404,6 +406,13 @@ private slots:
     void textEffectsRampInAndOut();
     void trimArgsDrawTheTexts();
     void exportDrawsTheTexts();
+    void timelineTextOutlinesAreEditedAndUndone();
+    void trimArgsStrokeTheOutline();
+    void jumpFloodingFindsTheNearestSeed();
+    void outlineGrowsRoundAroundTheText();
+    void outlineProviderServesImages();
+    void exportDrawsTheOutline();
+    void qmlPreviewDrawsTheOutline();
     void qmlTextKeyAddsATextAndTypingIsNotShortcuts();
     void exportHeightsNeverUpscale();
     void thumbnailPastTheLastFrameShowsTheLastOne();
@@ -2983,6 +2992,276 @@ void BackendTests::exportDrawsTheTexts() {
     QVERIFY(!backend.timeline()->unexported());
     backend.timeline()->setTextProperty(0, QStringLiteral("text"), QStringLiteral("changed after"));
     QVERIFY(backend.timeline()->unexported());
+}
+
+void BackendTests::timelineTextOutlinesAreEditedAndUndone() {
+    Timeline timeline;
+    timeline.reset(10.0);
+    timeline.addText(1.0);
+    // No outline until asked for, in black.
+    QCOMPARE(timeline.texts().first().outline, 0.0);
+    QCOMPARE(timeline.texts().first().outlineColor, QStringLiteral("#000000"));
+    QCOMPARE(timeline.textList().first().toMap().value(QStringLiteral("outline")).toDouble(), 0.0);
+
+    timeline.setTextProperty(0, QStringLiteral("outline"), 0.01);
+    timeline.setTextProperty(0, QStringLiteral("outlineColor"), QStringLiteral("#FF453A"));
+    QCOMPARE(timeline.texts().first().outline, 0.01);
+    QCOMPARE(timeline.texts().first().outlineColor, QStringLiteral("#ff453a"));
+    QCOMPARE(timeline.textList().first().toMap().value(QStringLiteral("outlineColor")).toString(), QStringLiteral("#ff453a"));
+
+    // Kept to what the preview and export draw, and to what a filter can read.
+    timeline.setTextProperty(0, QStringLiteral("outline"), 9.0);
+    QVERIFY(timeline.texts().first().outline <= 0.05);
+    timeline.setTextProperty(0, QStringLiteral("outline"), -1.0);
+    QCOMPARE(timeline.texts().first().outline, 0.0);
+    timeline.setTextProperty(0, QStringLiteral("outlineColor"), QStringLiteral("red:borderw=99"));
+    QCOMPARE(timeline.texts().first().outlineColor, QStringLiteral("#ff453a"));
+
+    // Each change is an undo step.
+    timeline.setTextProperty(0, QStringLiteral("outline"), 0.02);
+    timeline.undo();
+    QCOMPARE(timeline.texts().first().outline, 0.0);
+    QVERIFY(timeline.texts().first() == timeline.texts().first());
+    edit::TextOverlay a, b = a;
+    b.outline = 0.01;
+    QVERIFY(!(a == b));
+    b = a;
+    b.outlineColor = QStringLiteral("#ffffff");
+    QVERIFY(!(a == b));
+}
+
+void BackendTests::trimArgsStrokeTheOutline() {
+    const QList<ffmpeg::Segment> segments = {{QStringLiteral("in.mp4"), 0.0, 5.0, true}};
+    edit::TextOverlay text;
+    text.text = QStringLiteral("x");
+    text.end = 3.0;
+    ffmpeg::TextLayer layer{text, QStringLiteral("text-0.txt")};
+    QVERIFY(!ffmpeg::drawtextFilter(layer, 1080).contains(QStringLiteral("borderw")));
+
+    layer.text.outline = 0.01;
+    layer.text.outlineColor = QStringLiteral("#ff0000");
+    const QString filter = ffmpeg::drawtextFilter(layer, 1080);
+    // As wide as the preview draws it, for the frame it is drawn on.
+    QVERIFY(filter.contains(QStringLiteral("borderw=11:")));
+    QVERIFY(filter.contains(QStringLiteral("bordercolor=#ff0000")));
+    QVERIFY(ffmpeg::drawtextFilter(layer, 360).contains(QStringLiteral("borderw=4:")));
+    // Never thinner than a pixel.
+    layer.text.outline = 0.0001;
+    QVERIFY(ffmpeg::drawtextFilter(layer, 360).contains(QStringLiteral("borderw=1:")));
+}
+
+// The pixels of mask that are seeds, as points.
+static QList<QPoint> seedsOf(const QImage &mask) {
+    QList<QPoint> seeds;
+    for (int y = 0; y < mask.height(); ++y)
+        for (int x = 0; x < mask.width(); ++x)
+            if (qAlpha(mask.pixel(x, y)) >= 128)
+                seeds.append({x, y});
+    return seeds;
+}
+
+void BackendTests::jumpFloodingFindsTheNearestSeed() {
+    constexpr int w = 90, h = 70, reach = 20;
+    QImage mask(w, h, QImage::Format_ARGB32);
+    mask.fill(Qt::transparent);
+    // A few lone seeds and a small blob, from a fixed sequence.
+    QRandomGenerator random(7);
+    for (int i = 0; i < 6; ++i)
+        mask.setPixel(random.bounded(w), random.bounded(h), qRgba(255, 255, 255, 255));
+    for (int y = 30; y < 36; ++y)
+        for (int x = 40; x < 52; ++x)
+            mask.setPixel(x, y, qRgba(255, 255, 255, 255));
+    const QList<QPoint> seeds = seedsOf(mask);
+
+    const QVector<int> nearest = outline::nearestSeeds(mask, reach);
+    QCOMPARE(nearest.size(), w * h);
+    int checked = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            double truth = 1e9;
+            for (const QPoint &seed : seeds)
+                truth = qMin(truth, std::hypot(seed.x() - x, seed.y() - y));
+            const int found = nearest[y * w + x];
+            if (truth == 0.0)
+                QCOMPARE(found, y * w + x);
+            if (truth <= reach) {
+                // Everything the outline will reach has a seed...
+                QVERIFY2(found >= 0, qPrintable(QStringLiteral("no seed for %1,%2").arg(x).arg(y)));
+                ++checked;
+            }
+            if (found >= 0) {
+                // ...and is never closer than the truth, nor much farther.
+                const double got = std::hypot(found % w - x, found / w - y);
+                QVERIFY(got >= truth - 1e-9);
+                if (truth <= reach)
+                    QVERIFY2(got <= truth + 1.5, qPrintable(QStringLiteral("%1,%2: %3 for %4").arg(x).arg(y).arg(got).arg(truth)));
+            }
+        }
+    QVERIFY(checked > 1000);
+
+    // No seeds, nothing found; no reach, only the seeds themselves.
+    QImage empty(10, 10, QImage::Format_Alpha8);
+    empty.fill(0);
+    for (const int found : outline::nearestSeeds(empty, 8))
+        QCOMPARE(found, -1);
+    int found = 0;
+    for (const int seed : outline::nearestSeeds(mask, 0))
+        found += seed >= 0;
+    QCOMPARE(found, seeds.size());
+}
+
+void BackendTests::outlineGrowsRoundAroundTheText() {
+    // One pixel grows into a disc as wide as asked, no more.
+    QImage dot(61, 61, QImage::Format_Alpha8);
+    dot.fill(0);
+    dot.setPixelColor(30, 30, QColor(255, 255, 255, 255));
+    const QImage grown = outline::grow(dot, 12.0, QColor("#ff0000"));
+    QCOMPARE(grown.size(), dot.size());
+    QCOMPARE(qAlpha(grown.pixel(30, 30)), 255);
+    QCOMPARE(qAlpha(grown.pixel(30 + 11, 30)), 255);
+    QCOMPARE(qAlpha(grown.pixel(30, 30 - 11)), 255);
+    QCOMPARE(qAlpha(grown.pixel(30 + 14, 30)), 0);
+    // Round, not square: the corner of the box is out, the diagonal at radius is in.
+    QCOMPARE(qAlpha(grown.pixel(30 + 12, 30 + 12)), 0);
+    QVERIFY(qAlpha(grown.pixel(30 + 8, 30 + 8)) > 200);
+    // Painted in the colour, premultiplied.
+    const QColor edge = grown.pixelColor(30 + 5, 30);
+    QCOMPARE(edge.red(), 255);
+    QCOMPARE(edge.green(), 0);
+    QVERIFY(qAlpha(outline::grow(dot, 0.0, Qt::red).pixel(30, 30)) == 0);
+
+    // Text comes back with room for the outline on every side.
+    QFont font(QStringLiteral("Sans"));
+    font.setPixelSize(40);
+    const QImage rendered = outline::render(QStringLiteral("Hola\nmundo"), font, 10.0, Qt::black);
+    QVERIFY(!rendered.isNull());
+    const int pad = outline::padding(10.0);
+    QVERIFY(pad >= 10);
+    for (int i = 0; i < rendered.width(); ++i) {
+        QCOMPARE(qAlpha(rendered.pixel(i, 0)), 0);
+        QCOMPARE(qAlpha(rendered.pixel(i, rendered.height() - 1)), 0);
+    }
+    for (int i = 0; i < rendered.height(); ++i) {
+        QCOMPARE(qAlpha(rendered.pixel(0, i)), 0);
+        QCOMPARE(qAlpha(rendered.pixel(rendered.width() - 1, i)), 0);
+    }
+    int opaque = 0;
+    for (int y = 0; y < rendered.height(); ++y)
+        for (int x = 0; x < rendered.width(); ++x)
+            opaque += qAlpha(rendered.pixel(x, y)) == 255;
+    QVERIFY(opaque > 500);
+    // Wider outlines make bigger images, of the same words.
+    QVERIFY(outline::render(QStringLiteral("Hola\nmundo"), font, 20.0, Qt::black).width() > rendered.width());
+    // Nothing to draw, nothing to size.
+    QVERIFY(outline::render(QStringLiteral("  "), font, 10.0, Qt::black).isNull());
+    QVERIFY(outline::render(QStringLiteral("a"), font, 0.0, Qt::black).isNull());
+    QVERIFY(outline::render(QString(500, QLatin1Char('W')), font, 5.0, Qt::black).isNull());
+}
+
+void BackendTests::outlineProviderServesImages() {
+    OutlineProvider provider;
+    QSize size;
+    const QImage image = provider.requestImage(QStringLiteral("8/ff0000/40/Sans/Hi/there\nyou"), &size, {});
+    QVERIFY(!image.isNull());
+    QCOMPARE(size, image.size());
+    // Words with slashes keep them: the id splits only before them.
+    QCOMPARE(provider.requestImage(QStringLiteral("8/ff0000/40/Sans/a/b"), &size, {}).size(),
+             outline::render(QStringLiteral("a/b"), [] { QFont f(QStringLiteral("Sans")); f.setPixelSize(40); return f; }(), 8.0, Qt::red).size());
+    for (const char *bad : {"", "8/ff0000/40/Sans", "x/ff0000/40/Sans/a", "8/nothex/40/Sans/a", "8/ff0000/0/Sans/a", "0/ff0000/40/Sans/a"}) {
+        QVERIFY2(provider.requestImage(QString::fromLatin1(bad), &size, {}).isNull(), bad);
+        QCOMPARE(size, QSize(0, 0));
+    }
+}
+
+void BackendTests::exportDrawsTheOutline() {
+    const QString sourcePath = makeVideo(QStringLiteral("outline-source.mp4"), 2.0, true, QStringLiteral("320x180"), QStringLiteral("25"));
+    QVERIFY(!sourcePath.isEmpty());
+
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QSignalSpy doneSpy(&backend, &Backend::exportDone);
+    QSignalSpy failedSpy(&backend, &Backend::exportFailed);
+    QVERIFY(backend.load(QUrl::fromLocalFile(sourcePath)));
+    waitForProbe(backend);
+    waitForBackgroundWork(backend);
+
+    const auto exportWith = [&](const QString &name, const edit::TextOverlay &text) {
+        const int done = doneSpy.count() + failedSpy.count();
+        backend.exportClips(QUrl::fromLocalFile(m_dir.filePath(name)), backend.timeline()->clips(), 0, {text});
+        [&] { QTRY_VERIFY_WITH_TIMEOUT(doneSpy.count() + failedSpy.count() > done, 30000); }();
+        return m_dir.filePath(name);
+    };
+
+    edit::TextOverlay text;
+    text.text = QStringLiteral("OUTLINE");
+    text.start = 0.0;
+    text.end = 2.0;
+    text.size = 0.3;
+    text.y = 0.5;
+    text.color = QStringLiteral("#ffffff");
+    const QString flat = exportWith(QStringLiteral("outline-none.mp4"), text);
+    QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
+    text.outline = 0.04;
+    text.outlineColor = QStringLiteral("#ff0000");
+    const QString stroked = exportWith(QStringLiteral("outline-red.mp4"), text);
+    QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
+
+    // The outline is red pixels around the letters, which the plain one has none of.
+    const auto reds = [](const QImage &frame) {
+        int count = 0;
+        for (int y = 0; y < frame.height(); ++y)
+            for (int x = 0; x < frame.width(); ++x) {
+                const QColor c = frame.pixelColor(x, y);
+                count += c.red() > 180 && c.green() < 90 && c.blue() < 90;
+            }
+        return count;
+    };
+    const QImage withOutline = ffmpeg::thumbnail(stroked, 1.0, 180);
+    const QImage without = ffmpeg::thumbnail(flat, 1.0, 180);
+    QVERIFY(!withOutline.isNull() && !without.isNull());
+    // (The test video has some red of its own, so it is the difference that counts.)
+    const int extra = reds(withOutline) - reds(without);
+    QVERIFY2(extra > 300, qPrintable(QString::number(extra)));
+}
+
+void BackendTests::qmlPreviewDrawsTheOutline() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QTest::keyClick(window, Qt::Key_5);
+    QTRY_COMPARE_WITH_TIMEOUT(playhead(harness), 10.0, 3000);
+    QTest::keyClick(window, Qt::Key_T);
+    QTRY_COMPARE_WITH_TIMEOUT(backend.timeline.texts().size(), 1, 3000);
+    backend.timeline.setTextProperty(0, QStringLiteral("text"), QStringLiteral("Hola/mundo"));
+
+    auto *layer = window->findChild<QQuickItem *>(QStringLiteral("textLayer"));
+    QVERIFY(layer);
+    // The delegates are visual children of the layer, not QObject ones.
+    const auto findRing = [&]() -> QQuickItem * {
+        for (QQuickItem *overlay : layer->childItems())
+            for (QQuickItem *item : overlay->childItems())
+                if (item->objectName() == QLatin1String("textOutline"))
+                    return item;
+        return nullptr;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(findRing(), 3000);
+    QQuickItem *ring = findRing();
+    // No outline, no image.
+    QVERIFY(!ring->isVisible());
+
+    backend.timeline.setTextProperty(0, QStringLiteral("outline"), 0.02);
+    backend.timeline.setTextProperty(0, QStringLiteral("outlineColor"), QStringLiteral("#ff0000"));
+    QTRY_VERIFY_WITH_TIMEOUT(ring->isVisible(), 5000);
+    // It is bigger than the words it surrounds, by about the outline all round.
+    QVERIFY(ring->width() > 0 && ring->height() > 0);
+    const double radius = layer->height() * 0.02;
+    QTRY_VERIFY_WITH_TIMEOUT(ring->property("status").toInt() == 1, 5000);
+    QVERIFY(ring->height() >= radius * 2);
+    // Taking it away hides it again.
+    backend.timeline.setTextProperty(0, QStringLiteral("outline"), 0.0);
+    QTRY_VERIFY_WITH_TIMEOUT(!ring->isVisible(), 3000);
 }
 
 void BackendTests::qmlTextKeyAddsATextAndTypingIsNotShortcuts() {

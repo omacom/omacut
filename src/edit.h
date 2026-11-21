@@ -40,12 +40,17 @@ struct TextOverlay {
     QString color = QStringLiteral("#ffffff");
     // A dark box behind the text, for readability over busy footage.
     bool box = false;
+    // A round outline around the letters, as a fraction of the frame's
+    // height wide (0: none), in outlineColor.
+    double outline = 0.0;
+    QString outlineColor = QStringLiteral("#000000");
     double length() const { return end - start; }
     bool operator==(const TextOverlay &other) const {
         return text == other.text && start == other.start && end == other.end
             && effect == other.effect && y == other.y && size == other.size
             && font == other.font
-            && color == other.color && box == other.box;
+            && color == other.color && box == other.box
+            && outline == other.outline && outlineColor == other.outlineColor;
     }
 };
 using Overlays = QList<TextOverlay>;

@@ -47,6 +47,12 @@ DialogPanel {
         var plain = /^[\p{L}\p{N}][\p{L}\p{N} .+]{0,63}$/u;
         return ["Sans"].concat(Qt.fontFamilies().filter(f => f !== "Sans" && plain.test(f)));
     }
+    readonly property var outlineChoices: [
+        { value: 0, label: qsTr("None") },
+        { value: 0.004, label: qsTr("Thin") },
+        { value: 0.01, label: qsTr("Medium") },
+        { value: 0.02, label: qsTr("Thick") }
+    ]
     readonly property var colorChoices: ["#ffffff", "#ffd60a", "#ff453a", "#30d158", "#0a84ff", "#000000"]
 
     implicitHeight: body.implicitHeight + 24
@@ -316,6 +322,27 @@ DialogPanel {
                 active: panel.picked !== null && panel.picked.box
                 onClicked: panel.setProperty("box", !panel.picked.box)
             }
+            Item { width: 10; height: 1 }
+            Caption { text: qsTr("Outline") }
+            Repeater {
+                model: panel.outlineChoices
+                delegate: Chip {
+                    required property var modelData
+                    label: modelData.label
+                    active: panel.picked !== null && Math.abs(panel.picked.outline - modelData.value) < 0.0005
+                    onClicked: panel.setProperty("outline", modelData.value)
+                }
+            }
+            Repeater {
+                model: panel.picked !== null && panel.picked.outline > 0 ? panel.colorChoices : []
+                delegate: Chip {
+                    required property string modelData
+                    swatch: modelData
+                    active: panel.picked !== null && panel.picked.outlineColor === modelData
+                    onClicked: panel.setProperty("outlineColor", modelData)
+                }
+            }
+            Item { width: 10; height: 1 }
             Chip {
                 label: qsTr("Remove text")
                 onClicked: panel.timeline.removeText(panel.current)

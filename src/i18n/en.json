@@ -95,5 +95,8 @@
   "Video has a zero or invalid duration.": "Video has a zero or invalid duration.",
   "Your edit hasn't been exported. Quit anyway?": "Your edit hasn't been exported. Quit anyway?",
   "Zoom to the clip": "Zoom to the clip",
-  "zoomed": "zoomed"
+  "zoomed": "zoomed",
+  "Outline": "Outline",
+  "Thin": "Thin",
+  "Thick": "Thick"
 }

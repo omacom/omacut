@@ -813,6 +813,27 @@ ApplicationWindow {
                             color: "#8c000000"
                             opacity: overlay.alpha
                         }
+                        // The outline, grown by jump flooding (outline.h) around the
+                        // text at its full size and scaled with it as it pops.
+                        Image {
+                            id: ring
+                            objectName: "textOutline"
+                            readonly property real basePixels: Math.max(1, Math.round(textLayer.height * overlay.spec.size))
+                            readonly property real scaleBy: label.font.pixelSize / basePixels
+                            readonly property real radius: Math.round(textLayer.height * overlay.spec.outline * 10) / 10
+                            asynchronous: true
+                            visible: status === Image.Ready && overlay.spec.outline > 0
+                            source: radius > 0 && overlay.spec.text.trim() !== ""
+                                ? "image://outline/" + [radius, overlay.spec.outlineColor.substring(1), basePixels,
+                                                        encodeURIComponent(overlay.spec.font),
+                                                        encodeURIComponent(overlay.spec.text)].join("/")
+                                : ""
+                            width: implicitWidth * scaleBy
+                            height: implicitHeight * scaleBy
+                            x: label.x + (label.width - width) / 2
+                            y: label.y + (label.height - height) / 2
+                            opacity: overlay.alpha
+                        }
                         Text {
                             id: label
                             readonly property real pixelSize: textLayer.height * overlay.spec.size * (overlay.pops ? 0.6 + 0.4 * overlay.progress : 1)

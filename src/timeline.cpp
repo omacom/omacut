@@ -46,7 +46,9 @@ QVariantList Timeline::textList() const {
                                   {QStringLiteral("size"), text.size},
                                   {QStringLiteral("font"), text.font},
                                   {QStringLiteral("color"), text.color},
-                                  {QStringLiteral("box"), text.box}});
+                                  {QStringLiteral("box"), text.box},
+                                  {QStringLiteral("outline"), text.outline},
+                                  {QStringLiteral("outlineColor"), text.outlineColor}});
     }
     return result;
 }
@@ -166,6 +168,12 @@ void Timeline::setTextProperty(int index, const QString &name, const QVariant &v
         if (!validColor(value.toString()))
             return;
         text.color = value.toString().toLower();
+    } else if (name == QLatin1String("outline")) {
+        text.outline = std::clamp(value.toDouble(), 0.0, 0.05);
+    } else if (name == QLatin1String("outlineColor")) {
+        if (!validColor(value.toString()))
+            return;
+        text.outlineColor = value.toString().toLower();
     } else if (name == QLatin1String("box")) {
         text.box = value.toBool();
     } else {
