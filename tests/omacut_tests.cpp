@@ -2575,6 +2575,16 @@ void BackendTests::playbackAdvancesOnEndOfMedia() {
     QTest::qWait(50);
     QCOMPARE(player->property("clip").toInt(), 0);
     QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PausedState));
+
+    // EndOfMedia while priming clears priming, restores primeMs, and stays on the clip.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(QMetaObject::invokeMethod(player, "startPriming", Q_ARG(QVariant, 9500)));
+    QCOMPARE(player->property("priming").toBool(), true);
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("priming").toBool(), false, 3000);
+    QCOMPARE(player->property("position").toInt(), 9500);
+    QCOMPARE(player->property("clip").toInt(), 0);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PausedState));
 }
 
 void BackendTests::timelineAddsAndMovesVideos() {
