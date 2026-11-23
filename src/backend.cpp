@@ -11,6 +11,7 @@
 #include <QTimer>
 #include <QVariantMap>
 
+#include <algorithm>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -36,6 +37,29 @@ bool replaceWithTemp(const QString &tmpPath, const QString &outPath) {
     const QByteArray tmpName = QFile::encodeName(tmpPath);
     const QByteArray outName = QFile::encodeName(outPath);
     return std::rename(tmpName.constData(), outName.constData()) == 0;
+}
+
+// Resolve the adjacent displayed frame timestamp within clip from a sorted
+// frame-times table. Matches the player's millisecond resolution, including
+// rounded timestamps at fractional frame rates.
+double resolveStepTarget(const QList<double> &times, const edit::Clip &clip,
+                         double sourceTime, bool atClipEnd, int direction) {
+    constexpr double tolerance = 0.0005;
+    if (direction > 0) {
+        const auto it = std::upper_bound(times.cbegin(), times.cend(), sourceTime + tolerance);
+        return it != times.cend() && *it < clip.out ? *it : clip.out;
+    }
+    const auto end = sourceTime + tolerance < clip.out
+        ? std::upper_bound(times.cbegin(), times.cend(), sourceTime + tolerance)
+        : std::lower_bound(times.cbegin(), times.cend(), clip.out);
+    const auto first = std::lower_bound(times.cbegin(), end, clip.in);
+    if (first == end)
+        return clip.in;
+    // Only at/past the actual end: treating a frame just before
+    // it as the end would keep returning that same frame.
+    if (atClipEnd)
+        return *(end - 1);
+    return end - first >= 2 ? *(end - 2) : clip.in;
 }
 }
 
@@ -284,6 +308,8 @@ void Backend::stepFrame(double t, int direction) {
     t = qBound(0.0, t, m_timeline.duration());
     const edit::Clips clips = m_timeline.clips();
     int index = m_timeline.clipAt(t);
+    if (index < 0 || index >= clips.size())
+        return;
     // An edge belongs to the following clip, but stepping left from it
     // should show the previous clip's last frame. The player can round
     // that edge up by half a millisecond when reporting its position.
@@ -291,53 +317,42 @@ void Backend::stepFrame(double t, int direction) {
     if (direction < 0 && index > 0 && t - m_timeline.clipStart(index) <= tolerance)
         --index;
     const edit::Clip clip = clips.at(index);
+    if (clip.source < 0 || clip.source >= m_videos.size())
+        return;
     const double clipStart = m_timeline.clipStart(index);
     const bool atClipEnd = t >= m_timeline.clipStart(index + 1);
-    const Video video = m_videos.at(clip.source);
+    const Video &video = m_videos.at(clip.source);
+    if (!video.frameTimes.isEmpty()) {
+        const double sourceTime = atClipEnd ? clip.out : clip.in + t - clipStart;
+        const double target = resolveStepTarget(video.frameTimes, clip, sourceTime, atClipEnd, direction);
+        emit frameStepped(t, clipStart + target - clip.in);
+        return;
+    }
+
     m_steppingFrame = true;
     const QPointer<Backend> guard(this);
-    QThreadPool::globalInstance()->start([guard, video, clips, clip, clipStart, atClipEnd, t, direction] {
-        const auto times = video.frameTimes.isEmpty()
-            ? ffmpeg::frameTimes(video.info.path, video.info.start) : video.frameTimes;
+    const QString path = video.info.path;
+    const double start = video.info.start;
+    const int thumbKey = video.thumbKey;
+    QThreadPool::globalInstance()->start([guard, path, start, thumbKey, clips, clip, clipStart, atClipEnd, t, direction] {
+        const auto times = ffmpeg::frameTimes(path, start);
         QMetaObject::invokeMethod(QCoreApplication::instance(),
-            [guard, video, clips, clip, clipStart, atClipEnd, t, direction, times] {
+            [guard, thumbKey, clips, clip, clipStart, atClipEnd, t, direction, times] {
                 if (!guard)
                     return;
                 guard->m_steppingFrame = false;
-                if (guard->m_timeline.clips() != clips || guard->m_videos.value(clip.source).thumbKey != video.thumbKey)
+                if (guard->m_videos.value(clip.source).thumbKey != thumbKey)
+                    return;
+                if (!times.isEmpty())
+                    guard->m_videos[clip.source].frameTimes = times;
+                if (guard->m_timeline.clips() != clips)
                     return;
                 if (times.isEmpty()) {
                     emit guard->frameStepFailed(tr("Could not read video frame times."));
                     return;
                 }
-                guard->m_videos[clip.source].frameTimes = times;
                 const double sourceTime = atClipEnd ? clip.out : clip.in + t - clipStart;
-                // Match the player's millisecond resolution, including rounded
-                // timestamps at fractional frame rates.
-                double target = direction < 0 ? clip.in : clip.out;
-                if (direction > 0) {
-                    for (double time : times) {
-                        if (time > sourceTime + tolerance && time < clip.out) {
-                            target = time;
-                            break;
-                        }
-                    }
-                } else {
-                    // First find the frame currently on screen, then its predecessor.
-                    double shown = clip.in;
-                    for (double time : times) {
-                        if (time > sourceTime + tolerance || time >= clip.out)
-                            break;
-                        if (time >= clip.in) {
-                            target = shown;
-                            shown = time;
-                        }
-                    }
-                    // Only at/past the actual end: treating a frame just before
-                    // it as the end would keep returning that same frame.
-                    if (atClipEnd)
-                        target = shown;
-                }
+                const double target = resolveStepTarget(times, clip, sourceTime, atClipEnd, direction);
                 emit guard->frameStepped(t, clipStart + target - clip.in);
             }, Qt::QueuedConnection);
     });

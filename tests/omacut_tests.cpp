@@ -892,6 +892,15 @@ void BackendTests::frameStepsFollowPresentationTimes() {
     backend.timeline()->split(0.4004);
     step(0.4004, -1, 0.4);
     step(0.4, -1, 0.1);
+
+    // Once frame times are cached, consecutive steps resolve synchronously
+    // without touching the worker pool (and rapid back-to-back calls aren't dropped).
+    stepped.clear();
+    backend.stepFrame(0.0, 1);
+    backend.stepFrame(0.1, 1);
+    QCOMPARE(stepped.count(), 2);
+    QVERIFY(qAbs(stepped.at(0).at(1).toDouble() - 0.1) < 0.000001);
+    QVERIFY(qAbs(stepped.at(1).at(1).toDouble() - 0.4) < 0.000001);
 }
 
 void BackendTests::frameStepFailuresHaveTheirOwnNotice() {
