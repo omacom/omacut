@@ -37,6 +37,14 @@ bool replaceWithTemp(const QString &tmpPath, const QString &outPath) {
     const QByteArray outName = QFile::encodeName(outPath);
     return std::rename(tmpName.constData(), outName.constData()) == 0;
 }
+
+// Rejects non-local schemes, relative paths (which ffprobe could read as
+// options or URLs), and host-bearing or "//host/..." network paths.
+bool isLocalAbsolutePath(const QUrl &url, QString *path) {
+    *path = url.toLocalFile();
+    return url.isLocalFile() && url.host().isEmpty()
+        && QDir::isAbsolutePath(*path) && !path->startsWith(QLatin1String("//"));
+}
 }
 
 Backend::Backend(ThumbProvider *provider, QObject *parent)
@@ -50,7 +58,16 @@ Backend::Backend(ThumbProvider *provider, FilePicker *filePicker, QObject *paren
 }
 
 Backend::~Backend() {
-    // Quit mid-save: the ffmpeg writing it dies with us, so its file goes too.
+    // Stop any running export or frame-save children before removing temp files,
+    // so ffmpeg can neither recreate them nor log destruction warnings.
+    for (QProcess *proc : findChildren<QProcess *>(Qt::FindDirectChildrenOnly)) {
+        proc->disconnect(this);
+        if (proc->state() != QProcess::NotRunning) {
+            proc->kill();
+            proc->waitForFinished(1000);
+        }
+    }
+    // Quit mid-save: the ffmpeg writing it is gone now, so its file goes too.
     if (!m_framePart.isEmpty())
         QFile::remove(m_framePart);
 }
@@ -84,6 +101,8 @@ void Backend::setStatus(const QString &status) {
 
 bool Backend::isVideoPath(const QString &path) const {
     const QString target = QFileInfo(path).canonicalFilePath();
+    if (target.isEmpty())
+        return false;
     for (const Video &video : m_videos) {
         if (QFileInfo(video.info.path).canonicalFilePath() == target)
             return true;
@@ -100,10 +119,7 @@ QVariantList Backend::videoList() const {
 }
 
 bool Backend::checkedPath(const QUrl &url, QString *path) {
-    // Only absolute local paths reach ffprobe: "file:-report" would be read
-    // as an option, and "file:http://..." as a network address.
-    *path = url.toLocalFile();
-    if (!url.isLocalFile() || !QDir::isAbsolutePath(*path)) {
+    if (!isLocalAbsolutePath(url, path)) {
         emit loadError(tr("Only local files can be opened."));
         return false;
     }
@@ -371,7 +387,7 @@ void Backend::saveFrame(double t) {
                  [this, path, start, sourceTime, ffmpegBin](const QByteArray &packetTimes) {
         const ffmpeg::ShownFrame shown = ffmpeg::shownFrame(packetTimes, start + sourceTime);
         const double frameTime = shown.time - start;
-        const double keyframeTime = shown.keyframe >= 0.0 ? shown.keyframe - start : -1.0;
+        const double keyframeTime = shown.hasKeyframe ? shown.keyframe - start : -1.0;
         const QFileInfo source(path);
         // Written under a hidden name, then given the first free one, so a
         // failed or interrupted save leaves no half PNG and never replaces one.
@@ -470,15 +486,16 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     QList<ffmpeg::Segment> segments;
     // The first clip that still has its video sets the frame.
     int frameSource = -1;
+    double clipLen = 0.0;
     for (const edit::Clip &clip : edit::merged(clips)) {
-        if (clip.source < 0 || clip.source >= m_videos.size())
+        if (clip.source < 0 || clip.source >= m_videos.size() || clip.out <= clip.in)
             continue;
         if (frameSource < 0)
             frameSource = clip.source;
         const ffmpeg::VideoInfo &info = m_videos[clip.source].info;
         segments.append({info.path, clip.in, clip.out, info.audio});
+        clipLen += clip.length();
     }
-    const double clipLen = edit::duration(clips);
     if (segments.isEmpty() || clipLen <= 0.0) {
         emit exportFailed(tr("The selected clip has no length."));
         return;
@@ -487,11 +504,8 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
     // Forcing the .mp4 suffix can redirect the write to a file the save
     // dialog never asked the user about overwriting — refuse rather than
     // silently replace it.
-    const QString selectedPath = dst.toLocalFile();
-    // Anything but an absolute local path would leave an empty or relative
-    // one, which the .mp4 suffix turns into a file in the working directory,
-    // or, with a host, "//host/..." that Linux reads as a local path.
-    if (!dst.isLocalFile() || !dst.host().isEmpty() || !QDir::isAbsolutePath(selectedPath)) {
+    QString selectedPath;
+    if (!isLocalAbsolutePath(dst, &selectedPath)) {
         emit exportFailed(QStringLiteral("Only local files can be exported to."));
         return;
     }
@@ -557,24 +571,29 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                     failExport(tmpPath, tr("Could not write the exported file."));
                     return;
                 }
-                setBusy(false);
                 setStatus(QString());
                 // Written over one of its own videos: the clips' times point
                 // into a file that's gone, so start over from what was saved.
                 // The reopen probes in the background; if it fails, the probe
                 // result says the saved file couldn't be reopened.
                 if (!isVideoPath(outPath)) {
+                    setBusy(false);
                     m_timeline.markExported(clips);
                     emit exportDone(outPath);
                 } else {
-                    // exportDone waits for the reopen probe to settle.
+                    // exportDone waits for the reopen probe to settle. Hand off
+                    // directly from exporting to probing so busy() never drops
+                    // to false in between.
                     PendingVideo pending;
                     pending.url = QUrl::fromLocalFile(outPath);
                     pending.exportReload = true;
-                    if (checkedPath(pending.url, &pending.path))
+                    if (checkedPath(pending.url, &pending.path)) {
+                        m_busy = false;
                         enqueueVideo(pending);
-                    else
+                    } else {
+                        setBusy(false);
                         emit exportDone(outPath);
+                    }
                 }
             });
     connect(proc, &QProcess::errorOccurred, this,

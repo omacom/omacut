@@ -11,6 +11,7 @@ class PortalFilePicker : public FilePicker {
 
 public:
     explicit PortalFilePicker(QObject *parent = nullptr);
+    ~PortalFilePicker() override;
 
     void openVideo() override;
     void exportVideo(const QUrl &suggestedUrl, const QList<int> &scaleHeights) override;
