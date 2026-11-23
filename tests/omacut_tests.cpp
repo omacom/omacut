@@ -1026,6 +1026,44 @@ void BackendTests::saveFrameTakesTheFrameOnScreen() {
         QVERIFY(saved.open(QIODevice::ReadOnly) && reference.open(QIODevice::ReadOnly));
         QVERIFY2(saved.readAll() == reference.readAll(), qPrintable(name));
     }
+
+    // MP4 edit lists can place the keyframe and pre-roll packets at negative
+    // PTS before start_time; saveFrame() must still select and decode the right frame.
+    const QString negPath = m_dir.filePath(QStringLiteral("negative-pts.mp4"));
+    const QString negExpected = m_dir.filePath(QStringLiteral("negative-pts-expected.png"));
+    {
+        QProcess proc;
+        proc.start(ffmpegBin, {
+            QStringLiteral("-loglevel"), QStringLiteral("error"),
+            QStringLiteral("-f"), QStringLiteral("lavfi"),
+            QStringLiteral("-i"), QStringLiteral("testsrc=size=64x48:rate=10:duration=2"),
+            QStringLiteral("-c:v"), QStringLiteral("libx264"), QStringLiteral("-bf"), QStringLiteral("3"),
+            QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"),
+            QStringLiteral("-avoid_negative_ts"), QStringLiteral("disabled"),
+            QStringLiteral("-output_ts_offset"), QStringLiteral("-0.5"),
+            QStringLiteral("-y"), negPath,
+        });
+        QVERIFY(proc.waitForFinished(10000) && proc.exitCode() == 0);
+        proc.start(ffmpegBin, {
+            QStringLiteral("-loglevel"), QStringLiteral("error"), QStringLiteral("-i"), negPath,
+            QStringLiteral("-vf"), QStringLiteral("select=eq(n\\,2),scale=round(iw*sar):ih,setsar=1"),
+            QStringLiteral("-frames:v"), QStringLiteral("1"), QStringLiteral("-y"), negExpected,
+        });
+        QVERIFY(proc.waitForFinished(10000) && proc.exitCode() == 0);
+
+        ThumbProvider provider;
+        Backend backend(&provider, new FakeFilePicker);
+        QSignalSpy savedSpy(&backend, &Backend::frameSaved);
+        QSignalSpy failedSpy(&backend, &Backend::frameFailed);
+        QVERIFY(backend.load(QUrl::fromLocalFile(negPath)));
+        waitForProbe(backend);
+        backend.saveFrame(0.25);
+        QTRY_VERIFY_WITH_TIMEOUT(savedSpy.count() + failedSpy.count() > 0, 10000);
+        QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
+        QFile saved(savedSpy.first().at(0).toString()), reference(negExpected);
+        QVERIFY(saved.open(QIODevice::ReadOnly) && reference.open(QIODevice::ReadOnly));
+        QCOMPARE(saved.readAll(), reference.readAll());
+    }
 }
 
 void BackendTests::shownFrameIsTheLastToStartByThen() {
