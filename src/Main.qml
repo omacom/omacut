@@ -158,6 +158,7 @@ ApplicationWindow {
         if (hasVideo) {
             ensureAudioOutput();
         } else {
+            player.wasPlaying = false;
             player.stop();
             releaseAudioOutput();
         }
@@ -460,11 +461,17 @@ ApplicationWindow {
         // clip's end must not turn the next backward step into a repeat.
         property real pausedSourceTime: -1
 
+        // Remember active playback across EndOfMedia, since Qt can flip
+        // playbackState to StoppedState before reporting EndOfMedia.
+        property bool wasPlaying: false
+
         // Shows sourceTime in clip index, and plays on from there if asked.
         function show(index, sourceTime, andPlay) {
             var url = backend.videos[timeline.clips[index].source].url;
             var ms = Math.round(sourceTime * 1000);
             pausedSourceTime = andPlay ? -1 : sourceTime;
+            if (!andPlay)
+                wasPlaying = false;
             clip = index;
             // Compared as text: url values are never identical as objects.
             if (source.toString() !== url.toString() || mediaStatus === MediaPlayer.LoadingMedia) {
@@ -512,17 +519,47 @@ ApplicationWindow {
             priming = false;
         }
 
+        onPlaybackStateChanged: {
+            if (playbackState === MediaPlayer.PlayingState && !priming)
+                wasPlaying = true;
+            else if (playbackState === MediaPlayer.PausedState)
+                wasPlaying = false;
+        }
         onMediaStatusChanged: {
             // A video that won't load leaves nothing to wait for.
-            if (mediaStatus === MediaPlayer.InvalidMedia)
+            if (mediaStatus === MediaPlayer.InvalidMedia) {
                 pendingMs = -1;
+                wasPlaying = false;
+            }
             if (mediaStatus === MediaPlayer.LoadingMedia)
                 loadStarted = true;
+            if (mediaStatus === MediaPlayer.EndOfMedia) {
+                if (priming) {
+                    Qt.callLater(finishPriming);
+                    return;
+                }
+                if (wasPlaying && pendingMs < 0) {
+                    Qt.callLater(finishEndOfMedia);
+                    return;
+                }
+            }
             // Seeking or playing from inside this handler makes the player
             // load the video over again, so it waits for the handler to return.
             if (pendingMs >= 0 && loadStarted
                     && (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia))
                 Qt.callLater(takePending);
+        }
+        function finishEndOfMedia() {
+            if (!wasPlaying || pendingMs >= 0 || clip < 0 || clip >= timeline.clips.length)
+                return;
+            wasPlaying = false;
+            if (clip + 1 >= timeline.clips.length) {
+                pause();
+                editBar.playheadSec = timeline.duration;
+                return;
+            }
+            var next = timeline.clips[clip + 1];
+            show(clip + 1, next.in, true);
         }
         function takePending() {
             if (pendingMs < 0)
@@ -550,7 +587,7 @@ ApplicationWindow {
                 t = pausedSourceTime;
             // Play the clips in order: carry on into a clip that continues
             // this one, jump to any other, and stop after the last.
-            if (playbackState === MediaPlayer.PlayingState && t >= c.out - 0.03) {
+            while (playbackState === MediaPlayer.PlayingState && t >= c.out - 0.03) {
                 if (clip + 1 >= timeline.clips.length) {
                     pause();
                     editBar.playheadSec = timeline.duration;
@@ -734,6 +771,7 @@ ApplicationWindow {
             }
             Connections {
                 target: videoOut.videoSink
+                enabled: player.priming
                 function onVideoFrameChanged(frame) {
                     player.finishPriming();
                 }
@@ -1068,6 +1106,7 @@ ApplicationWindow {
             // Drop any prime or load still pending for the last video.
             primeFallback.stop();
             player.priming = false;
+            player.wasPlaying = false;
             player.pendingMs = -1;
             // Load afresh, even the same path: it may be a new file now.
             player.source = "";

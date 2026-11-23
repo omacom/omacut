@@ -20,7 +20,7 @@ QVariantList Timeline::clipList() const {
 
 bool Timeline::unexported() const {
     return !m_clips.isEmpty() && !edit::untouched(m_clips, m_sourceDurations.value(0))
-        && m_clips != m_exported;
+        && edit::merged(m_clips) != edit::merged(m_exported);
 }
 
 void Timeline::reset(double duration) {
@@ -31,6 +31,7 @@ void Timeline::reset(double duration) {
     m_undo.clear();
     m_redo.clear();
     m_gesture = false;
+    m_gestureRecorded = false;
     emit changed();
 }
 
@@ -41,6 +42,7 @@ void Timeline::restore(const QList<double> &sourceDurations, const edit::Clips &
     m_undo.clear();
     m_redo.clear();
     m_gesture = false;
+    m_gestureRecorded = false;
     emit changed();
 }
 
@@ -104,7 +106,7 @@ double Timeline::edgeFrom(double t, int direction) const {
 bool Timeline::canJoin(int index) const {
     // The same test playback and export use, so a handle dragged onto its
     // neighbour's edge, a hair off from float arithmetic, can still join.
-    return index >= 0 && index + 1 < m_clips.size() && edit::continues(m_clips[index], m_clips[index + 1]);
+    return continues(index);
 }
 
 bool Timeline::continues(int index) const {
