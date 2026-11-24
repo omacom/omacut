@@ -333,6 +333,7 @@ private slots:
     void addingAVideoInsertsItAfterThePlayheadsClip();
     void probeReportsTheDisplayedSize();
     void probeReadsStreamedWebmAndSkipsCoverArt();
+    void probeFallsBackPastNaDuration();
     void probeRunsOffTheUiThread();
     void thumbProviderServesAndCachesFrames();
     void thumbProviderStopsBlockedJobs();
@@ -358,6 +359,7 @@ private slots:
     void exportRefusesAnythingButAbsoluteLocalPaths();
     void exportStartFailureClearsBusy();
     void failedExportPreservesExistingFile();
+    void destroyingBackendMidExportStopsProcessCleanly();
     void qmlDoesNotCreateAudioOutputWithoutVideo();
     void qmlShortcutsTriggerBackendActions();
     void qmlArrowKeysMoveThePlayhead();
@@ -375,6 +377,7 @@ private slots:
     void qmlTrackRefitsAfterRemovingClips();
     void qmlSplitPiecesTrimApart();
     void qmlMovingAPieceKeepsTheCut();
+    void qmlDoubleClickSplitsAndJoins();
     void qmlFilmstripHoldsStillUnderADrag();
     void qmlPressingHandleScrubsItsFrame();
     void formatTimeShowsHoursFromSixtyMinutes();
@@ -392,6 +395,7 @@ private slots:
     void timelineSeeksAcrossARealCut();
     void playbackSeeksAcrossARealCut_data();
     void playbackSeeksAcrossARealCut();
+    void playbackAdvancesOnEndOfMedia();
     void timelineAnswersWhereTimesFall();
     void timelineEditsAtATime();
     void trimArgsReencodeForPreciseCuts();
@@ -523,11 +527,13 @@ void BackendTests::loadRefusesAnythingButAbsoluteLocalPaths() {
     Backend backend(&provider, picker);
     QSignalSpy errorSpy(&backend, &Backend::loadError);
 
-    // ffprobe would take these as an option and a network address.
+    // ffprobe would take these as an option, a network address, or a UNC share.
     QVERIFY(!backend.load(QUrl(QStringLiteral("file:-report"))));
     QVERIFY(!backend.load(QUrl(QStringLiteral("file:http://example.com/a.mp4"))));
     QVERIFY(!backend.load(QUrl(QStringLiteral("https://example.com/a.mp4"))));
-    QCOMPARE(errorSpy.count(), 3);
+    QVERIFY(!backend.load(QUrl(QStringLiteral("file://server/share/a.mp4"))));
+    QVERIFY(!backend.load(QUrl(QStringLiteral("file:////server/share/a.mp4"))));
+    QCOMPARE(errorSpy.count(), 5);
     QVERIFY(backend.source().isEmpty());
 }
 
@@ -686,6 +692,29 @@ void BackendTests::probeReadsStreamedWebmAndSkipsCoverArt() {
     QVERIFY(!songInfo.ok);
     // Nor is a still image a video, though it has a frame and no duration.
     QVERIFY(!ffmpeg::probe(cover).ok);
+}
+
+void BackendTests::probeFallsBackPastNaDuration() {
+    QTemporaryDir pathDir;
+    QVERIFY(pathDir.isValid());
+    const QString fakeFfprobe = pathDir.filePath(QStringLiteral("ffprobe"));
+    QFile fake(fakeFfprobe);
+    QVERIFY(fake.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    // Stream carries "N/A" duration, container carries the real duration.
+    fake.write("#!/bin/sh\n"
+               "printf '%s' '{\"streams\":[{\"index\":0,\"codec_type\":\"video\","
+               "\"width\":64,\"height\":48,\"duration\":\"N/A\"}],"
+               "\"format\":{\"start_time\":\"N/A\",\"duration\":\"2.5\"}}'\n");
+    fake.close();
+    QVERIFY(fake.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                | QFileDevice::ExeOwner));
+    EnvVarGuard pathGuard("PATH");
+    qputenv("PATH", QFile::encodeName(pathDir.path()));
+
+    const ffmpeg::VideoInfo info = ffmpeg::probe(m_videoPath);
+    QVERIFY2(info.ok, qPrintable(info.error));
+    QCOMPARE(info.duration, 2.5);
+    QCOMPARE(info.start, 0.0);
 }
 
 void BackendTests::probeRunsOffTheUiThread() {
@@ -1008,6 +1037,44 @@ void BackendTests::saveFrameTakesTheFrameOnScreen() {
         QVERIFY(saved.open(QIODevice::ReadOnly) && reference.open(QIODevice::ReadOnly));
         QVERIFY2(saved.readAll() == reference.readAll(), qPrintable(name));
     }
+
+    // MP4 edit lists can place the keyframe and pre-roll packets at negative
+    // PTS before start_time; saveFrame() must still select and decode the right frame.
+    const QString negPath = m_dir.filePath(QStringLiteral("negative-pts.mp4"));
+    const QString negExpected = m_dir.filePath(QStringLiteral("negative-pts-expected.png"));
+    {
+        QProcess proc;
+        proc.start(ffmpegBin, {
+            QStringLiteral("-loglevel"), QStringLiteral("error"),
+            QStringLiteral("-f"), QStringLiteral("lavfi"),
+            QStringLiteral("-i"), QStringLiteral("testsrc=size=64x48:rate=10:duration=2"),
+            QStringLiteral("-c:v"), QStringLiteral("libx264"), QStringLiteral("-bf"), QStringLiteral("3"),
+            QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"),
+            QStringLiteral("-avoid_negative_ts"), QStringLiteral("disabled"),
+            QStringLiteral("-output_ts_offset"), QStringLiteral("-0.5"),
+            QStringLiteral("-y"), negPath,
+        });
+        QVERIFY(proc.waitForFinished(10000) && proc.exitCode() == 0);
+        proc.start(ffmpegBin, {
+            QStringLiteral("-loglevel"), QStringLiteral("error"), QStringLiteral("-i"), negPath,
+            QStringLiteral("-vf"), QStringLiteral("select=eq(n\\,2),scale=round(iw*sar):ih,setsar=1"),
+            QStringLiteral("-frames:v"), QStringLiteral("1"), QStringLiteral("-y"), negExpected,
+        });
+        QVERIFY(proc.waitForFinished(10000) && proc.exitCode() == 0);
+
+        ThumbProvider provider;
+        Backend backend(&provider, new FakeFilePicker);
+        QSignalSpy savedSpy(&backend, &Backend::frameSaved);
+        QSignalSpy failedSpy(&backend, &Backend::frameFailed);
+        QVERIFY(backend.load(QUrl::fromLocalFile(negPath)));
+        waitForProbe(backend);
+        backend.saveFrame(0.25);
+        QTRY_VERIFY_WITH_TIMEOUT(savedSpy.count() + failedSpy.count() > 0, 10000);
+        QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
+        QFile saved(savedSpy.first().at(0).toString()), reference(negExpected);
+        QVERIFY(saved.open(QIODevice::ReadOnly) && reference.open(QIODevice::ReadOnly));
+        QCOMPARE(saved.readAll(), reference.readAll());
+    }
 }
 
 void BackendTests::shownFrameIsTheLastToStartByThen() {
@@ -1021,6 +1088,15 @@ void BackendTests::shownFrameIsTheLastToStartByThen() {
     QCOMPARE(ffmpeg::shownFrame(packets, 9.0).time, 0.5);          // a held last frame
     QCOMPARE(ffmpeg::shownFrame(QByteArray(), 2.5).time, 2.5);
     QCOMPARE(ffmpeg::shownFrame(QByteArray(), 2.5).keyframe, -1.0);
+    QVERIFY(!ffmpeg::shownFrame(QByteArray(), 2.5).hasKeyframe);
+
+    // Negative PTS/keyframes (MP4 B-frame edit lists) must still match.
+    const QByteArray negative = "-0.066667,K__\n0.000000,___\n";
+    const ffmpeg::ShownFrame neg = ffmpeg::shownFrame(negative, -0.05);
+    QCOMPARE(neg.time, -0.066667);
+    QVERIFY(neg.hasKeyframe);
+    QCOMPARE(neg.keyframe, -0.066667);
+    QVERIFY(ffmpeg::shownFrameArgs(m_videoPath, 1.0).contains(QStringLiteral("%11.000")));
 }
 
 void BackendTests::saveFrameSquaresStretchedPixels() {
@@ -1342,8 +1418,10 @@ void BackendTests::exportZeroLengthClipFails() {
 
     const QString outPath = m_dir.filePath(QStringLiteral("empty-range.mp4"));
     backend.exportClips(QUrl::fromLocalFile(outPath), {});
+    // A zero-length surviving clip must still fail even alongside a missing-source clip.
+    backend.exportClips(QUrl::fromLocalFile(outPath), {{99, 0.0, 1.0}, {0, 0.5, 0.5}});
 
-    QCOMPARE(failedSpy.count(), 1);
+    QCOMPARE(failedSpy.count(), 2);
     QCOMPARE(doneSpy.count(), 0);
     QVERIFY(!backend.busy());
     QVERIFY(!QFileInfo::exists(outPath));
@@ -1363,9 +1441,10 @@ void BackendTests::exportRefusesAnythingButAbsoluteLocalPaths() {
     backend.exportClips(QUrl(QStringLiteral("smb://server/share/out.mp4")), wholeVideo(1.0));
     backend.exportClips(QUrl(QStringLiteral("file:out.mp4")), wholeVideo(1.0));
     QVERIFY(QDir::setCurrent(cwd));
-    // Nor a file URL naming a host, which would become "//server/share/out.mp4".
+    // Nor a file URL naming a host or UNC share ("//server/share/out.mp4").
     backend.exportClips(QUrl(QStringLiteral("file://server/share/out.mp4")), wholeVideo(1.0));
-    QCOMPARE(failedSpy.count(), 3);
+    backend.exportClips(QUrl(QStringLiteral("file:////server/share/out.mp4")), wholeVideo(1.0));
+    QCOMPARE(failedSpy.count(), 4);
     QVERIFY(!backend.busy());
     QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral(".mp4"))));
     QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral("out.mp4"))));
@@ -1468,6 +1547,39 @@ void BackendTests::failedExportPreservesExistingFile() {
     QVERIFY(check.open(QIODevice::ReadOnly));
     QCOMPARE(check.readAll(), original);
     QVERIFY(!QFileInfo::exists(outPath + QStringLiteral(".omacut-part.mp4")));
+}
+
+void BackendTests::destroyingBackendMidExportStopsProcessCleanly() {
+    const QString sleepBin = QStandardPaths::findExecutable(QStringLiteral("sleep"));
+    QVERIFY2(!sleepBin.isEmpty(), "sleep is available");
+
+    QTemporaryDir pathDir;
+    QVERIFY(pathDir.isValid());
+    const QString fakeFfmpeg = pathDir.filePath(QStringLiteral("ffmpeg"));
+    QFile fake(fakeFfmpeg);
+    QVERIFY(fake.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    fake.write(QStringLiteral("#!/bin/sh\nexec \"%1\" 30\n").arg(sleepBin).toUtf8());
+    fake.close();
+    QVERIFY(fake.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                | QFileDevice::ExeOwner));
+
+    ThumbProvider provider;
+    auto backend = std::make_unique<Backend>(&provider, new FakeFilePicker);
+    QVERIFY(backend->load(videoUrl()));
+    waitForProbe(*backend);
+
+    EnvVarGuard pathGuard("PATH");
+    qputenv("PATH", QFile::encodeName(pathDir.path()));
+    QTest::failOnWarning(QRegularExpression(QStringLiteral("QProcess: Destroyed while process")));
+
+    backend->exportClips(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("aborted.mp4"))), wholeVideo(1.0));
+    QVERIFY(backend->busy());
+    QTest::qWait(100);
+
+    QElapsedTimer elapsed;
+    elapsed.start();
+    backend.reset();
+    QVERIFY2(elapsed.elapsed() < 5000, qPrintable(QString::number(elapsed.elapsed())));
 }
 
 void BackendTests::qmlDoesNotCreateAudioOutputWithoutVideo() {
@@ -2145,6 +2257,35 @@ void BackendTests::qmlMovingAPieceKeepsTheCut() {
     QTRY_COMPARE_WITH_TIMEOUT(editBar->property("windowEnd").toDouble(), 40.0, 3000);
 }
 
+void BackendTests::qmlDoubleClickSplitsAndJoins() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QQuickItem *editBar = harness.editBar();
+    QVERIFY(editBar);
+
+    const double y = editBar->height() / 2.0;
+    auto at = [&](double x) { return editBar->mapToScene(QPointF(x, y)).toPoint(); };
+
+    // Double-click the middle of the clip to split it, then double-click the
+    // right side of the split handle to join it back without QML warnings or
+    // a wedged trim gesture.
+    const double midX = editBar->width() / 2.0;
+    QTest::mouseDClick(window, Qt::LeftButton, Qt::NoModifier, at(midX));
+    QCOMPARE(backend.timeline.clips().size(), 2);
+    QVERIFY(!editBar->property("interacting").toBool());
+
+    QTest::qWait(QGuiApplication::styleHints()->mouseDoubleClickInterval() + 20);
+    QTest::mouseDClick(window, Qt::LeftButton, Qt::NoModifier, at(midX + 4.0));
+    QCOMPARE(backend.timeline.clips(), wholeVideo(20.0));
+    QVERIFY(!editBar->property("interacting").toBool());
+
+    // Undo still works (the trim gesture from the second press was closed).
+    backend.timeline.undo();
+    QCOMPARE(backend.timeline.clips().size(), 2);
+}
+
 void BackendTests::qmlPressingHandleScrubsItsFrame() {
     ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
     QmlHarness harness(backend);
@@ -2511,6 +2652,88 @@ void BackendTests::playbackSeeksAcrossARealCut() {
     QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState));
 }
 
+void BackendTests::playbackAdvancesOnEndOfMedia() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_videoPath), 10.0);
+    backend.timeline.split(5.0);
+    backend.timeline.moveClip(1, 0);          // [5..10], [0..5]
+    backend.timeline.setClip(1, 1.0, 5.0);    // [5..10], [1..5]
+    backend.addVideoOfLength(4.0, 9.0);       // [5..10], [1..5], [src1: 0..4]
+
+    QFile main(mainQmlPath());
+    QVERIFY(main.open(QIODevice::ReadOnly));
+    QByteArray source = main.readAll();
+    source.replace("    MediaPlayer {", "    PlaybackTest.FakeMediaPlayer {");
+    source.prepend("import \"../tests\" as PlaybackTest\n");
+    QmlHarness harness(backend, source);
+    QVERIFY(harness.window());
+    QObject *player = harness.window()->findChild<QObject *>(QStringLiteral("playbackTestPlayer"));
+    QVERIFY(player);
+    QVERIFY(player->setProperty("source", backend.source()));
+
+    // Reaching EndOfMedia while playing (before position hits c.out - 0.03)
+    // must still advance to the next clip, even if Qt drops playbackState first.
+    QVERIFY(QMetaObject::invokeMethod(player, "show", Q_ARG(QVariant, 0),
+                                      Q_ARG(QVariant, 5.0), Q_ARG(QVariant, true)));
+    QVERIFY(player->setProperty("position", 9500));
+    QVERIFY(player->setProperty("playbackState", int(QMediaPlayer::StoppedState)));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("clip").toInt(), 1, 3000);
+    QCOMPARE(player->property("position").toInt(), 1000);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState));
+
+    // A late EndOfMedia from clip 0 arriving after onPositionChanged already
+    // sought to clip 1 must not skip clip 1: it resumes clip 1 at its sought
+    // in-point even if Qt reports the old EOF position.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(QMetaObject::invokeMethod(player, "show", Q_ARG(QVariant, 0),
+                                      Q_ARG(QVariant, 5.0), Q_ARG(QVariant, true)));
+    QVERIFY(player->setProperty("position", 9980));
+    QCOMPARE(player->property("clip").toInt(), 1);
+    QCOMPARE(player->property("position").toInt(), 1000);
+    QVERIFY(player->setProperty("playbackState", int(QMediaPlayer::StoppedState)));
+    QVERIFY(player->setProperty("position", 10000));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState), 3000);
+    QCOMPARE(player->property("clip").toInt(), 1);
+    QCOMPARE(player->property("position").toInt(), 1000);
+
+    // Once playback advances in clip 1, a genuine EndOfMedia on a trimmed clip
+    // (ending before the file's metadata duration) still advances to clip 2.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(player->setProperty("position", 4500));
+    QVERIFY(player->setProperty("playbackState", int(QMediaPlayer::StoppedState)));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("clip").toInt(), 2, 3000);
+    QCOMPARE(player->property("position").toInt(), 0);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState));
+
+    // On the last clip, EndOfMedia parks the playhead at the end so Space restarts from 0.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(player->setProperty("position", 3500));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(harness.editBar()->property("playheadSec").toDouble(), 13.0, 3000);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PausedState));
+
+    // EndOfMedia arriving while paused must not start playing the next clip.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(QMetaObject::invokeMethod(player, "show", Q_ARG(QVariant, 0),
+                                      Q_ARG(QVariant, 9.5), Q_ARG(QVariant, false)));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTest::qWait(50);
+    QCOMPARE(player->property("clip").toInt(), 0);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PausedState));
+
+    // EndOfMedia while priming clears priming, restores primeMs, and stays on the clip.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(QMetaObject::invokeMethod(player, "startPriming", Q_ARG(QVariant, 9500)));
+    QCOMPARE(player->property("priming").toBool(), true);
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("priming").toBool(), false, 3000);
+    QCOMPARE(player->property("position").toInt(), 9500);
+    QCOMPARE(player->property("clip").toInt(), 0);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PausedState));
+}
+
 void BackendTests::timelineAddsAndMovesVideos() {
     Timeline timeline;
     timeline.reset(10.0);
@@ -2586,6 +2809,13 @@ void BackendTests::timelineTracksUnexportedCuts() {
     QVERIFY(timeline.unexported());
     timeline.markExported(timeline.clips());
     QVERIFY(!timeline.unexported());
+    // Splitting or rejoining an already-exported edit doesn't change what exports.
+    timeline.split(2.5);
+    QVERIFY(!timeline.unexported());
+    timeline.joinClips(0);
+    QVERIFY(!timeline.unexported());
+    timeline.undo();
+    timeline.undo();
     timeline.undo();
     timeline.redo();
     QVERIFY(!timeline.unexported());
@@ -3381,6 +3611,14 @@ void BackendTests::portalPickerReplacesAnUnansweredRequest() {
     portal.respondWith(videoUrl().toString());
     QTRY_COMPARE_WITH_TIMEOUT(openSpy.count(), 1, 5000);
     QCOMPARE(openSpy.first().at(0).toUrl(), videoUrl());
+
+    // Destroying the picker with a dialog still open closes the pending request.
+    {
+        PortalFilePicker transient;
+        transient.openVideo();
+        QTRY_COMPARE_WITH_TIMEOUT(portal.openCalls, 3, 5000);
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(portal.closeCalls, 2, 5000);
 
     QDBusConnection::sessionBus().unregisterObject(
         QStringLiteral("/org/freedesktop/portal/desktop"));

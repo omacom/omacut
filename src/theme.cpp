@@ -51,6 +51,7 @@ Theme::Theme(const QString &directory, QObject *parent, const QString &hyprctl)
 }
 
 Theme::~Theme() {
+    m_roundingProcess.disconnect(this);
     if (m_roundingProcess.state() != QProcess::NotRunning) {
         m_roundingProcess.kill();
         m_roundingProcess.waitForFinished(1000);
