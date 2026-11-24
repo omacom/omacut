@@ -2563,8 +2563,8 @@ void BackendTests::playbackAdvancesOnEndOfMedia() {
     QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState));
 
     // A late EndOfMedia from clip 0 arriving after onPositionChanged already
-    // sought to clip 1 (which ends at 5s, before the 10s file's EOF) must not
-    // skip clip 1: it resumes playing clip 1 at its sought position.
+    // sought to clip 1 must not skip clip 1: it resumes clip 1 at its sought
+    // in-point even if Qt reports the old EOF position.
     QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
     QVERIFY(QMetaObject::invokeMethod(player, "show", Q_ARG(QVariant, 0),
                                       Q_ARG(QVariant, 5.0), Q_ARG(QVariant, true)));
@@ -2572,16 +2572,24 @@ void BackendTests::playbackAdvancesOnEndOfMedia() {
     QCOMPARE(player->property("clip").toInt(), 1);
     QCOMPARE(player->property("position").toInt(), 1000);
     QVERIFY(player->setProperty("playbackState", int(QMediaPlayer::StoppedState)));
+    QVERIFY(player->setProperty("position", 10000));
     QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
     QTRY_COMPARE_WITH_TIMEOUT(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState), 3000);
     QCOMPARE(player->property("clip").toInt(), 1);
     QCOMPARE(player->property("position").toInt(), 1000);
 
-    // On the last clip (which reaches its source's 4s EOF), EndOfMedia parks
-    // the playhead at the end so Space restarts from 0.
+    // Once playback advances in clip 1, a genuine EndOfMedia on a trimmed clip
+    // (ending before the file's metadata duration) still advances to clip 2.
     QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
-    QVERIFY(QMetaObject::invokeMethod(player, "show", Q_ARG(QVariant, 2),
-                                      Q_ARG(QVariant, 0.0), Q_ARG(QVariant, true)));
+    QVERIFY(player->setProperty("position", 4500));
+    QVERIFY(player->setProperty("playbackState", int(QMediaPlayer::StoppedState)));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("clip").toInt(), 2, 3000);
+    QCOMPARE(player->property("position").toInt(), 0);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState));
+
+    // On the last clip, EndOfMedia parks the playhead at the end so Space restarts from 0.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
     QVERIFY(player->setProperty("position", 3500));
     QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
     QTRY_COMPARE_WITH_TIMEOUT(harness.editBar()->property("playheadSec").toDouble(), 13.0, 3000);
