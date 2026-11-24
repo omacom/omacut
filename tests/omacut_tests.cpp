@@ -415,6 +415,9 @@ private slots:
     void catalogsMatchTheCode();
     void qmlDialogsAnswerFromTheKeyboard();
     void qmlDialogsAnswerToABareLetter();
+    void qmlDialogUnderlinesTheMnemonicInTheLabel();
+    void qmlDialogPrintsMnemonicMissingFromTheLabel();
+    void qmlDialogEscapesMarkupInTheLabel();
     void stubBackendMatchesTheRealOne();
     void portalPickerReplacesAnUnansweredRequest();
 
@@ -2385,6 +2388,83 @@ void BackendTests::qmlQuitAsksWhileExporting() {
     QCOMPARE(quitSpy.count(), 1);
 }
 
+void BackendTests::qmlDialogUnderlinesTheMnemonicInTheLabel() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+    QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("unexported").toBool(), true, 3000);
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("quitConfirmVisible").toBool(), true, 3000);
+
+    QCOMPARE(dialogButton(window, QStringLiteral("Cancel"))->property("formattedText").toString(),
+             QStringLiteral("<u>C</u>ancel"));
+    QCOMPARE(dialogButton(window, QStringLiteral("Quit"))->property("formattedText").toString(),
+             QStringLiteral("<u>Q</u>uit"));
+    QCOMPARE(dialogButton(window, QStringLiteral("Export"))->property("formattedText").toString(),
+             QStringLiteral("<u>E</u>xport"));
+}
+
+void BackendTests::qmlDialogPrintsMnemonicMissingFromTheLabel() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    const QByteArray source = R"(
+import QtQuick
+import QtQuick.Window
+Window {
+    width: 420
+    height: 160
+    DialogButton {
+        objectName: "sample"
+        anchors.centerIn: parent
+        text: "Beenden"
+        mnemonic: "Q"
+        onClicked: sampleClicks += 1
+    }
+    property int sampleClicks: 0
+}
+)";
+    QmlHarness harness(backend, source);
+    QQuickWindow *window = harness.window();
+    QVERIFY(window);
+    window->show();
+    window->requestActivate();
+    QTest::qWait(50);
+    QQuickItem *button = window->findChild<QQuickItem *>(QStringLiteral("sample"));
+    QVERIFY(button);
+    QCOMPARE(button->property("formattedText").toString(), QStringLiteral("Beenden (<u>Q</u>)"));
+    QTest::keyClick(window, Qt::Key_Q);
+    QTRY_COMPARE_WITH_TIMEOUT(window->property("sampleClicks").toInt(), 1, 3000);
+}
+
+void BackendTests::qmlDialogEscapesMarkupInTheLabel() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    const QByteArray source = R"(
+import QtQuick
+import QtQuick.Window
+Window {
+    width: 420
+    height: 160
+    DialogButton {
+        objectName: "sample"
+        anchors.centerIn: parent
+        text: "A < B & C"
+        mnemonic: "B"
+    }
+}
+)";
+    QmlHarness harness(backend, source);
+    QQuickWindow *window = harness.window();
+    QVERIFY(window);
+    QQuickItem *button = window->findChild<QQuickItem *>(QStringLiteral("sample"));
+    QVERIFY(button);
+    QCOMPARE(button->property("formattedText").toString(), QStringLiteral("A &lt; <u>B</u> &amp; C"));
+}
+
+
+
+
 void BackendTests::qmlOpenConfirmsUnexportedEdit() {
     ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
     QmlHarness harness(backend);
@@ -3424,7 +3504,8 @@ void BackendTests::stubBackendMatchesTheRealOne() {
 static bool dropUrls(QQuickWindow *window, const QList<QUrl> &urls) {
     QMimeData mime;
     mime.setUrls(urls);
-    const QPointF point(window->width() / 2, window->height() / 3);
+    // Qt 6.11 takes a QPoint here. QPointF no longer converts.
+    const QPoint point(window->width() / 2, window->height() / 3);
     QDragEnterEvent enter(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
     QCoreApplication::sendEvent(window, &enter);
     if (!enter.isAccepted()) {
