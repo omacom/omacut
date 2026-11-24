@@ -244,7 +244,7 @@ Item {
                 sourceSize.height: root.thumbHeight
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
-                source: "image://thumbs/" + filmItem.film.video.thumbKey + "/" + Math.round(time * 1000)
+                source: filmItem.film.video ? "image://thumbs/" + filmItem.film.video.thumbKey + "/" + Math.round(time * 1000) : ""
             }
         }
     }
@@ -524,9 +524,9 @@ Item {
             }
             if (mode === EditBar.Remove && overRemoveButton(mouseX, mouseY)) root.timeline.removeClip(clipHovered)
             if (mode === EditBar.Move) {
-                var target = moveTarget
-                root.timeline.moveClip(clipIndex, target)
-                mode = EditBar.Idle
+                var from = clipIndex, target = moveTarget
+                mode = EditBar.Idle; clipIndex = -1
+                root.timeline.moveClip(from, target)
                 seek(root.timeline.clipStart(target))
             }
             mode = EditBar.Idle; clipIndex = -1
@@ -538,15 +538,23 @@ Item {
             hold.stop()
             if (mode === EditBar.Trim) { root.timeline.endGesture(); root.settleView() }
             mode = EditBar.Idle; clipIndex = -1
+            if (containsMouse) hover(mouseX, mouseY)
+            else unhover()
         }
         onDoubleClicked: mouse => {
             if (overRemoveButton(mouse.x, mouse.y)) return
             var hit = hitTest(mouse.x)
+            if (hit.split < 0 && !(hit.clip >= 0 && !hit.handle)) return
+            // The second press already started a trim or scrub; cancel it before
+            // mutating the clip list so positions and onReleased stay valid.
+            hold.stop()
+            if (mode === EditBar.Trim) root.timeline.endGesture()
+            mode = EditBar.Idle; clipIndex = -1
             if (hit.split >= 0) root.timeline.joinClips(hit.split)
-            else if (hit.clip >= 0 && !hit.handle) root.timeline.split(root.sequenceTime(root.timeForX(mouse.x)))
+            else root.timeline.split(root.sequenceTime(root.timeForX(mouse.x)))
             hover(mouse.x, mouse.y)
         }
-        function unhover() { clipHovered = -1; splitHovered = -1; removeHovered = false; onHandle = false }
+        function unhover() { clipHovered = -1; splitHovered = -1; removeHovered = false; onHandle = false; cursorShape = Qt.ArrowCursor }
         onExited: unhover()
     }
 }

@@ -375,6 +375,7 @@ private slots:
     void qmlTrackRefitsAfterRemovingClips();
     void qmlSplitPiecesTrimApart();
     void qmlMovingAPieceKeepsTheCut();
+    void qmlDoubleClickSplitsAndJoins();
     void qmlFilmstripHoldsStillUnderADrag();
     void qmlPressingHandleScrubsItsFrame();
     void formatTimeShowsHoursFromSixtyMinutes();
@@ -392,6 +393,7 @@ private slots:
     void timelineSeeksAcrossARealCut();
     void playbackSeeksAcrossARealCut_data();
     void playbackSeeksAcrossARealCut();
+    void playbackAdvancesOnEndOfMedia();
     void timelineAnswersWhereTimesFall();
     void timelineEditsAtATime();
     void trimArgsReencodeForPreciseCuts();
@@ -2136,6 +2138,35 @@ void BackendTests::qmlMovingAPieceKeepsTheCut() {
     QTRY_COMPARE_WITH_TIMEOUT(editBar->property("windowEnd").toDouble(), 40.0, 3000);
 }
 
+void BackendTests::qmlDoubleClickSplitsAndJoins() {
+    ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
+    QmlHarness harness(backend);
+    QQuickWindow *window = showEditor(harness, backend);
+    QVERIFY2(window, qPrintable(mainQmlPath()));
+    QQuickItem *editBar = harness.editBar();
+    QVERIFY(editBar);
+
+    const double y = editBar->height() / 2.0;
+    auto at = [&](double x) { return editBar->mapToScene(QPointF(x, y)).toPoint(); };
+
+    // Double-click the middle of the clip to split it, then double-click the
+    // right side of the split handle to join it back without QML warnings or
+    // a wedged trim gesture.
+    const double midX = editBar->width() / 2.0;
+    QTest::mouseDClick(window, Qt::LeftButton, Qt::NoModifier, at(midX));
+    QCOMPARE(backend.timeline.clips().size(), 2);
+    QVERIFY(!editBar->property("interacting").toBool());
+
+    QTest::qWait(QGuiApplication::styleHints()->mouseDoubleClickInterval() + 20);
+    QTest::mouseDClick(window, Qt::LeftButton, Qt::NoModifier, at(midX + 4.0));
+    QCOMPARE(backend.timeline.clips(), wholeVideo(20.0));
+    QVERIFY(!editBar->property("interacting").toBool());
+
+    // Undo still works (the trim gesture from the second press was closed).
+    backend.timeline.undo();
+    QCOMPARE(backend.timeline.clips().size(), 2);
+}
+
 void BackendTests::qmlPressingHandleScrubsItsFrame() {
     ShortcutBackend backend(placeholderUrl(m_dir), 20.0);
     QmlHarness harness(backend);
@@ -2502,6 +2533,88 @@ void BackendTests::playbackSeeksAcrossARealCut() {
     QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState));
 }
 
+void BackendTests::playbackAdvancesOnEndOfMedia() {
+    ShortcutBackend backend(QUrl::fromLocalFile(m_videoPath), 10.0);
+    backend.timeline.split(5.0);
+    backend.timeline.moveClip(1, 0);          // [5..10], [0..5]
+    backend.timeline.setClip(1, 1.0, 5.0);    // [5..10], [1..5]
+    backend.addVideoOfLength(4.0, 9.0);       // [5..10], [1..5], [src1: 0..4]
+
+    QFile main(mainQmlPath());
+    QVERIFY(main.open(QIODevice::ReadOnly));
+    QByteArray source = main.readAll();
+    source.replace("    MediaPlayer {", "    PlaybackTest.FakeMediaPlayer {");
+    source.prepend("import \"../tests\" as PlaybackTest\n");
+    QmlHarness harness(backend, source);
+    QVERIFY(harness.window());
+    QObject *player = harness.window()->findChild<QObject *>(QStringLiteral("playbackTestPlayer"));
+    QVERIFY(player);
+    QVERIFY(player->setProperty("source", backend.source()));
+
+    // Reaching EndOfMedia while playing (before position hits c.out - 0.03)
+    // must still advance to the next clip, even if Qt drops playbackState first.
+    QVERIFY(QMetaObject::invokeMethod(player, "show", Q_ARG(QVariant, 0),
+                                      Q_ARG(QVariant, 5.0), Q_ARG(QVariant, true)));
+    QVERIFY(player->setProperty("position", 9500));
+    QVERIFY(player->setProperty("playbackState", int(QMediaPlayer::StoppedState)));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("clip").toInt(), 1, 3000);
+    QCOMPARE(player->property("position").toInt(), 1000);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState));
+
+    // A late EndOfMedia from clip 0 arriving after onPositionChanged already
+    // sought to clip 1 must not skip clip 1: it resumes clip 1 at its sought
+    // in-point even if Qt reports the old EOF position.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(QMetaObject::invokeMethod(player, "show", Q_ARG(QVariant, 0),
+                                      Q_ARG(QVariant, 5.0), Q_ARG(QVariant, true)));
+    QVERIFY(player->setProperty("position", 9980));
+    QCOMPARE(player->property("clip").toInt(), 1);
+    QCOMPARE(player->property("position").toInt(), 1000);
+    QVERIFY(player->setProperty("playbackState", int(QMediaPlayer::StoppedState)));
+    QVERIFY(player->setProperty("position", 10000));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState), 3000);
+    QCOMPARE(player->property("clip").toInt(), 1);
+    QCOMPARE(player->property("position").toInt(), 1000);
+
+    // Once playback advances in clip 1, a genuine EndOfMedia on a trimmed clip
+    // (ending before the file's metadata duration) still advances to clip 2.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(player->setProperty("position", 4500));
+    QVERIFY(player->setProperty("playbackState", int(QMediaPlayer::StoppedState)));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("clip").toInt(), 2, 3000);
+    QCOMPARE(player->property("position").toInt(), 0);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PlayingState));
+
+    // On the last clip, EndOfMedia parks the playhead at the end so Space restarts from 0.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(player->setProperty("position", 3500));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(harness.editBar()->property("playheadSec").toDouble(), 13.0, 3000);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PausedState));
+
+    // EndOfMedia arriving while paused must not start playing the next clip.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(QMetaObject::invokeMethod(player, "show", Q_ARG(QVariant, 0),
+                                      Q_ARG(QVariant, 9.5), Q_ARG(QVariant, false)));
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTest::qWait(50);
+    QCOMPARE(player->property("clip").toInt(), 0);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PausedState));
+
+    // EndOfMedia while priming clears priming, restores primeMs, and stays on the clip.
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::LoadedMedia)));
+    QVERIFY(QMetaObject::invokeMethod(player, "startPriming", Q_ARG(QVariant, 9500)));
+    QCOMPARE(player->property("priming").toBool(), true);
+    QVERIFY(player->setProperty("mediaStatus", int(QMediaPlayer::EndOfMedia)));
+    QTRY_COMPARE_WITH_TIMEOUT(player->property("priming").toBool(), false, 3000);
+    QCOMPARE(player->property("position").toInt(), 9500);
+    QCOMPARE(player->property("clip").toInt(), 0);
+    QCOMPARE(player->property("playbackState").toInt(), int(QMediaPlayer::PausedState));
+}
+
 void BackendTests::timelineAddsAndMovesVideos() {
     Timeline timeline;
     timeline.reset(10.0);
@@ -2577,6 +2690,13 @@ void BackendTests::timelineTracksUnexportedCuts() {
     QVERIFY(timeline.unexported());
     timeline.markExported(timeline.clips());
     QVERIFY(!timeline.unexported());
+    // Splitting or rejoining an already-exported edit doesn't change what exports.
+    timeline.split(2.5);
+    QVERIFY(!timeline.unexported());
+    timeline.joinClips(0);
+    QVERIFY(!timeline.unexported());
+    timeline.undo();
+    timeline.undo();
     timeline.undo();
     timeline.redo();
     QVERIFY(!timeline.unexported());
