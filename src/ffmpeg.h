@@ -47,6 +47,7 @@ QStringList shownFrameArgs(const QString &path, double pts);
 struct ShownFrame {
     double time = 0.0;
     double keyframe = -1.0;
+    bool hasKeyframe = false;
 };
 ShownFrame shownFrame(const QByteArray &packets, double pts);
 // ffmpeg arguments that write the frame starting at `frameTime` seconds to

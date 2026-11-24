@@ -333,6 +333,7 @@ private slots:
     void addingAVideoInsertsItAfterThePlayheadsClip();
     void probeReportsTheDisplayedSize();
     void probeReadsStreamedWebmAndSkipsCoverArt();
+    void probeFallsBackPastNaDuration();
     void probeRunsOffTheUiThread();
     void thumbProviderServesAndCachesFrames();
     void thumbProviderStopsBlockedJobs();
@@ -358,6 +359,7 @@ private slots:
     void exportRefusesAnythingButAbsoluteLocalPaths();
     void exportStartFailureClearsBusy();
     void failedExportPreservesExistingFile();
+    void destroyingBackendMidExportStopsProcessCleanly();
     void qmlDoesNotCreateAudioOutputWithoutVideo();
     void qmlShortcutsTriggerBackendActions();
     void qmlArrowKeysMoveThePlayhead();
@@ -525,11 +527,13 @@ void BackendTests::loadRefusesAnythingButAbsoluteLocalPaths() {
     Backend backend(&provider, picker);
     QSignalSpy errorSpy(&backend, &Backend::loadError);
 
-    // ffprobe would take these as an option and a network address.
+    // ffprobe would take these as an option, a network address, or a UNC share.
     QVERIFY(!backend.load(QUrl(QStringLiteral("file:-report"))));
     QVERIFY(!backend.load(QUrl(QStringLiteral("file:http://example.com/a.mp4"))));
     QVERIFY(!backend.load(QUrl(QStringLiteral("https://example.com/a.mp4"))));
-    QCOMPARE(errorSpy.count(), 3);
+    QVERIFY(!backend.load(QUrl(QStringLiteral("file://server/share/a.mp4"))));
+    QVERIFY(!backend.load(QUrl(QStringLiteral("file:////server/share/a.mp4"))));
+    QCOMPARE(errorSpy.count(), 5);
     QVERIFY(backend.source().isEmpty());
 }
 
@@ -688,6 +692,29 @@ void BackendTests::probeReadsStreamedWebmAndSkipsCoverArt() {
     QVERIFY(!songInfo.ok);
     // Nor is a still image a video, though it has a frame and no duration.
     QVERIFY(!ffmpeg::probe(cover).ok);
+}
+
+void BackendTests::probeFallsBackPastNaDuration() {
+    QTemporaryDir pathDir;
+    QVERIFY(pathDir.isValid());
+    const QString fakeFfprobe = pathDir.filePath(QStringLiteral("ffprobe"));
+    QFile fake(fakeFfprobe);
+    QVERIFY(fake.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    // Stream carries "N/A" duration, container carries the real duration.
+    fake.write("#!/bin/sh\n"
+               "printf '%s' '{\"streams\":[{\"index\":0,\"codec_type\":\"video\","
+               "\"width\":64,\"height\":48,\"duration\":\"N/A\"}],"
+               "\"format\":{\"start_time\":\"N/A\",\"duration\":\"2.5\"}}'\n");
+    fake.close();
+    QVERIFY(fake.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                | QFileDevice::ExeOwner));
+    EnvVarGuard pathGuard("PATH");
+    qputenv("PATH", QFile::encodeName(pathDir.path()));
+
+    const ffmpeg::VideoInfo info = ffmpeg::probe(m_videoPath);
+    QVERIFY2(info.ok, qPrintable(info.error));
+    QCOMPARE(info.duration, 2.5);
+    QCOMPARE(info.start, 0.0);
 }
 
 void BackendTests::probeRunsOffTheUiThread() {
@@ -1001,6 +1028,44 @@ void BackendTests::saveFrameTakesTheFrameOnScreen() {
         QVERIFY(saved.open(QIODevice::ReadOnly) && reference.open(QIODevice::ReadOnly));
         QVERIFY2(saved.readAll() == reference.readAll(), qPrintable(name));
     }
+
+    // MP4 edit lists can place the keyframe and pre-roll packets at negative
+    // PTS before start_time; saveFrame() must still select and decode the right frame.
+    const QString negPath = m_dir.filePath(QStringLiteral("negative-pts.mp4"));
+    const QString negExpected = m_dir.filePath(QStringLiteral("negative-pts-expected.png"));
+    {
+        QProcess proc;
+        proc.start(ffmpegBin, {
+            QStringLiteral("-loglevel"), QStringLiteral("error"),
+            QStringLiteral("-f"), QStringLiteral("lavfi"),
+            QStringLiteral("-i"), QStringLiteral("testsrc=size=64x48:rate=10:duration=2"),
+            QStringLiteral("-c:v"), QStringLiteral("libx264"), QStringLiteral("-bf"), QStringLiteral("3"),
+            QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"),
+            QStringLiteral("-avoid_negative_ts"), QStringLiteral("disabled"),
+            QStringLiteral("-output_ts_offset"), QStringLiteral("-0.5"),
+            QStringLiteral("-y"), negPath,
+        });
+        QVERIFY(proc.waitForFinished(10000) && proc.exitCode() == 0);
+        proc.start(ffmpegBin, {
+            QStringLiteral("-loglevel"), QStringLiteral("error"), QStringLiteral("-i"), negPath,
+            QStringLiteral("-vf"), QStringLiteral("select=eq(n\\,2),scale=round(iw*sar):ih,setsar=1"),
+            QStringLiteral("-frames:v"), QStringLiteral("1"), QStringLiteral("-y"), negExpected,
+        });
+        QVERIFY(proc.waitForFinished(10000) && proc.exitCode() == 0);
+
+        ThumbProvider provider;
+        Backend backend(&provider, new FakeFilePicker);
+        QSignalSpy savedSpy(&backend, &Backend::frameSaved);
+        QSignalSpy failedSpy(&backend, &Backend::frameFailed);
+        QVERIFY(backend.load(QUrl::fromLocalFile(negPath)));
+        waitForProbe(backend);
+        backend.saveFrame(0.25);
+        QTRY_VERIFY_WITH_TIMEOUT(savedSpy.count() + failedSpy.count() > 0, 10000);
+        QVERIFY2(failedSpy.isEmpty(), qPrintable(failedSpy.value(0).value(0).toString()));
+        QFile saved(savedSpy.first().at(0).toString()), reference(negExpected);
+        QVERIFY(saved.open(QIODevice::ReadOnly) && reference.open(QIODevice::ReadOnly));
+        QCOMPARE(saved.readAll(), reference.readAll());
+    }
 }
 
 void BackendTests::shownFrameIsTheLastToStartByThen() {
@@ -1014,6 +1079,15 @@ void BackendTests::shownFrameIsTheLastToStartByThen() {
     QCOMPARE(ffmpeg::shownFrame(packets, 9.0).time, 0.5);          // a held last frame
     QCOMPARE(ffmpeg::shownFrame(QByteArray(), 2.5).time, 2.5);
     QCOMPARE(ffmpeg::shownFrame(QByteArray(), 2.5).keyframe, -1.0);
+    QVERIFY(!ffmpeg::shownFrame(QByteArray(), 2.5).hasKeyframe);
+
+    // Negative PTS/keyframes (MP4 B-frame edit lists) must still match.
+    const QByteArray negative = "-0.066667,K__\n0.000000,___\n";
+    const ffmpeg::ShownFrame neg = ffmpeg::shownFrame(negative, -0.05);
+    QCOMPARE(neg.time, -0.066667);
+    QVERIFY(neg.hasKeyframe);
+    QCOMPARE(neg.keyframe, -0.066667);
+    QVERIFY(ffmpeg::shownFrameArgs(m_videoPath, 1.0).contains(QStringLiteral("%11.000")));
 }
 
 void BackendTests::saveFrameSquaresStretchedPixels() {
@@ -1335,8 +1409,10 @@ void BackendTests::exportZeroLengthClipFails() {
 
     const QString outPath = m_dir.filePath(QStringLiteral("empty-range.mp4"));
     backend.exportClips(QUrl::fromLocalFile(outPath), {});
+    // A zero-length surviving clip must still fail even alongside a missing-source clip.
+    backend.exportClips(QUrl::fromLocalFile(outPath), {{99, 0.0, 1.0}, {0, 0.5, 0.5}});
 
-    QCOMPARE(failedSpy.count(), 1);
+    QCOMPARE(failedSpy.count(), 2);
     QCOMPARE(doneSpy.count(), 0);
     QVERIFY(!backend.busy());
     QVERIFY(!QFileInfo::exists(outPath));
@@ -1356,9 +1432,10 @@ void BackendTests::exportRefusesAnythingButAbsoluteLocalPaths() {
     backend.exportClips(QUrl(QStringLiteral("smb://server/share/out.mp4")), wholeVideo(1.0));
     backend.exportClips(QUrl(QStringLiteral("file:out.mp4")), wholeVideo(1.0));
     QVERIFY(QDir::setCurrent(cwd));
-    // Nor a file URL naming a host, which would become "//server/share/out.mp4".
+    // Nor a file URL naming a host or UNC share ("//server/share/out.mp4").
     backend.exportClips(QUrl(QStringLiteral("file://server/share/out.mp4")), wholeVideo(1.0));
-    QCOMPARE(failedSpy.count(), 3);
+    backend.exportClips(QUrl(QStringLiteral("file:////server/share/out.mp4")), wholeVideo(1.0));
+    QCOMPARE(failedSpy.count(), 4);
     QVERIFY(!backend.busy());
     QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral(".mp4"))));
     QVERIFY(!QFileInfo::exists(m_dir.filePath(QStringLiteral("out.mp4"))));
@@ -1461,6 +1538,39 @@ void BackendTests::failedExportPreservesExistingFile() {
     QVERIFY(check.open(QIODevice::ReadOnly));
     QCOMPARE(check.readAll(), original);
     QVERIFY(!QFileInfo::exists(outPath + QStringLiteral(".omacut-part.mp4")));
+}
+
+void BackendTests::destroyingBackendMidExportStopsProcessCleanly() {
+    const QString sleepBin = QStandardPaths::findExecutable(QStringLiteral("sleep"));
+    QVERIFY2(!sleepBin.isEmpty(), "sleep is available");
+
+    QTemporaryDir pathDir;
+    QVERIFY(pathDir.isValid());
+    const QString fakeFfmpeg = pathDir.filePath(QStringLiteral("ffmpeg"));
+    QFile fake(fakeFfmpeg);
+    QVERIFY(fake.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    fake.write(QStringLiteral("#!/bin/sh\nexec \"%1\" 30\n").arg(sleepBin).toUtf8());
+    fake.close();
+    QVERIFY(fake.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                | QFileDevice::ExeOwner));
+
+    ThumbProvider provider;
+    auto backend = std::make_unique<Backend>(&provider, new FakeFilePicker);
+    QVERIFY(backend->load(videoUrl()));
+    waitForProbe(*backend);
+
+    EnvVarGuard pathGuard("PATH");
+    qputenv("PATH", QFile::encodeName(pathDir.path()));
+    QTest::failOnWarning(QRegularExpression(QStringLiteral("QProcess: Destroyed while process")));
+
+    backend->exportClips(QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("aborted.mp4"))), wholeVideo(1.0));
+    QVERIFY(backend->busy());
+    QTest::qWait(100);
+
+    QElapsedTimer elapsed;
+    elapsed.start();
+    backend.reset();
+    QVERIFY2(elapsed.elapsed() < 5000, qPrintable(QString::number(elapsed.elapsed())));
 }
 
 void BackendTests::qmlDoesNotCreateAudioOutputWithoutVideo() {
@@ -3492,6 +3602,14 @@ void BackendTests::portalPickerReplacesAnUnansweredRequest() {
     portal.respondWith(videoUrl().toString());
     QTRY_COMPARE_WITH_TIMEOUT(openSpy.count(), 1, 5000);
     QCOMPARE(openSpy.first().at(0).toUrl(), videoUrl());
+
+    // Destroying the picker with a dialog still open closes the pending request.
+    {
+        PortalFilePicker transient;
+        transient.openVideo();
+        QTRY_COMPARE_WITH_TIMEOUT(portal.openCalls, 3, 5000);
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(portal.closeCalls, 2, 5000);
 
     QDBusConnection::sessionBus().unregisterObject(
         QStringLiteral("/org/freedesktop/portal/desktop"));

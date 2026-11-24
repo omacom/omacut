@@ -66,6 +66,15 @@ double probePacketDuration(const QString &ffprobe, const QString &path, int stre
     }
     return packets > 1 ? end - first : 0.0;
 }
+
+bool parseFiniteDouble(const QJsonValue &value, double *out) {
+    bool ok = false;
+    const double parsed = value.toString().toDouble(&ok);
+    if (!ok || !std::isfinite(parsed))
+        return false;
+    *out = parsed;
+    return true;
+}
 }
 
 QString toolPath(const QString &tool) {
@@ -138,16 +147,13 @@ VideoInfo probe(const QString &path) {
     if (qAbs(rotation) % 180 == 90)
         std::swap(info.width, info.height);
 
-    info.start = root.value("format").toObject().value("start_time").toString().toDouble();
+    parseFiniteDouble(root.value("format").toObject().value("start_time"), &info.start);
 
     // Duration can live on the stream, on the container, or (for streamed
-    // WebM captures) only on the last video packet.
-    QString durationStr = stream.value("duration").toString();
-    if (durationStr.isEmpty())
-        durationStr = root.value("format").toObject().value("duration").toString();
-    if (!durationStr.isEmpty()) {
-        info.duration = durationStr.toDouble();
-    } else {
+    // WebM captures) only on the last video packet. Missing or "N/A" values
+    // fall through to the next source.
+    if (!parseFiniteDouble(stream.value("duration"), &info.duration)
+        && !parseFiniteDouble(root.value("format").toObject().value("duration"), &info.duration)) {
         info.duration = probePacketDuration(ffprobe, path, stream.value("index").toInt());
         if (info.duration <= 0.0) {
             info.error = QCoreApplication::translate("ffmpeg", "Could not determine the video duration.");
@@ -225,12 +231,15 @@ QImage thumbnail(const QString &path, double time, int height,
 }
 
 QList<double> frameTimes(const QString &path, double start) {
+    const QString ffprobe = toolPath("ffprobe");
+    if (ffprobe.isEmpty())
+        return {};
     QProcess proc;
-    proc.start(toolPath("ffprobe"), {"-v", "error", "-select_streams", "V:0",
+    proc.start(ffprobe, {"-v", "error", "-select_streams", "V:0",
                "-show_entries", "packet=pts_time", "-of", "csv=p=0", path});
     if (!proc.waitForFinished(kProbeTimeoutMs)) {
         proc.kill();
-        proc.waitForFinished();
+        proc.waitForFinished(1000);
         return {};
     }
     if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
@@ -251,12 +260,16 @@ QStringList shownFrameArgs(const QString &path, double pts) {
     // Packets only, nothing decoded, so reaching back 30s is cheap. That
     // covers a recording's still last frame, held long past its start. The
     // 10s past it covers B-frames, whose packets come after later frames',
-    // by a few frames: seconds, at a frame a second.
+    // by a few frames: seconds, at a frame a second. Leaving the start empty
+    // near zero keeps negative-PTS packets at the beginning of the stream.
+    const double from = pts - 30.0;
+    const QString interval = from > 0.0
+        ? QString("%1%%2").arg(from, 0, 'f', 3).arg(pts + 10.0, 0, 'f', 3)
+        : QString("%%1").arg(pts + 10.0, 0, 'f', 3);
     return {
         "-v", "error",
         "-select_streams", "V:0",
-        "-read_intervals", QString("%1%%2").arg(qMax(pts - 30.0, 0.0), 0, 'f', 3)
-                               .arg(pts + 10.0, 0, 'f', 3),
+        "-read_intervals", interval,
         "-show_entries", "packet=pts_time,flags",
         "-of", "csv=p=0",
         path,
@@ -265,23 +278,28 @@ QStringList shownFrameArgs(const QString &path, double pts) {
 
 ShownFrame shownFrame(const QByteArray &packets, double pts) {
     QList<std::pair<double, bool>> listed;  // time, keyframe
-    double shown = -1.0;
+    bool hasShown = false;
+    double shown = 0.0;
     for (const QByteArray &line : packets.split('\n')) {
         // "time,flags", with empty fields after it in some containers.
         const QList<QByteArray> fields = line.trimmed().split(',');
         bool ok = false;
         const double time = fields.value(0).toDouble(&ok);
-        if (!ok)
+        if (!ok || !std::isfinite(time))
             continue;
         listed.append({time, fields.value(1).startsWith('K')});
-        if (time <= pts + 0.0005)
-            shown = qMax(shown, time);
+        if (time <= pts + 0.0005) {
+            shown = hasShown ? qMax(shown, time) : time;
+            hasShown = true;
+        }
     }
     ShownFrame frame;
-    frame.time = shown >= 0.0 ? shown : pts;
+    frame.time = hasShown ? shown : pts;
     for (const auto &[time, key] : listed) {
-        if (key && time <= frame.time)
-            frame.keyframe = qMax(frame.keyframe, time);
+        if (key && time <= frame.time) {
+            frame.keyframe = frame.hasKeyframe ? qMax(frame.keyframe, time) : time;
+            frame.hasKeyframe = true;
+        }
     }
     return frame;
 }

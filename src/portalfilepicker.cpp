@@ -4,6 +4,7 @@
 #include <QDBusConnection>
 #include <QDBusArgument>
 #include <QDBusInterface>
+#include <QDBusMessage>
 #include <QDBusMetaType>
 #include <QDBusObjectPath>
 #include <QDBusPendingCallWatcher>
@@ -168,6 +169,10 @@ PortalFilePicker::PortalFilePicker(QObject *parent) : FilePicker(parent) {
     registerPortalFilterTypes();
 }
 
+PortalFilePicker::~PortalFilePicker() {
+    closePendingRequest();
+}
+
 void PortalFilePicker::openVideo() {
     QVariantMap options;
     options.insert(QStringLiteral("accept_label"), tr("Open"));
@@ -219,10 +224,11 @@ bool PortalFilePicker::connectToRequestPath(const QString &path) {
 void PortalFilePicker::closePendingRequest() {
     if (m_pendingPath.isEmpty())
         return;
-    QDBusInterface request(QStringLiteral("org.freedesktop.portal.Desktop"), m_pendingPath,
-                           QStringLiteral("org.freedesktop.portal.Request"),
-                           QDBusConnection::sessionBus());
-    request.asyncCall(QStringLiteral("Close"));
+    // Send directly rather than through QDBusInterface, whose constructor
+    // blocks on synchronous Introspect and could stall shutdown if the portal hung.
+    QDBusConnection::sessionBus().send(QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.portal.Desktop"), m_pendingPath,
+        QStringLiteral("org.freedesktop.portal.Request"), QStringLiteral("Close")));
 }
 
 void PortalFilePicker::requestFile(const QString &method, const QString &title,
