@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <QByteArrayView>
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -23,6 +24,20 @@ constexpr int kThumbPollMs = 50;
 // A thumbnail child that never finishes (a stalled file) must not occupy a
 // thumbnail worker forever; single frames take nowhere near this long.
 constexpr int kThumbTimeoutMs = 30000;
+
+// Scan trimmed non-empty lines without per-line QByteArray allocations.
+template <typename Func>
+void forEachLine(QByteArrayView data, Func &&fn) {
+    qsizetype pos = 0;
+    while (pos < data.size()) {
+        const qsizetype nl = data.indexOf('\n', pos);
+        const qsizetype end = nl < 0 ? data.size() : nl;
+        const QByteArrayView line = data.sliced(pos, end - pos).trimmed();
+        if (!line.isEmpty())
+            fn(line);
+        pos = nl < 0 ? data.size() : nl + 1;
+    }
+}
 
 // Streamed WebM/MKV captures (e.g. from a browser's MediaRecorder) have no
 // duration in the header; scan the video stream's packet timestamps. That
@@ -47,23 +62,31 @@ double probePacketDuration(const QString &ffprobe, const QString &path, int stre
 
     // From the first timestamp, which a cut or a capture can start well past 0.
     // A single packet is a still image, not a video.
+    const QByteArray out = proc.readAllStandardOutput();
     double first = 0.0, end = 0.0;
     int packets = 0;
-    for (const QByteArray &raw : proc.readAllStandardOutput().split('\n')) {
-        const QByteArray line = raw.trimmed();
-        if (line.isEmpty())
-            continue;
-        const QList<QByteArray> fields = line.split(',');
+    forEachLine(out, [&](QByteArrayView line) {
+        const qsizetype comma = line.indexOf(',');
+        const QByteArrayView ptsField = comma < 0 ? line : line.first(comma);
         bool ptsOk = false;
-        const double pts = fields.value(0).toDouble(&ptsOk);
-        if (!ptsOk)
-            continue;
-        bool durOk = false;
-        const double pktDur = fields.value(1).toDouble(&durOk);
+        const double pts = ptsField.toDouble(&ptsOk);
+        if (!ptsOk || !std::isfinite(pts))
+            return;
+        double pktDur = 0.0;
+        if (comma >= 0) {
+            const qsizetype nextComma = line.indexOf(',', comma + 1);
+            const QByteArrayView durField = nextComma < 0
+                ? line.sliced(comma + 1)
+                : line.sliced(comma + 1, nextComma - comma - 1);
+            bool durOk = false;
+            const double parsed = durField.toDouble(&durOk);
+            if (durOk && std::isfinite(parsed) && parsed > 0.0)
+                pktDur = parsed;
+        }
         first = packets == 0 ? pts : qMin(first, pts);
-        end = qMax(end, pts + (durOk && pktDur > 0.0 ? pktDur : 0.0));
+        end = qMax(end, pts + pktDur);
         ++packets;
-    }
+    });
     return packets > 1 ? end - first : 0.0;
 }
 
@@ -244,13 +267,17 @@ QList<double> frameTimes(const QString &path, double start) {
     }
     if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
         return {};
+    const QByteArray out = proc.readAllStandardOutput();
     QList<double> times;
-    for (const QByteArray &line : proc.readAllStandardOutput().split('\n')) {
+    times.reserve(out.count('\n'));
+    forEachLine(out, [&](QByteArrayView line) {
+        const qsizetype comma = line.indexOf(',');
+        const QByteArrayView field = comma < 0 ? line : line.first(comma);
         bool ok = false;
-        const double time = line.split(',').value(0).toDouble(&ok);
+        const double time = field.toDouble(&ok);
         if (ok && std::isfinite(time))
             times.append(time - start);
-    }
+    });
     std::sort(times.begin(), times.end());
     times.erase(std::unique(times.begin(), times.end()), times.end());
     return times;
