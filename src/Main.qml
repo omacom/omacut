@@ -549,17 +549,30 @@ ApplicationWindow {
                     && (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia))
                 Qt.callLater(takePending);
         }
-        function finishEndOfMedia() {
-            if (!wasPlaying || pendingMs >= 0 || clip < 0 || clip >= timeline.clips.length)
-                return;
-            wasPlaying = false;
+        function advanceClip() {
             if (clip + 1 >= timeline.clips.length) {
                 pause();
-                editBar.playheadSec = timeline.duration;
+                if (!editBar.interacting)
+                    editBar.playheadSec = timeline.duration;
                 return;
             }
             var next = timeline.clips[clip + 1];
             show(clip + 1, next.in, true);
+        }
+        function finishEndOfMedia() {
+            if (!wasPlaying || pendingMs >= 0 || clip < 0 || clip >= timeline.clips.length)
+                return;
+            var c = timeline.clips[clip];
+            var sourceEnd = timeline.sourceDurations[c.source];
+            // A clip ending before its file's EOF cannot be ended by EndOfMedia:
+            // that is a late EOF from the previous clip on the same source after
+            // onPositionChanged already sought away. Resume this clip instead.
+            if (sourceEnd > 0 && c.out < sourceEnd - 0.05) {
+                show(clip, Math.max(c.in, Math.min(position / 1000, c.out)), true);
+                return;
+            }
+            wasPlaying = false;
+            advanceClip();
         }
         function takePending() {
             if (pendingMs < 0)
@@ -588,21 +601,12 @@ ApplicationWindow {
             // Play the clips in order: carry on into a clip that continues
             // this one, jump to any other, and stop after the last.
             while (playbackState === MediaPlayer.PlayingState && t >= c.out - 0.03) {
-                if (clip + 1 >= timeline.clips.length) {
-                    pause();
-                    editBar.playheadSec = timeline.duration;
-                    return;
-                }
-                var next = timeline.clips[clip + 1];
-                // A split's float noise still plays straight through. A real cut
-                // has to seek, or the frames between out and the next in stay
-                // on screen.
-                if (!timeline.continues(clip)) {
-                    show(clip + 1, next.in, true);
+                if (clip + 1 >= timeline.clips.length || !timeline.continues(clip)) {
+                    advanceClip();
                     return;
                 }
                 clip += 1;
-                c = next;
+                c = timeline.clips[clip];
             }
             if (!editBar.interacting)
                 editBar.playheadSec = c.start + Math.max(0, Math.min(t, c.out) - c.in);

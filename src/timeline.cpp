@@ -20,7 +20,7 @@ QVariantList Timeline::clipList() const {
 
 bool Timeline::unexported() const {
     return !m_clips.isEmpty() && !edit::untouched(m_clips, m_sourceDurations.value(0))
-        && edit::merged(m_clips) != edit::merged(m_exported);
+        && edit::merged(m_clips) != m_exported;
 }
 
 void Timeline::reset(double duration) {
@@ -31,7 +31,6 @@ void Timeline::reset(double duration) {
     m_undo.clear();
     m_redo.clear();
     m_gesture = false;
-    m_gestureRecorded = false;
     emit changed();
 }
 
@@ -42,7 +41,6 @@ void Timeline::restore(const QList<double> &sourceDurations, const edit::Clips &
     m_undo.clear();
     m_redo.clear();
     m_gesture = false;
-    m_gestureRecorded = false;
     emit changed();
 }
 
@@ -56,7 +54,7 @@ int Timeline::addSource(double duration, double t) {
 }
 
 void Timeline::markExported(const edit::Clips &clips) {
-    m_exported = clips;
+    m_exported = edit::merged(clips);
     emit changed();
 }
 

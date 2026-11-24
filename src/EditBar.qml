@@ -543,14 +543,15 @@ Item {
         }
         onDoubleClicked: mouse => {
             if (overRemoveButton(mouse.x, mouse.y)) return
+            var hit = hitTest(mouse.x)
+            if (hit.split < 0 && !(hit.clip >= 0 && !hit.handle)) return
             // The second press already started a trim or scrub; cancel it before
             // mutating the clip list so positions and onReleased stay valid.
             hold.stop()
             if (mode === EditBar.Trim) root.timeline.endGesture()
             mode = EditBar.Idle; clipIndex = -1
-            var hit = hitTest(mouse.x)
             if (hit.split >= 0) root.timeline.joinClips(hit.split)
-            else if (hit.clip >= 0 && !hit.handle) root.timeline.split(root.sequenceTime(root.timeForX(mouse.x)))
+            else root.timeline.split(root.sequenceTime(root.timeForX(mouse.x)))
             hover(mouse.x, mouse.y)
         }
         function unhover() { clipHovered = -1; splitHovered = -1; removeHovered = false; onHandle = false; cursorShape = Qt.ArrowCursor }
