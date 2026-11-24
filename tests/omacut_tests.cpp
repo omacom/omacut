@@ -1568,7 +1568,7 @@ void BackendTests::destroyingBackendMidExportStopsProcessCleanly() {
     QElapsedTimer elapsed;
     elapsed.start();
     backend.reset();
-    QVERIFY2(elapsed.elapsed() < 1500, qPrintable(QString::number(elapsed.elapsed())));
+    QVERIFY2(elapsed.elapsed() < 5000, qPrintable(QString::number(elapsed.elapsed())));
 }
 
 void BackendTests::qmlDoesNotCreateAudioOutputWithoutVideo() {

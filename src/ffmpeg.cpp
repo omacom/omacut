@@ -147,9 +147,7 @@ VideoInfo probe(const QString &path) {
     if (qAbs(rotation) % 180 == 90)
         std::swap(info.width, info.height);
 
-    double start = 0.0;
-    if (parseFiniteDouble(root.value("format").toObject().value("start_time"), &start))
-        info.start = start;
+    parseFiniteDouble(root.value("format").toObject().value("start_time"), &info.start);
 
     // Duration can live on the stream, on the container, or (for streamed
     // WebM captures) only on the last video packet. Missing or "N/A" values
@@ -163,7 +161,7 @@ VideoInfo probe(const QString &path) {
         }
     }
 
-    info.ok = std::isfinite(info.duration) && info.duration > 0.0;
+    info.ok = info.duration > 0.0;
     if (!info.ok)
         info.error = QCoreApplication::translate("ffmpeg", "Video has a zero or invalid duration.");
     return info;
@@ -241,7 +239,7 @@ QList<double> frameTimes(const QString &path, double start) {
                "-show_entries", "packet=pts_time", "-of", "csv=p=0", path});
     if (!proc.waitForFinished(kProbeTimeoutMs)) {
         proc.kill();
-        proc.waitForFinished(-1);
+        proc.waitForFinished(1000);
         return {};
     }
     if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)

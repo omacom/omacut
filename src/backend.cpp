@@ -58,8 +58,8 @@ Backend::Backend(ThumbProvider *provider, FilePicker *filePicker, QObject *paren
 }
 
 Backend::~Backend() {
-    // Stop any running export or frame-save children before removing temp files,
-    // so ffmpeg can neither recreate them nor log destruction warnings.
+    // Stop any running export or frame-save children before removing m_framePart,
+    // so ffmpeg can neither recreate it nor log destruction warnings.
     for (QProcess *proc : findChildren<QProcess *>(Qt::FindDirectChildrenOnly)) {
         proc->disconnect(this);
         if (proc->state() != QProcess::NotRunning) {
@@ -588,6 +588,8 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
                     pending.url = QUrl::fromLocalFile(outPath);
                     pending.exportReload = true;
                     if (checkedPath(pending.url, &pending.path)) {
+                        // Safe because exportClips() refuses while probing;
+                        // enqueueVideo() immediately starts the probe and emits busyChanged().
                         m_busy = false;
                         enqueueVideo(pending);
                     } else {
