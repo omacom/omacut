@@ -171,7 +171,9 @@ public:
         ++addCount;
         lastAddAt = t;
     }
-    Q_INVOKABLE void exportDialog() {
+    bool lastExportGif = false;
+    Q_INVOKABLE void exportDialog(bool gif = false) {
+        lastExportGif = gif;
         ++exportCount;
         exportedClips = timeline.clips();
     }
@@ -339,6 +341,7 @@ private slots:
     void thumbProviderStopsBlockedJobs();
     void thumbProviderCancelsRunningJobs();
     void exportDialogDelegatesSuggestedUrl();
+    void exportDialogWritesAnimatedGif();
     void suggestedExportUrlAlwaysUsesMp4();
     void exportClipWritesMp4();
     void frameStepsFollowPresentationTimes();
@@ -851,6 +854,30 @@ void BackendTests::exportDialogDelegatesSuggestedUrl() {
     QCOMPARE(picker->exportCount, 1);
     QCOMPARE(picker->lastSuggestedUrl,
              QUrl::fromLocalFile(m_dir.filePath(QStringLiteral("clip_trimmed.mp4"))));
+}
+
+void BackendTests::exportDialogWritesAnimatedGif() {
+    ThumbProvider provider;
+    auto *picker = new FakeFilePicker;
+    Backend backend(&provider, picker);
+    QVERIFY(backend.load(videoUrl()));
+    waitForProbe(backend);
+    backend.timeline()->split(0.5);
+    backend.timeline()->removeClip(1);
+    backend.exportDialog(true);
+    QVERIFY(picker->lastSuggestedUrl.toLocalFile().endsWith("_trimmed.gif"));
+    QSignalSpy done(&backend, &Backend::exportDone);
+    QSignalSpy failed(&backend, &Backend::exportFailed);
+    const QString path = m_dir.filePath("cut.gif");
+    emit picker->exportSelected(QUrl::fromLocalFile(path), 0);
+    QTRY_VERIFY_WITH_TIMEOUT(done.count() + failed.count() > 0, 20000);
+    QCOMPARE(done.count(), 1);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.read(6), QByteArray("GIF89a"));
+    const auto info = ffmpeg::probe(path);
+    QVERIFY(info.ok && !info.audio);
+    QVERIFY2(qAbs(info.duration - 0.5) < 0.11, qPrintable(QString::number(info.duration)));
 }
 
 void BackendTests::suggestedExportUrlAlwaysUsesMp4() {
@@ -1604,8 +1631,12 @@ void BackendTests::qmlShortcutsTriggerBackendActions() {
     window->requestActivate();
     QTest::qWait(100);
 
+    QTest::keyClick(window, Qt::Key_G);
     QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.exportCount, 1, 3000);
+    QVERIFY(backend.lastExportGif);
+    QTest::keyClick(window, Qt::Key_G);
+    QVERIFY(!window->property("gifExport").toBool());
 
     QTest::keyClick(window, Qt::Key_O, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(backend.openCount, 1, 3000);

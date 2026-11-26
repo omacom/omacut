@@ -141,14 +141,6 @@ PortalFileFilters videoFilters() {
     };
 }
 
-PortalFileFilter mp4Filter() {
-    return {QCoreApplication::translate("PortalFilePicker", "MP4 video"), {{0, QStringLiteral("*.mp4")}}};
-}
-
-PortalFileFilters mp4Filters() {
-    return {mp4Filter()};
-}
-
 QString portalToken() {
     return QStringLiteral("omacut_%1").arg(QRandomGenerator::global()->generate());
 }
@@ -193,8 +185,11 @@ void PortalFilePicker::exportVideo(const QUrl &suggestedUrl, const QList<int> &s
     options.insert(QStringLiteral("modal"), true);
     options.insert(QStringLiteral("current_folder"), portalPathBytes(target.absolutePath()));
     options.insert(QStringLiteral("current_name"), target.fileName());
-    options.insert(QStringLiteral("filters"), QVariant::fromValue(mp4Filters()));
-    options.insert(QStringLiteral("current_filter"), QVariant::fromValue(mp4Filter()));
+    const PortalFileFilter filter = target.suffix() == QStringLiteral("gif")
+        ? PortalFileFilter{QStringLiteral("GIF"), {{0, QStringLiteral("*.gif")}}}
+        : PortalFileFilter{tr("MP4 video"), {{0, QStringLiteral("*.mp4")}}};
+    options.insert(QStringLiteral("filters"), QVariant::fromValue(PortalFileFilters{filter}));
+    options.insert(QStringLiteral("current_filter"), QVariant::fromValue(filter));
 
     // A "Quality" combo in the save dialog, only when there's a real downscale
     // to offer — sources at or below 720p just export as they are.

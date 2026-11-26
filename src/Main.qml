@@ -20,6 +20,7 @@ ApplicationWindow {
     readonly property bool audioOutputReady: audioOutput !== null
     property var audioOutput: null
     property string noticeText: ""
+    property bool gifExport: false
     property bool helpVisible: false
     property bool quitConfirmVisible: false
     property bool openConfirmVisible: false
@@ -84,7 +85,7 @@ ApplicationWindow {
         if (!win.hasVideo || timeline.duration <= 0 || backend.busy)
             return;
         player.pause();
-        backend.exportDialog();
+        backend.exportDialog(win.gifExport);
     }
     function ensureAudioOutput() {
         if (audioOutput === null && win.hasVideo)
@@ -384,6 +385,13 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         enabled: win.editing && timeline.canRedo
         onActivated: timeline.redo()
+    }
+
+    Shortcut {
+        sequence: "G"
+        context: Qt.ApplicationShortcut
+        enabled: win.editing && !backend.busy
+        onActivated: win.gifExport = !win.gifExport
     }
 
     Shortcut {
@@ -887,6 +895,16 @@ ApplicationWindow {
                 onClicked: addVideo()
             }
 
+            Button {
+                flat: true
+                text: win.gifExport ? "GIF" : "MP4"
+                enabled: win.editing && !backend.busy
+                Accessible.name: qsTr("Toggle export format") + " (" + text + ")"
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Toggle export format") + " (G)"
+                onClicked: win.gifExport = !win.gifExport
+            }
+
             IconButton {
                 Layout.preferredWidth: 44
                 Layout.preferredHeight: 44
@@ -1046,6 +1064,7 @@ ApplicationWindow {
                         { keys: "F", action: qsTr("Save the playhead frame as a PNG") },
                         { keys: "Ctrl O", action: qsTr("Open a video") },
                         { keys: "Ctrl Shift O", action: qsTr("Add a video after this clip") },
+                        { keys: "G", action: qsTr("Toggle export format") },
                         { keys: "Ctrl S", action: qsTr("Export") },
                         { keys: "Q", action: qsTr("Quit") },
                         { keys: "?", action: qsTr("Show these shortcuts") }
