@@ -71,7 +71,7 @@ struct Segment {
 // side becomes scaleHeight (1080p of a portrait video is 1080 wide), always
 // preserving the aspect ratio.
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
-                     int width, int height, int scaleHeight = 0);
+                     int width, int height, int scaleHeight = 0, bool gif = false);
 
 // Locate a tool on PATH; returns empty string if missing.
 QString toolPath(const QString &tool);

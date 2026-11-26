@@ -1,4 +1,5 @@
 {
+  "Toggle export format": "Alternar formato de exportação",
   "%1 already exists.": "%1 já existe.",
   "`ffmpeg` was not found on your PATH.": "O `ffmpeg` não foi encontrado no seu PATH.",
   "`ffprobe` was not found on your PATH. Install ffmpeg.": "O `ffprobe` não foi encontrado no seu PATH. Instale o ffmpeg.",

@@ -39,6 +39,7 @@ Confirmations are answered from the keyboard: the arrows and Tab move between th
 - *F*: Save the frame under the playhead as a PNG next to its video.
 - *Ctrl+O*: Open a new file to edit.
 - *Ctrl+Shift+O*: Add a video after the clip under the playhead.
+- *G*: Toggle MP4/GIF export.
 - *Ctrl+S*: Export the current edit.
 - *Q*: Quit (asks first if the edit hasn't been exported).
 - *?*: Show the hotkeys in the app.
@@ -52,7 +53,7 @@ Install via the Omarchy Package Repository via the `omacut` package. It's instal
 - `xdg-desktop-portal` and a portal backend for the file picker
 - `ffmpeg` and `ffprobe` on your PATH (used at runtime)
 
-Exports are always written as MP4 files, regardless of the input video's container. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio. When clips come from different videos, the export takes the frame size of the first clip's video; clips of another shape are letterboxed into it, and videos without sound get silence.
+Exports default to MP4. Click the format label beside Export or press *G* to switch to a looping 10 fps GIF. The export dialog offers Original/1080p/720p quality — never upscaling, and always preserving the aspect ratio. When clips come from different videos, the export takes the frame size of the first clip's video; clips of another shape are letterboxed into it, and videos without sound get silence.
 
 ## Build
 

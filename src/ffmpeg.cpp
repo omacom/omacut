@@ -352,11 +352,11 @@ QStringList frameArgs(const QString &path, double frameTime, double keyframeTime
 }
 
 QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
-                     int width, int height, int scaleHeight) {
+                     int width, int height, int scaleHeight, bool gif) {
     bool audio = false;
     bool mixed = false;
     for (const Segment &segment : segments) {
-        audio = audio || segment.audio;
+        audio = audio || (!gif && segment.audio);
         mixed = mixed || segment.path != segments.first().path;
     }
 
@@ -373,18 +373,25 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
         const QString length = QString::number(qMax(segment.end - segment.start, 0.0), 'f', 3);
         args << "-ss" << QString::number(segment.start, 'f', 3) << "-t" << length
              << "-i" << segment.path;
+        QString video = QString("[%1:V:0]").arg(i);
+        if (gif) {
+            // A slow source frame can extend past the cut. Bound each segment
+            // on the GIF's time base before joining it to the next one.
+            graph += video + QString("fps=10:round=up,trim=duration=%1[g%2];").arg(length).arg(i);
+            video = QString("[g%1]").arg(i);
+        }
         if (!mixed) {
-            inputs += QString("[%1:V:0]").arg(i) + (audio ? QString("[%1:a:0]").arg(i) : QString());
+            inputs += video + (audio ? QString("[%1:a:0]").arg(i) : QString());
             continue;
         }
         // Concat needs one frame size and one audio format throughout. Pixels
         // are squared first, so non-square video keeps its shape; -1 centres
         // the padding; libx264 needs even sides.
-        graph += QString("[%1:V:0]scale='trunc(iw*sar/2)*2':ih,setsar=1,"
+        graph += video + QString("scale='trunc(iw*sar/2)*2':ih,setsar=1,"
                          "scale=%2:%3:force_original_aspect_ratio=decrease,"
                          "pad=%2:%3:-1:-1,setsar=1,format=yuv420p[v%1];")
                      .arg(i).arg(width / 2 * 2).arg(height / 2 * 2);
-        if (segment.audio)
+        if (audio && segment.audio)
             graph += QString("[%1:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a%1];").arg(i);
         else if (audio)
             graph += QString("anullsrc=r=48000:cl=stereo,atrim=duration=%2,aformat=sample_fmts=fltp[a%1];")
@@ -405,6 +412,14 @@ QStringList trimArgs(const QList<Segment> &segments, const QString &dst,
                      .arg(audio ? "[a]" : "");
     else
         graph += QString("[v]") + (audio ? "[a]" : "");
+    if (gif) {
+        // Per-frame palettes keep the encoder streaming even for long recordings.
+        graph += ";[v]split[pixels][colors];"
+                 "[colors]palettegen=stats_mode=single[palette];"
+                 "[pixels][palette]paletteuse=new=1:dither=bayer[gif]";
+        args << "-filter_complex" << graph << "-map" << "[gif]" << "-loop" << "0" << dst;
+        return args;
+    }
     args << "-filter_complex" << graph << "-map" << "[v]";
     if (audio)
         args << "-map" << "[a]" << "-c:a" << "aac";

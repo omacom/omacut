@@ -22,15 +22,15 @@
 #include "thumbprovider.h"
 
 namespace {
-QString mp4PathFor(const QString &path) {
+QString exportPathFor(const QString &path, const QString &suffix) {
     const QFileInfo file(path);
-    if (file.suffix().compare(QStringLiteral("mp4"), Qt::CaseInsensitive) == 0)
+    if (file.suffix().compare(suffix, Qt::CaseInsensitive) == 0)
         return path;
 
     const QString baseName = file.completeBaseName().isEmpty()
         ? file.fileName()
         : file.completeBaseName();
-    return file.dir().filePath(baseName + QStringLiteral(".mp4"));
+    return file.dir().filePath(baseName + "." + suffix);
 }
 
 bool replaceWithTemp(const QString &tmpPath, const QString &outPath) {
@@ -105,7 +105,7 @@ void Backend::wireFilePicker() {
             load(url);
     });
     connect(m_filePicker, &FilePicker::exportSelected, this, [this](const QUrl &url, int scaleHeight) {
-        exportClips(url, m_exportDialogClips, scaleHeight);
+        exportClips(url, m_exportDialogClips, scaleHeight, m_exportDialogGif);
     });
     connect(m_filePicker, &FilePicker::failed, this, &Backend::loadError);
 }
@@ -310,13 +310,14 @@ void Backend::addVideoDialog(double t) {
     m_filePicker->openVideo();
 }
 
-void Backend::exportDialog() {
+void Backend::exportDialog(bool gif) {
     if (m_videos.isEmpty())
         return;
 
+    m_exportDialogGif = gif;
     m_exportDialogClips = m_timeline.clips();
     const ffmpeg::VideoInfo &frame = m_videos.value(m_exportDialogClips.value(0).source).info;
-    m_filePicker->exportVideo(suggestedExportUrl(), exportHeights(frame.width, frame.height));
+    m_filePicker->exportVideo(suggestedExportUrl(gif), exportHeights(frame.width, frame.height));
 }
 
 void Backend::stepFrame(double t, int direction) {
@@ -481,15 +482,15 @@ QList<int> Backend::exportHeights(int width, int height) {
     return heights;
 }
 
-QUrl Backend::suggestedExportUrl() const {
+QUrl Backend::suggestedExportUrl(bool gif) const {
     if (m_videos.isEmpty())
         return {};
     const QFileInfo src(m_videos.first().info.path);
-    const QString target = src.dir().filePath(src.completeBaseName() + "_trimmed.mp4");
+    const QString target = src.dir().filePath(src.completeBaseName() + (gif ? "_trimmed.gif" : "_trimmed.mp4"));
     return QUrl::fromLocalFile(target);
 }
 
-void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight) {
+void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight, bool gif) {
     if (m_videos.isEmpty() || busy())
         return;
 
@@ -511,7 +512,7 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
         return;
     }
 
-    // Forcing the .mp4 suffix can redirect the write to a file the save
+    // Forcing the selected suffix can redirect the write to a file the save
     // dialog never asked the user about overwriting — refuse rather than
     // silently replace it.
     QString selectedPath;
@@ -519,7 +520,8 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
         emit exportFailed(QStringLiteral("Only local files can be exported to."));
         return;
     }
-    const QString outPath = mp4PathFor(selectedPath);
+    const QString suffix = gif ? QStringLiteral("gif") : QStringLiteral("mp4");
+    const QString outPath = exportPathFor(selectedPath, suffix);
     if (outPath != selectedPath && QFileInfo::exists(outPath)) {
         emit exportFailed(tr("%1 already exists.")
                               .arg(QFileInfo(outPath).fileName()));
@@ -537,10 +539,18 @@ void Backend::exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHe
 
     // Encode to a sibling temp file and atomically replace the target only after
     // success, so failed/cancelled exports preserve any existing file.
-    const QString tmpPath = outPath + QStringLiteral(".omacut-part.mp4");
-    QFile::remove(tmpPath);
+    QTemporaryFile temp(outPath + ".omacut-XXXXXX." + suffix);
+    if (!temp.open()) {
+        setBusy(false);
+        setStatus(QString());
+        emit exportFailed(tr("Could not write the exported file."));
+        return;
+    }
+    temp.setAutoRemove(false);
+    const QString tmpPath = temp.fileName();
+    temp.close();
     const ffmpeg::VideoInfo &frame = m_videos[frameSource].info;
-    const QStringList args = ffmpeg::trimArgs(segments, tmpPath, frame.width, frame.height, scaleHeight);
+    const QStringList args = ffmpeg::trimArgs(segments, tmpPath, frame.width, frame.height, scaleHeight, gif);
 
     auto *proc = new QProcess(this);
     auto completed = std::make_shared<bool>(false);

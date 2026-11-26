@@ -59,10 +59,10 @@ public:
     Q_INVOKABLE void openVideoDialog();
     Q_INVOKABLE void addVideoDialog(double t);
     // Exports the clips as they are when the dialog opens.
-    Q_INVOKABLE void exportDialog();
+    Q_INVOKABLE void exportDialog(bool gif = false);
 
     // Suggested "<name>_trimmed.mp4" target next to the source.
-    QUrl suggestedExportUrl() const;
+    QUrl suggestedExportUrl(bool gif = false) const;
     // Saves the frame under t (seconds along the edit) as a PNG next to that
     // clip's video, in the background. One at a time; frameSaved or
     // frameFailed says how it went.
@@ -72,7 +72,7 @@ public:
 
     // Write the clips to dst. A non-zero scaleHeight downscales the shorter
     // side to that size.
-    void exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight = 0);
+    void exportClips(const QUrl &dst, const edit::Clips &clips, int scaleHeight = 0, bool gif = false);
 
     // The downscale heights worth offering for a source: only ones strictly
     // below the source's shorter side, so exports never upscale.
@@ -144,6 +144,7 @@ private:
     bool m_adding = false;
     double m_addAt = 0.0;
     edit::Clips m_exportDialogClips;
+    bool m_exportDialogGif = false;
     bool m_busy = false;
     bool m_probing = false;
     QList<PendingVideo> m_probeQueue;
